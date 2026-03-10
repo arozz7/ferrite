@@ -1,0 +1,32 @@
+[package]
+name        = "ferrite-blockdev"
+description = "Platform-abstracted block device I/O for Ferrite"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[features]
+# Gate real-hardware integration tests behind this flag.
+integration = []
+
+[dependencies]
+ferrite-core = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

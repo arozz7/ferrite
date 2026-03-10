@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/ferrite-core",
+    "crates/ferrite-blockdev",
 ]
 resolver = "2"
 
@@ -43,7 +44,11 @@ rayon     = "1"
 which     = "7"
 
 # Internal crates
-ferrite-core = { path = "crates/ferrite-core" }
+ferrite-core     = { path = "crates/ferrite-core" }
+ferrite-blockdev = { path = "crates/ferrite-blockdev" }
+
+# Dev / test utilities
+tempfile = "3"
 
 [package]
 name        = "ferrite"
