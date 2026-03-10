@@ -1,0 +1,13 @@
+[package]
+name        = "ferrite-core"
+description = "Core types, errors, and configuration for Ferrite"
+version.workspace     = true
+edition.workspace     = true
+authors.workspace     = true
+license.workspace     = true
+repository.workspace  = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde     = { workspace = true }
+tracing   = { workspace = true }

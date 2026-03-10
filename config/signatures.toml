@@ -1,0 +1,79 @@
+# File carving signature database
+# Each [[signature]] entry defines a file type to search for during carving.
+#
+# Fields:
+#   name       = human-readable label
+#   extension  = output file extension
+#   header     = hex bytes of the file header (magic bytes), space-separated
+#   footer     = hex bytes of the file footer (optional, "" if none)
+#   max_size   = maximum file size in bytes (caps extraction window)
+
+[[signature]]
+name      = "JPEG Image"
+extension = "jpg"
+header    = "FF D8 FF"
+footer    = "FF D9"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "PNG Image"
+extension = "png"
+header    = "89 50 4E 47 0D 0A 1A 0A"
+footer    = "49 45 4E 44 AE 42 60 82"
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "PDF Document"
+extension = "pdf"
+header    = "25 50 44 46"
+footer    = "25 25 45 4F 46"
+max_size  = 104_857_600  # 100 MiB
+
+[[signature]]
+name      = "ZIP / Office (DOCX/XLSX/PPTX)"
+extension = "zip"
+header    = "50 4B 03 04"
+footer    = "50 4B 05 06"
+max_size  = 524_288_000  # 500 MiB
+
+[[signature]]
+name      = "GIF Image"
+extension = "gif"
+header    = "47 49 46 38"
+footer    = "00 3B"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "BMP Image"
+extension = "bmp"
+header    = "42 4D"
+footer    = ""
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "MP3 Audio"
+extension = "mp3"
+header    = "49 44 33"
+footer    = ""
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "MP4 Video"
+extension = "mp4"
+header    = "00 00 00 20 66 74 79 70"
+footer    = ""
+max_size  = 4_294_967_296  # 4 GiB
+
+[[signature]]
+name      = "RAR Archive"
+extension = "rar"
+header    = "52 61 72 21 1A 07"
+footer    = ""
+max_size  = 524_288_000  # 500 MiB
+
+[[signature]]
+name      = "7-Zip Archive"
+extension = "7z"
+header    = "37 7A BC AF 27 1C"
+footer    = ""
+max_size  = 524_288_000  # 500 MiB

@@ -1,0 +1,65 @@
+[workspace]
+members = [
+    ".",
+    "crates/ferrite-core",
+]
+resolver = "2"
+
+[workspace.package]
+version    = "0.1.0"
+edition    = "2021"
+authors    = ["arozz7"]
+license    = "MIT OR Apache-2.0"
+repository = "https://github.com/arozz7/ferrite"
+
+[workspace.dependencies]
+# Error handling
+thiserror = "2"
+anyhow    = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Logging / tracing
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serialization
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml       = "0.8"
+
+# TUI
+ratatui   = "0.29"
+crossterm = "0.28"
+
+# Utilities
+uuid      = { version = "1", features = ["v4"] }
+chrono    = { version = "0.4", features = ["serde"] }
+byteorder = "1"
+crc32fast = "1"
+memchr    = "2"
+rayon     = "1"
+which     = "7"
+
+# Internal crates
+ferrite-core = { path = "crates/ferrite-core" }
+
+[package]
+name        = "ferrite"
+description = "Autonomous storage diagnostics and data recovery"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[[bin]]
+name = "ferrite"
+path = "src/main.rs"
+
+[dependencies]
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+ferrite-core       = { workspace = true }
