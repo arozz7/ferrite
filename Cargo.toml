@@ -4,6 +4,7 @@ members = [
     "crates/ferrite-core",
     "crates/ferrite-blockdev",
     "crates/ferrite-imaging",
+    "crates/ferrite-smart",
 ]
 resolver = "2"
 
@@ -48,6 +49,7 @@ which     = "7"
 ferrite-core     = { path = "crates/ferrite-core" }
 ferrite-blockdev = { path = "crates/ferrite-blockdev" }
 ferrite-imaging  = { path = "crates/ferrite-imaging" }
+ferrite-smart    = { path = "crates/ferrite-smart" }
 
 # Dev / test utilities
 tempfile = "3"
