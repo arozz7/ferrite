@@ -3,6 +3,7 @@ members = [
     ".",
     "crates/ferrite-core",
     "crates/ferrite-blockdev",
+    "crates/ferrite-imaging",
 ]
 resolver = "2"
 
@@ -46,6 +47,7 @@ which     = "7"
 # Internal crates
 ferrite-core     = { path = "crates/ferrite-core" }
 ferrite-blockdev = { path = "crates/ferrite-blockdev" }
+ferrite-imaging  = { path = "crates/ferrite-imaging" }
 
 # Dev / test utilities
 tempfile = "3"
