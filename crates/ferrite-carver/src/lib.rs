@@ -1,0 +1,113 @@
+//! `ferrite-carver` — signature-based file carving engine.
+//!
+//! # Overview
+//!
+//! ```ignore
+//! use std::sync::Arc;
+//! use ferrite_carver::{Carver, CarvingConfig};
+//!
+//! // Load signatures from the bundled TOML
+//! let cfg = CarvingConfig::from_toml_str(include_str!("../config/signatures.toml"))?;
+//!
+//! // Scan for all known file types
+//! let carver = Carver::new(Arc::clone(&device), cfg);
+//! let hits = carver.scan()?;
+//!
+//! // Extract each hit to a Vec<u8>
+//! for hit in &hits {
+//!     let mut out = Vec::new();
+//!     let bytes = carver.extract(hit, &mut out)?;
+//!     println!("Found {} ({} bytes) at offset {}", hit.signature.name, bytes, hit.byte_offset);
+//! }
+//! ```
+
+mod error;
+mod scanner;
+mod signature;
+
+pub use error::{CarveError, Result};
+pub use scanner::{CarveHit, Carver};
+pub use signature::{parse_hex, CarvingConfig, Signature};
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use ferrite_blockdev::{BlockDevice, MockBlockDevice};
+
+    use super::*;
+
+    /// Smoke-test: load the real signatures.toml and verify the 10 built-in
+    /// entries parse correctly.
+    #[test]
+    fn builtin_signatures_parse() {
+        let toml = include_str!("../../../config/signatures.toml");
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.signatures.len(), 10, "expected 10 built-in signatures");
+
+        // Spot-check a few well-known magic sequences
+        let jpeg = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "jpg")
+            .unwrap();
+        assert_eq!(jpeg.header, &[0xFF, 0xD8, 0xFF]);
+        assert_eq!(jpeg.footer, &[0xFF, 0xD9]);
+
+        let png = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "png")
+            .unwrap();
+        assert_eq!(
+            png.header,
+            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        );
+
+        let sevenz = cfg.signatures.iter().find(|s| s.extension == "7z").unwrap();
+        assert_eq!(sevenz.header, &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]);
+    }
+
+    /// End-to-end test: embed a JPEG and PNG marker in a small device image,
+    /// scan with the real signatures.toml, then extract the JPEG.
+    #[test]
+    fn end_to_end_scan_and_extract() {
+        let toml = include_str!("../../../config/signatures.toml");
+        let mut cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        cfg.scan_chunk_size = 512; // small chunks to stress-test boundaries
+
+        let mut data = vec![0u8; 4096];
+        // JPEG at offset 0
+        data[0..3].copy_from_slice(&[0xFF, 0xD8, 0xFF]);
+        data[20..22].copy_from_slice(&[0xFF, 0xD9]); // JPEG footer
+                                                     // PNG at offset 1024
+        data[1024..1032].copy_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+
+        let dev: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new(data, 512));
+        let carver = Carver::new(Arc::clone(&dev), cfg);
+
+        let hits = carver.scan().unwrap();
+        let extensions: Vec<&str> = hits
+            .iter()
+            .map(|h| h.signature.extension.as_str())
+            .collect();
+        assert!(
+            extensions.contains(&"jpg"),
+            "JPEG not found: {extensions:?}"
+        );
+        assert!(extensions.contains(&"png"), "PNG not found: {extensions:?}");
+
+        // Extract the JPEG hit — should stop at footer (bytes 0..=21).
+        let jpeg_hit = hits
+            .iter()
+            .find(|h| h.signature.extension == "jpg")
+            .unwrap();
+        let mut extracted = Vec::new();
+        let written = carver.extract(jpeg_hit, &mut extracted).unwrap();
+        assert_eq!(
+            written, 22,
+            "JPEG extract should include footer: {written} bytes"
+        );
+        assert_eq!(&extracted[20..22], &[0xFF, 0xD9]);
+    }
+}

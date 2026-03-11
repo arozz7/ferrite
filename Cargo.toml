@@ -7,6 +7,7 @@ members = [
     "crates/ferrite-smart",
     "crates/ferrite-partition",
     "crates/ferrite-filesystem",
+    "crates/ferrite-carver",
 ]
 resolver = "2"
 
@@ -54,6 +55,7 @@ ferrite-imaging  = { path = "crates/ferrite-imaging" }
 ferrite-smart    = { path = "crates/ferrite-smart" }
 ferrite-partition    = { path = "crates/ferrite-partition" }
 ferrite-filesystem   = { path = "crates/ferrite-filesystem" }
+ferrite-carver       = { path = "crates/ferrite-carver" }
 
 # Dev / test utilities
 tempfile = "3"
