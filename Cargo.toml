@@ -8,6 +8,7 @@ members = [
     "crates/ferrite-partition",
     "crates/ferrite-filesystem",
     "crates/ferrite-carver",
+    "crates/ferrite-tui",
 ]
 resolver = "2"
 
@@ -56,6 +57,7 @@ ferrite-smart    = { path = "crates/ferrite-smart" }
 ferrite-partition    = { path = "crates/ferrite-partition" }
 ferrite-filesystem   = { path = "crates/ferrite-filesystem" }
 ferrite-carver       = { path = "crates/ferrite-carver" }
+ferrite-tui          = { path = "crates/ferrite-tui" }
 
 # Dev / test utilities
 tempfile = "3"
@@ -78,3 +80,4 @@ anyhow             = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 ferrite-core       = { workspace = true }
+ferrite-tui        = { workspace = true }

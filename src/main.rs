@@ -7,8 +7,7 @@ fn main() -> Result<()> {
 
     tracing::info!("Ferrite starting");
 
-    println!("Ferrite — autonomous storage diagnostics & data recovery");
-    println!("Run `ferrite --help` for usage (TUI coming in Phase 7)");
+    ferrite_tui::run().map_err(|e| anyhow::anyhow!(e))?;
 
     Ok(())
 }
