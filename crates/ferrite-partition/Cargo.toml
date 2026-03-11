@@ -1,0 +1,19 @@
+[package]
+name        = "ferrite-partition"
+description = "MBR/GPT partition table parsing and filesystem signature scanning for Ferrite"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+ferrite-blockdev = { workspace = true }
+thiserror        = { workspace = true }
+byteorder        = { workspace = true }
+crc32fast        = { workspace = true }
+uuid             = { workspace = true }
+tracing          = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
