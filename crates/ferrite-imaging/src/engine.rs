@@ -20,6 +20,12 @@ pub struct ImagingEngine {
     pub(crate) output: std::fs::File,
     pub(crate) started_at: Instant,
     pub(crate) last_saved: Instant,
+    /// Timestamp of the last rolling-rate checkpoint.
+    pub(crate) last_rate_instant: Instant,
+    /// `bytes_finished` value at the last rolling-rate checkpoint.
+    pub(crate) last_rate_bytes: u64,
+    /// Most recently computed rolling read rate (bytes/sec).
+    pub(crate) current_rate_bps: u64,
 }
 
 impl ImagingEngine {
@@ -35,7 +41,7 @@ impl ImagingEngine {
         config.validate(sector_size)?;
 
         // Load or create the mapfile.
-        let mapfile = match &config.mapfile_path {
+        let mut mapfile = match &config.mapfile_path {
             Some(path) => {
                 let mf = mapfile_io::load_or_create(path, device_size)?;
                 // Verify device size matches.
@@ -49,6 +55,21 @@ impl ImagingEngine {
             }
             None => Mapfile::from_device_size(device_size),
         };
+
+        // Apply LBA range — mark bytes outside [start_lba, end_lba) as Finished
+        // so passes skip them entirely.
+        let sector_size_u64 = device.sector_size() as u64;
+        let start_byte = config.start_lba.map(|l| l * sector_size_u64).unwrap_or(0);
+        let end_byte = config
+            .end_lba
+            .map(|l| (l * sector_size_u64).min(device_size))
+            .unwrap_or(device_size);
+        if start_byte > 0 {
+            mapfile.update_range(0, start_byte.min(device_size), BlockStatus::Finished);
+        }
+        if end_byte < device_size {
+            mapfile.update_range(end_byte, device_size - end_byte, BlockStatus::Finished);
+        }
 
         // Open output file (create if absent, preserve existing content for resume).
         let output = OpenOptions::new()
@@ -70,6 +91,9 @@ impl ImagingEngine {
             output,
             started_at: now,
             last_saved: now,
+            last_rate_instant: now,
+            last_rate_bytes: 0,
+            current_rate_bps: 0,
         })
     }
 
@@ -107,6 +131,26 @@ impl ImagingEngine {
         &self.mapfile
     }
 
+    /// The sector size of the underlying block device in bytes.
+    pub fn sector_size(&self) -> u32 {
+        self.device.sector_size()
+    }
+
+    /// Pre-mark LBA addresses from the S.M.A.R.T. error log as `BadSector` in the
+    /// mapfile before imaging starts.  This allows passes to skip known-bad sectors
+    /// and go straight to the retry stage for them.
+    ///
+    /// `sector_size` must match the device's physical sector size.
+    pub fn pre_populate_bad_sectors(&mut self, sector_size: u64, bad_lbas: &[u64]) {
+        for &lba in bad_lbas {
+            let pos = lba * sector_size;
+            if pos + sector_size <= self.mapfile.device_size() {
+                self.mapfile
+                    .update_range(pos, sector_size, BlockStatus::BadSector);
+            }
+        }
+    }
+
     // ── Internal helpers (used by passes) ─────────────────────────────────────
 
     /// Save the mapfile if the configured interval has elapsed.
@@ -126,10 +170,27 @@ impl ImagingEngine {
     }
 
     /// Build a progress snapshot for the reporter.
-    pub(crate) fn make_progress(&self, phase: ImagingPhase, current_offset: u64) -> ProgressUpdate {
+    ///
+    /// Updates the rolling read-rate every ~1 second.
+    pub(crate) fn make_progress(
+        &mut self,
+        phase: ImagingPhase,
+        current_offset: u64,
+    ) -> ProgressUpdate {
+        let bytes_finished = self.mapfile.bytes_with_status(BlockStatus::Finished);
+
+        // Update rolling rate once per second.
+        let elapsed_secs = self.last_rate_instant.elapsed().as_secs_f64();
+        if elapsed_secs >= 1.0 {
+            let delta = bytes_finished.saturating_sub(self.last_rate_bytes);
+            self.current_rate_bps = (delta as f64 / elapsed_secs) as u64;
+            self.last_rate_instant = Instant::now();
+            self.last_rate_bytes = bytes_finished;
+        }
+
         ProgressUpdate {
             phase,
-            bytes_finished: self.mapfile.bytes_with_status(BlockStatus::Finished),
+            bytes_finished,
             bytes_non_tried: self.mapfile.bytes_with_status(BlockStatus::NonTried),
             bytes_non_trimmed: self.mapfile.bytes_with_status(BlockStatus::NonTrimmed),
             bytes_non_scraped: self.mapfile.bytes_with_status(BlockStatus::NonScraped),
@@ -137,6 +198,7 @@ impl ImagingEngine {
             device_size: self.mapfile.device_size(),
             current_offset,
             elapsed: self.started_at.elapsed(),
+            read_rate_bps: self.current_rate_bps,
         }
     }
 }
@@ -162,6 +224,9 @@ mod tests {
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
             mapfile_path: None,
+            start_lba: None,
+            end_lba: None,
+            reverse: false,
         };
         let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         (engine, tmp)
@@ -283,6 +348,80 @@ mod tests {
     }
 
     #[test]
+    fn start_lba_marks_prefix_finished() {
+        let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
+        let tmp = NamedTempFile::new().unwrap();
+        let config = ImagingConfig {
+            copy_block_size: SECTOR as u64,
+            max_retries: 0,
+            mapfile_save_interval: std::time::Duration::MAX,
+            output_path: tmp.path().to_path_buf(),
+            mapfile_path: None,
+            start_lba: Some(2), // skip first 2 sectors
+            end_lba: None,
+            reverse: false,
+        };
+        let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
+        assert_eq!(
+            engine.mapfile().bytes_with_status(BlockStatus::Finished),
+            2 * SECTOR as u64
+        );
+        assert_eq!(
+            engine.mapfile().bytes_with_status(BlockStatus::NonTried),
+            SIZE as u64 - 2 * SECTOR as u64
+        );
+    }
+
+    #[test]
+    fn end_lba_marks_suffix_finished() {
+        let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
+        let tmp = NamedTempFile::new().unwrap();
+        let config = ImagingConfig {
+            copy_block_size: SECTOR as u64,
+            max_retries: 0,
+            mapfile_save_interval: std::time::Duration::MAX,
+            output_path: tmp.path().to_path_buf(),
+            mapfile_path: None,
+            start_lba: None,
+            end_lba: Some(14), // image only sectors 0..13
+            reverse: false,
+        };
+        let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
+        assert_eq!(
+            engine.mapfile().bytes_with_status(BlockStatus::Finished),
+            2 * SECTOR as u64 // sectors 14 and 15 marked Finished
+        );
+    }
+
+    #[test]
+    fn pre_populate_marks_known_bad_sectors() {
+        let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
+        let (mut engine, _tmp) = make_engine(mock);
+        engine.pre_populate_bad_sectors(SECTOR as u64, &[0, 5]);
+        assert_eq!(
+            engine.mapfile().bytes_with_status(BlockStatus::BadSector),
+            2 * SECTOR as u64
+        );
+        assert_eq!(engine.mapfile().status_at(0), Some(BlockStatus::BadSector));
+        assert_eq!(
+            engine.mapfile().status_at(5 * SECTOR as u64),
+            Some(BlockStatus::BadSector)
+        );
+    }
+
+    #[test]
+    fn pre_populate_out_of_range_is_ignored() {
+        let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
+        let (mut engine, _tmp) = make_engine(mock);
+        // LBA 1000 is way beyond the device size
+        engine.pre_populate_bad_sectors(SECTOR as u64, &[1000]);
+        assert_eq!(
+            engine.mapfile().bytes_with_status(BlockStatus::BadSector),
+            0
+        );
+    }
+
+    #[test]
     fn resume_skips_finished_blocks() {
         use std::sync::Arc as StdArc;
 
@@ -306,6 +445,9 @@ mod tests {
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
             mapfile_path: None,
+            start_lba: None,
+            end_lba: None,
+            reverse: false,
         };
         // Inject a fresh fully-finished mapfile.
         let mut engine2 = ImagingEngine::new(StdArc::new(mock2), config2).unwrap();
@@ -321,5 +463,45 @@ mod tests {
             engine2.mapfile().bytes_with_status(BlockStatus::Finished),
             SIZE as u64
         );
+    }
+
+    #[test]
+    fn reverse_mode_images_entire_device() {
+        let mut mock = MockBlockDevice::zeroed(SIZE, SECTOR);
+        // Fill each sector with its sector index.
+        for i in 0..SECTORS {
+            mock.write_sector(i as u64, &[i as u8; SECTOR as usize]);
+        }
+        let tmp = NamedTempFile::new().unwrap();
+        let config = ImagingConfig {
+            copy_block_size: SECTOR as u64,
+            max_retries: 3,
+            mapfile_save_interval: std::time::Duration::MAX,
+            output_path: tmp.path().to_path_buf(),
+            mapfile_path: None,
+            start_lba: None,
+            end_lba: None,
+            reverse: true,
+        };
+        let mut engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
+        engine.run(&mut NullReporter).unwrap();
+
+        // All sectors should be Finished.
+        assert_eq!(
+            engine.mapfile().bytes_with_status(BlockStatus::Finished),
+            SIZE as u64
+        );
+        assert!(!engine.mapfile().has_status(BlockStatus::NonTried));
+
+        // Content should match source regardless of read order.
+        let output = std::fs::read(tmp.path()).unwrap();
+        for i in 0..SECTORS {
+            let start = i * SECTOR as usize;
+            let sector_data = &output[start..start + SECTOR as usize];
+            assert!(
+                sector_data.iter().all(|&b| b == i as u8),
+                "sector {i} content mismatch in reverse mode"
+            );
+        }
     }
 }

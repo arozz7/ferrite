@@ -22,6 +22,22 @@ struct RawSmartctl {
     power_on_time: Option<RawPowerOnTime>,
     ata_smart_attributes: Option<RawAtaAttributes>,
     nvme_smart_health_information_log: Option<RawNvmeLog>,
+    ata_smart_error_log: Option<RawAtaErrorLog>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawAtaErrorLog {
+    summary: Option<RawAtaErrorLogSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawAtaErrorLogSummary {
+    table: Option<Vec<RawAtaErrorEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawAtaErrorEntry {
+    error_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +103,22 @@ struct RawNvmeLog {
 
 // ── Public parse entry point ──────────────────────────────────────────────────
 
+fn extract_lba_from_error_description(desc: &str) -> Option<u64> {
+    // Matches "at LBA = 0xHHHHHHHH" which smartctl consistently produces.
+    let marker = "at LBA = 0x";
+    let idx = desc.find(marker)?;
+    let hex_start = idx + marker.len();
+    let hex_end = desc[hex_start..]
+        .find(|c: char| !c.is_ascii_hexdigit())
+        .map(|i| hex_start + i)
+        .unwrap_or(desc.len());
+    let hex_str = &desc[hex_start..hex_end];
+    if hex_str.is_empty() {
+        return None;
+    }
+    u64::from_str_radix(hex_str, 16).ok()
+}
+
 /// Parse the JSON output of `smartctl --json -a` into a [`SmartData`].
 pub fn parse(device_path: &str, json: &str) -> Result<SmartData> {
     let raw: RawSmartctl =
@@ -98,6 +130,19 @@ pub fn parse(device_path: &str, json: &str) -> Result<SmartData> {
         .unwrap_or_default();
 
     let nvme = raw.nvme_smart_health_information_log;
+
+    let bad_sector_lbas: Vec<u64> = raw
+        .ata_smart_error_log
+        .and_then(|log| log.summary)
+        .and_then(|s| s.table)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|e| {
+            e.error_description
+                .as_deref()
+                .and_then(extract_lba_from_error_description)
+        })
+        .collect();
 
     Ok(SmartData {
         device_path: raw
@@ -118,6 +163,7 @@ pub fn parse(device_path: &str, json: &str) -> Result<SmartData> {
         nvme_available_spare: nvme.as_ref().and_then(|n| n.available_spare),
         nvme_available_spare_threshold: nvme.as_ref().and_then(|n| n.available_spare_threshold),
         nvme_percentage_used: nvme.as_ref().and_then(|n| n.percentage_used),
+        bad_sector_lbas,
     })
 }
 
@@ -241,5 +287,26 @@ mod tests {
         assert!(!data.smart_passed);
         assert!(data.model.is_none());
         assert!(data.attributes.is_empty());
+        assert!(data.bad_sector_lbas.is_empty());
+    }
+
+    #[test]
+    fn parse_error_log_extracts_lba() {
+        let json = r#"{
+            "ata_smart_error_log": {
+                "summary": {
+                    "revision": 1,
+                    "count": 1,
+                    "table": [
+                        {
+                            "error_number": 1,
+                            "error_description": "Error: UNC 8 sectors at LBA = 0x000bc4a2 = 771234"
+                        }
+                    ]
+                }
+            }
+        }"#;
+        let data = parse("/dev/sda", json).unwrap();
+        assert_eq!(data.bad_sector_lbas, vec![0x000bc4a2u64]);
     }
 }

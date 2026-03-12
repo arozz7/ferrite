@@ -38,6 +38,10 @@ pub enum FilesystemType {
     Ntfs,
     Fat32,
     Ext4,
+    /// exFAT — detected but no parser implemented (detect-only).
+    ExFat,
+    /// HFS+ or HFSX — detected but no parser implemented (detect-only).
+    HfsPlus,
     Unknown,
 }
 
@@ -47,6 +51,8 @@ impl std::fmt::Display for FilesystemType {
             FilesystemType::Ntfs => write!(f, "NTFS"),
             FilesystemType::Fat32 => write!(f, "FAT32"),
             FilesystemType::Ext4 => write!(f, "ext4"),
+            FilesystemType::ExFat => write!(f, "exFAT"),
+            FilesystemType::HfsPlus => write!(f, "HFS+"),
             FilesystemType::Unknown => write!(f, "Unknown"),
         }
     }
@@ -117,12 +123,15 @@ pub trait FilesystemParser: Send + Sync {
 /// 2. FAT32 — type string `"FAT32   "` at offset 82 + 0x55AA boot signature
 /// 3. ext4  — magic `0xEF53` at superblock offset 1024 + 56
 pub fn detect_filesystem(device: &dyn BlockDevice) -> FilesystemType {
-    // ── NTFS ─────────────────────────────────────────────────────────────────
+    // ── Boot sector checks (NTFS / exFAT / FAT32) ────────────────────────────
     if let Ok(boot) = io::read_bytes(device, 0, 512) {
         if boot.len() >= 11 && &boot[3..11] == b"NTFS    " {
             return FilesystemType::Ntfs;
         }
-        // ── FAT32 ─────────────────────────────────────────────────────────────
+        // exFAT OEM ID "EXFAT   " at bytes 3–10 (no boot signature overlap).
+        if boot.len() >= 11 && &boot[3..11] == b"EXFAT   " {
+            return FilesystemType::ExFat;
+        }
         if boot.len() >= 512
             && boot[510] == 0x55
             && boot[511] == 0xAA
@@ -133,11 +142,21 @@ pub fn detect_filesystem(device: &dyn BlockDevice) -> FilesystemType {
         }
     }
 
-    // ── ext4 ─────────────────────────────────────────────────────────────────
-    if let Ok(sb) = io::read_bytes(device, 1024, 58 + 2) {
-        let magic = u16::from_le_bytes([sb[56], sb[57]]);
-        if magic == 0xEF53 {
-            return FilesystemType::Ext4;
+    // ── Volume header at offset 1024 (HFS+ and ext4) ─────────────────────────
+    if let Ok(sb) = io::read_bytes(device, 1024, 60) {
+        // HFS+ / HFSX volume header magic (big-endian) at offset 0 of header.
+        if sb.len() >= 2 {
+            let hfs_magic = u16::from_be_bytes([sb[0], sb[1]]);
+            if hfs_magic == 0x482B || hfs_magic == 0x4858 {
+                return FilesystemType::HfsPlus;
+            }
+        }
+        // ext4 superblock magic (little-endian) at superblock offset 56.
+        if sb.len() >= 58 {
+            let ext4_magic = u16::from_le_bytes([sb[56], sb[57]]);
+            if ext4_magic == 0xEF53 {
+                return FilesystemType::Ext4;
+            }
         }
     }
 
@@ -153,7 +172,10 @@ pub fn open_filesystem(device: Arc<dyn BlockDevice>) -> Result<Box<dyn Filesyste
         FilesystemType::Ntfs => Ok(Box::new(NtfsParser::new(device)?)),
         FilesystemType::Fat32 => Ok(Box::new(Fat32Parser::new(device)?)),
         FilesystemType::Ext4 => Ok(Box::new(Ext4Parser::new(device)?)),
-        FilesystemType::Unknown => Err(FilesystemError::UnknownFilesystem),
+        // exFAT and HFS+ are detect-only; no parser is implemented yet.
+        FilesystemType::ExFat | FilesystemType::HfsPlus | FilesystemType::Unknown => {
+            Err(FilesystemError::UnknownFilesystem)
+        }
     }
 }
 
@@ -176,6 +198,46 @@ mod tests {
     #[test]
     fn open_filesystem_errors_on_empty() {
         let dev = Arc::new(MockBlockDevice::zeroed(2048, 512));
+        assert!(matches!(
+            open_filesystem(dev),
+            Err(FilesystemError::UnknownFilesystem)
+        ));
+    }
+
+    #[test]
+    fn detect_exfat_volume() {
+        let mut data = vec![0u8; 512];
+        data[3..11].copy_from_slice(b"EXFAT   ");
+        let dev = MockBlockDevice::new(data, 512);
+        assert_eq!(detect_filesystem(&dev), FilesystemType::ExFat);
+    }
+
+    #[test]
+    fn detect_hfsplus_volume() {
+        // Need at least 1024 + 60 bytes for io::read_bytes(device, 1024, 60).
+        let mut data = vec![0u8; 1084];
+        // HFS+ volume header magic 0x482B (big-endian) at device offset 1024.
+        data[1024] = 0x48;
+        data[1025] = 0x2B;
+        let dev = MockBlockDevice::new(data, 512);
+        assert_eq!(detect_filesystem(&dev), FilesystemType::HfsPlus);
+    }
+
+    #[test]
+    fn detect_hfsx_volume() {
+        let mut data = vec![0u8; 1084];
+        // HFSX magic 0x4858 (big-endian) at device offset 1024.
+        data[1024] = 0x48;
+        data[1025] = 0x58;
+        let dev = MockBlockDevice::new(data, 512);
+        assert_eq!(detect_filesystem(&dev), FilesystemType::HfsPlus);
+    }
+
+    #[test]
+    fn open_exfat_returns_unknown_filesystem_error() {
+        let mut data = vec![0u8; 512];
+        data[3..11].copy_from_slice(b"EXFAT   ");
+        let dev = Arc::new(MockBlockDevice::new(data, 512));
         assert!(matches!(
             open_filesystem(dev),
             Err(FilesystemError::UnknownFilesystem)

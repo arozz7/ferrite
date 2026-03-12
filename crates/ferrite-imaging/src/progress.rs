@@ -41,6 +41,9 @@ pub struct ProgressUpdate {
     pub device_size: u64,
     pub current_offset: u64,
     pub elapsed: std::time::Duration,
+    /// Rolling read throughput over the last ~1 second, in bytes per second.
+    /// Zero until at least one full second has elapsed.
+    pub read_rate_bps: u64,
 }
 
 impl ProgressUpdate {

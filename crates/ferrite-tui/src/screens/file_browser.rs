@@ -44,6 +44,8 @@ pub struct FileBrowserState {
     show_deleted: bool,
     status: BrowserStatus,
     open_rx: Option<Receiver<BrowserMsg>>,
+    /// Last extraction result message (success or error).
+    extract_status: Option<String>,
 }
 
 impl Default for FileBrowserState {
@@ -65,6 +67,7 @@ impl FileBrowserState {
             show_deleted: false,
             status: BrowserStatus::Idle,
             open_rx: None,
+            extract_status: None,
         }
     }
 
@@ -77,6 +80,7 @@ impl FileBrowserState {
         self.scroll = 0;
         self.status = BrowserStatus::Idle;
         self.open_rx = None;
+        self.extract_status = None;
     }
 
     /// Returns `true` while a text-input field is active (currently none on this screen).
@@ -111,6 +115,7 @@ impl FileBrowserState {
     pub fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
         match code {
             KeyCode::Char('o') => self.start_open(),
+            KeyCode::Char('e') => self.extract_selected(),
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
             KeyCode::Enter => self.open_selected(),
@@ -120,6 +125,34 @@ impl FileBrowserState {
                 self.load_current_dir();
             }
             _ => {}
+        }
+    }
+
+    fn extract_selected(&mut self) {
+        // Only extract regular (non-directory) files.
+        let entry = match self.entries.get(self.selected) {
+            Some(e) if !e.is_dir => e.clone(),
+            _ => return,
+        };
+        // No parser means we're not in Browsing state — nothing to do.
+        if self.parser.is_none() {
+            return;
+        }
+        let filename = entry.name.clone();
+        let mut out = match std::fs::File::create(&filename) {
+            Ok(f) => f,
+            Err(e) => {
+                self.extract_status = Some(format!("Error: cannot create '{filename}': {e}"));
+                return;
+            }
+        };
+        match self.parser.as_ref().unwrap().read_file(&entry, &mut out) {
+            Ok(bytes) => {
+                self.extract_status = Some(format!("Saved '{filename}' ({bytes} B)"));
+            }
+            Err(e) => {
+                self.extract_status = Some(format!("Error extracting '{filename}': {e}"));
+            }
         }
     }
 
@@ -211,8 +244,10 @@ impl FileBrowserState {
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         let title = match &self.status {
             BrowserStatus::Opening => " File Browser — opening filesystem… ",
-            _ if self.show_deleted => " File Browser — [deleted shown] — d: toggle  o: open fs ",
-            _ => " File Browser — d: toggle deleted  o: open filesystem ",
+            _ if self.show_deleted => {
+                " File Browser — [deleted shown] — d: toggle  e: extract  o: open fs "
+            }
+            _ => " File Browser — d: toggle deleted  e: extract  o: open filesystem ",
         };
         let outer = Block::default().borders(Borders::ALL).title(title);
 
@@ -249,7 +284,11 @@ impl FileBrowserState {
     fn render_browser(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(1), // breadcrumb
+                Constraint::Min(0),    // file table
+                Constraint::Length(1), // extraction status
+            ])
             .split(area);
 
         // Breadcrumb bar
@@ -273,6 +312,14 @@ impl FileBrowserState {
 
         if self.entries.is_empty() {
             frame.render_widget(Paragraph::new(" (empty directory)"), chunks[1]);
+            if let Some(msg) = &self.extract_status {
+                let style = if msg.starts_with("Error") {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::Green)
+                };
+                frame.render_widget(Paragraph::new(msg.as_str()).style(style), chunks[2]);
+            }
             return;
         }
 
@@ -317,6 +364,16 @@ impl FileBrowserState {
 
         let mut ts = TableState::default().with_selected(Some(self.selected));
         frame.render_stateful_widget(table, chunks[1], &mut ts);
+
+        // ── Extraction status bar ─────────────────────────────────────────────
+        if let Some(msg) = &self.extract_status {
+            let style = if msg.starts_with("Error") {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            frame.render_widget(Paragraph::new(msg.as_str()).style(style), chunks[2]);
+        }
     }
 }
 
@@ -374,5 +431,33 @@ mod tests {
         assert!(s.path_segments.is_empty());
         assert_eq!(s.selected, 0);
         assert!(s.entries.is_empty());
+    }
+
+    #[test]
+    fn e_key_noop_without_parser() {
+        let mut s = FileBrowserState::new();
+        // No parser, no entries — pressing 'e' must not panic.
+        s.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        assert!(s.extract_status.is_none());
+    }
+
+    #[test]
+    fn e_key_noop_on_directory_entry() {
+        let mut s = FileBrowserState::new();
+        s.entries.push(ferrite_filesystem::FileEntry {
+            name: "Documents".into(),
+            path: "/Documents".into(),
+            size: 0,
+            is_dir: true,
+            is_deleted: false,
+            created: None,
+            modified: None,
+            first_cluster: None,
+            mft_record: None,
+            inode_number: None,
+        });
+        // Directory selected, no parser — extract is a no-op.
+        s.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        assert!(s.extract_status.is_none());
     }
 }

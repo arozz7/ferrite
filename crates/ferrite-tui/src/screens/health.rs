@@ -35,6 +35,8 @@ pub struct HealthState {
     attr_selected: usize,
     status: HealthStatus,
     rx: Option<Receiver<HealthMsg>>,
+    /// Most recently received S.M.A.R.T. data — exposed for report generation.
+    pub last_smart_data: Option<SmartData>,
 }
 
 impl Default for HealthState {
@@ -52,6 +54,7 @@ impl HealthState {
             attr_selected: 0,
             status: HealthStatus::Idle,
             rx: None,
+            last_smart_data: None,
         }
     }
 
@@ -73,7 +76,9 @@ impl HealthState {
         };
         match rx.try_recv() {
             Ok(HealthMsg::Data(data, verdict)) => {
-                self.data = Some(*data);
+                let smart = *data;
+                self.last_smart_data = Some(smart.clone());
+                self.data = Some(smart);
                 self.verdict = Some(verdict);
                 self.status = HealthStatus::Loaded;
                 self.rx = None;

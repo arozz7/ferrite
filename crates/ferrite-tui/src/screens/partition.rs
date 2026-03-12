@@ -35,10 +35,13 @@ enum PartitionStatus {
 
 pub struct PartitionState {
     device: Option<Arc<dyn BlockDevice>>,
-    table: Option<PartitionTable>,
+    /// The most recently parsed partition table — exposed for report generation.
+    pub table: Option<PartitionTable>,
     selected: usize,
     status: PartitionStatus,
     rx: Option<Receiver<PartitionMsg>>,
+    /// Most recent export result message (success path or error).
+    pub export_status: Option<String>,
 }
 
 impl Default for PartitionState {
@@ -55,6 +58,7 @@ impl PartitionState {
             selected: 0,
             status: PartitionStatus::Idle,
             rx: None,
+            export_status: None,
         }
     }
 
@@ -109,7 +113,68 @@ impl PartitionState {
             }
             KeyCode::Char('r') => self.start_read(),
             KeyCode::Char('s') => self.start_scan(),
+            KeyCode::Char('w') => self.export_partition_table(),
             _ => {}
+        }
+    }
+
+    fn export_partition_table(&mut self) {
+        let device = match &self.device {
+            Some(d) => Arc::clone(d),
+            None => return,
+        };
+        let table = match &self.table {
+            Some(t) => t.clone(),
+            None => return,
+        };
+        let sector_size = device.sector_size() as u64;
+
+        match table.kind {
+            PartitionTableKind::Recovered => {
+                let mut lines = vec!["Partition Table: Recovered (signature scan)".to_string()];
+                lines.push(format!(
+                    "Sector size: {} B  Partitions: {}",
+                    table.sector_size,
+                    table.entries.len()
+                ));
+                for e in &table.entries {
+                    lines.push(format!(
+                        "  #{}: start={} end={} size={} LBA",
+                        e.index, e.start_lba, e.end_lba, e.size_lba
+                    ));
+                }
+                match std::fs::write("ferrite-partition.txt", lines.join("\n")) {
+                    Ok(_) => {
+                        self.export_status = Some("Exported to ferrite-partition.txt".into());
+                    }
+                    Err(e) => {
+                        self.export_status = Some(format!("Export failed: {e}"));
+                    }
+                }
+            }
+            PartitionTableKind::Mbr | PartitionTableKind::Gpt => {
+                let sectors: u64 = if table.kind == PartitionTableKind::Mbr {
+                    1
+                } else {
+                    34
+                };
+                let byte_count = (sectors * sector_size) as usize;
+                let mut buf =
+                    ferrite_blockdev::AlignedBuffer::new(byte_count, sector_size as usize);
+                match device.read_at(0, &mut buf) {
+                    Ok(n) => match std::fs::write("ferrite-partition.bin", &buf.as_slice()[..n]) {
+                        Ok(_) => {
+                            self.export_status = Some("Exported to ferrite-partition.bin".into());
+                        }
+                        Err(e) => {
+                            self.export_status = Some(format!("Export failed: {e}"));
+                        }
+                    },
+                    Err(e) => {
+                        self.export_status = Some(format!("Read failed: {e}"));
+                    }
+                }
+            }
         }
     }
 
@@ -164,6 +229,7 @@ impl PartitionState {
         let title = match &self.status {
             PartitionStatus::Reading => " Partition Analysis — reading… ",
             PartitionStatus::Scanning => " Partition Analysis — scanning… ",
+            PartitionStatus::Done => " Partition Analysis — r: read  s: scan  w: export ",
             _ => " Partition Analysis — r: read  s: scan ",
         };
         let outer = Block::default().borders(Borders::ALL).title(title);
@@ -185,7 +251,14 @@ impl PartitionState {
             }
             PartitionStatus::Done => {
                 let table_ref = self.table.as_ref().unwrap();
-                render_partition_table(frame, area, outer, table_ref, self.selected);
+                render_partition_table(
+                    frame,
+                    area,
+                    outer,
+                    table_ref,
+                    self.selected,
+                    self.export_status.as_deref(),
+                );
             }
         }
     }
@@ -199,6 +272,7 @@ fn render_partition_table(
     outer: Block,
     tbl: &PartitionTable,
     selected: usize,
+    export_status: Option<&str>,
 ) {
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -214,14 +288,26 @@ fn render_partition_table(
         tbl.entries.len()
     );
 
-    // Split: 1 row summary + rest table.
+    // Split: summary row + table + optional export status line.
     use ratatui::layout::{Constraint, Direction, Layout};
+    let status_height = if export_status.is_some() { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(status_height),
+        ])
         .split(inner);
 
     frame.render_widget(Paragraph::new(summary), chunks[0]);
+
+    if let Some(msg) = export_status {
+        frame.render_widget(
+            Paragraph::new(format!(" {msg}")).style(Style::default().fg(Color::Green)),
+            chunks[2],
+        );
+    }
 
     if tbl.entries.is_empty() {
         frame.render_widget(
@@ -314,5 +400,25 @@ mod tests {
         let mut s = PartitionState::new();
         s.handle_key(KeyCode::Up, KeyModifiers::NONE);
         assert_eq!(s.selected, 0);
+    }
+
+    #[test]
+    fn w_key_when_no_device_does_nothing() {
+        let mut s = PartitionState::new();
+        s.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+        // Should not panic; no device means early return.
+        assert!(s.export_status.is_none());
+    }
+
+    #[test]
+    fn w_key_when_no_table_does_nothing() {
+        use ferrite_blockdev::MockBlockDevice;
+        use std::sync::Arc;
+        let dev: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::zeroed(4096, 512));
+        let mut s = PartitionState::new();
+        s.device = Some(dev);
+        s.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+        // No table → early return, no panic, no export status.
+        assert!(s.export_status.is_none());
     }
 }

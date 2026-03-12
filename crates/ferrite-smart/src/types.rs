@@ -48,6 +48,9 @@ pub struct SmartData {
     pub nvme_available_spare_threshold: Option<u8>,
     /// Drive lifetime percentage used.
     pub nvme_percentage_used: Option<u8>,
+    /// LBA addresses of sectors known to be bad, extracted from the ATA error log.
+    /// Empty when no error log is available or the drive is NVMe.
+    pub bad_sector_lbas: Vec<u64>,
 }
 
 impl SmartData {

@@ -19,6 +19,17 @@ pub struct ImagingConfig {
 
     /// Path for the mapfile. `None` disables persistence (test mode).
     pub mapfile_path: Option<std::path::PathBuf>,
+
+    /// Start imaging at this LBA (inclusive). `None` = beginning of device.
+    pub start_lba: Option<u64>,
+    /// Stop imaging at this LBA (exclusive). `None` = end of device.
+    pub end_lba: Option<u64>,
+
+    /// When `true`, the copy pass reads from the end of the device toward the
+    /// beginning.  Useful when bad sectors are concentrated at the start of the
+    /// disk (e.g., a corrupted partition table area) and data is at the end.
+    /// Default: `false`.
+    pub reverse: bool,
 }
 
 impl ImagingConfig {
@@ -40,6 +51,14 @@ impl ImagingConfig {
                 ),
             });
         }
+        if let (Some(start), Some(end)) = (self.start_lba, self.end_lba) {
+            if start >= end {
+                return Err(ImagingError::MapfileParse {
+                    line: 0,
+                    message: format!("start_lba {start} must be less than end_lba {end}"),
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -52,6 +71,9 @@ impl Default for ImagingConfig {
             mapfile_save_interval: std::time::Duration::from_secs(30),
             output_path: std::path::PathBuf::new(),
             mapfile_path: None,
+            start_lba: None,
+            end_lba: None,
+            reverse: false,
         }
     }
 }

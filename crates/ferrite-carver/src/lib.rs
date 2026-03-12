@@ -37,13 +37,13 @@ mod tests {
 
     use super::*;
 
-    /// Smoke-test: load the real signatures.toml and verify the 10 built-in
+    /// Smoke-test: load the real signatures.toml and verify all built-in
     /// entries parse correctly.
     #[test]
     fn builtin_signatures_parse() {
         let toml = include_str!("../../../config/signatures.toml");
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.signatures.len(), 10, "expected 10 built-in signatures");
+        assert_eq!(cfg.signatures.len(), 21, "expected 21 built-in signatures");
 
         // Spot-check a few well-known magic sequences
         let jpeg = cfg

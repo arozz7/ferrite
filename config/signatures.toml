@@ -77,3 +77,80 @@ extension = "7z"
 header    = "37 7A BC AF 27 1C"
 footer    = ""
 max_size  = 524_288_000  # 500 MiB
+
+[[signature]]
+name      = "SQLite Database"
+extension = "db"
+header    = "53 51 4C 69 74 65 20 66 6F 72 6D 61 74 20 33 00"
+footer    = ""
+max_size  = 10_737_418_240  # 10 GiB
+
+[[signature]]
+name      = "WAV Audio (RIFF)"
+extension = "wav"
+header    = "52 49 46 46"
+footer    = ""
+max_size  = 2_147_483_648  # 2 GiB
+
+[[signature]]
+name      = "AVI Video (RIFF)"
+extension = "avi"
+header    = "52 49 46 46"
+footer    = ""
+max_size  = 4_294_967_296  # 4 GiB
+
+[[signature]]
+name      = "Matroska / MKV Video"
+extension = "mkv"
+header    = "1A 45 DF A3"
+footer    = ""
+max_size  = 42_949_672_960  # 40 GiB
+
+[[signature]]
+name      = "FLAC Audio"
+extension = "flac"
+header    = "66 4C 61 43"
+footer    = ""
+max_size  = 2_147_483_648  # 2 GiB
+
+[[signature]]
+name      = "Windows PE Executable"
+extension = "exe"
+header    = "4D 5A"
+footer    = ""
+max_size  = 524_288_000  # 500 MiB
+
+[[signature]]
+name      = "VMDK Disk Image"
+extension = "vmdk"
+header    = "4B 44 4D 56"
+footer    = ""
+max_size  = 107_374_182_400  # 100 GiB
+
+[[signature]]
+name      = "OGG Media"
+extension = "ogg"
+header    = "4F 67 67 53"
+footer    = ""
+max_size  = 4_294_967_296  # 4 GiB
+
+[[signature]]
+name      = "Windows Event Log"
+extension = "evtx"
+header    = "45 4C 46 49 4C 45 00"
+footer    = ""
+max_size  = 104_857_600  # 100 MiB
+
+[[signature]]
+name      = "Outlook PST/OST"
+extension = "pst"
+header    = "21 42 44 4E"
+footer    = ""
+max_size  = 21_474_836_480  # 20 GiB
+
+[[signature]]
+name      = "Email (EML)"
+extension = "eml"
+header    = "46 72 6F 6D 20"
+footer    = ""
+max_size  = 10_485_760  # 10 MiB

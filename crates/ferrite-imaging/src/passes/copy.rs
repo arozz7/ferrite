@@ -28,59 +28,122 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
     let mut buf = AlignedBuffer::new(block_size as usize, sector_size as usize);
 
     // Snapshot before iterating — update_range mutably borrows the mapfile.
-    let work: Vec<_> = engine
+    let mut work: Vec<_> = engine
         .mapfile
         .blocks_with_status(BlockStatus::NonTried)
         .collect();
 
+    if engine.config.reverse {
+        work.reverse();
+    }
+
     'region: for region in work {
-        let mut pos = region.pos;
+        if engine.config.reverse {
+            // Collect all chunk start positions then iterate end→start.
+            let mut positions: Vec<(u64, u64)> = Vec::new();
+            let mut p = region.pos;
+            while p < region.end() {
+                let remaining = region.end() - p;
+                let chunk = remaining.min(block_size);
+                positions.push((p, chunk));
+                p += chunk;
+            }
+            positions.reverse();
 
-        while pos < region.end() {
-            let remaining = region.end() - pos;
-            let chunk_size = remaining.min(block_size);
+            for (pos, chunk_size) in positions {
+                match engine.device.read_at(pos, &mut buf) {
+                    Ok(0) => {
+                        break 'region;
+                    }
+                    Ok(n) => {
+                        let to_write = n.min(chunk_size as usize);
 
-            match engine.device.read_at(pos, &mut buf) {
-                Ok(0) => {
-                    // Past end-of-device.
-                    break 'region;
+                        engine
+                            .output
+                            .seek(SeekFrom::Start(pos))
+                            .and_then(|_| engine.output.write_all(&buf.as_slice()[..to_write]))
+                            .map_err(|e| ImagingError::ImageWrite {
+                                offset: pos,
+                                source: e,
+                            })?;
+
+                        engine
+                            .mapfile
+                            .update_range(pos, to_write as u64, BlockStatus::Finished);
+
+                        debug!(
+                            offset = pos,
+                            bytes = to_write,
+                            "copy: chunk written (reverse)"
+                        );
+                    }
+                    Err(_) => {
+                        engine
+                            .mapfile
+                            .update_range(pos, chunk_size, BlockStatus::NonTrimmed);
+
+                        debug!(
+                            offset = pos,
+                            "copy: read error, marked NonTrimmed (reverse)"
+                        );
+                    }
                 }
-                Ok(n) => {
-                    // Use at most `chunk_size` bytes (buf may contain bytes past
-                    // the region end if chunk_size < block_size).
-                    let to_write = n.min(chunk_size as usize);
 
-                    engine
-                        .output
-                        .seek(SeekFrom::Start(pos))
-                        .and_then(|_| engine.output.write_all(&buf.as_slice()[..to_write]))
-                        .map_err(|e| ImagingError::ImageWrite {
-                            offset: pos,
-                            source: e,
-                        })?;
-
-                    engine
-                        .mapfile
-                        .update_range(pos, to_write as u64, BlockStatus::Finished);
-
-                    debug!(offset = pos, bytes = to_write, "copy: chunk written");
-                    pos += to_write as u64;
-                }
-                Err(_) => {
-                    // Record the failure and skip — do not propagate the error.
-                    engine
-                        .mapfile
-                        .update_range(pos, chunk_size, BlockStatus::NonTrimmed);
-
-                    debug!(offset = pos, "copy: read error, marked NonTrimmed");
-                    pos += chunk_size;
+                engine.maybe_save_mapfile()?;
+                let progress = engine.make_progress(ImagingPhase::Copy, pos);
+                if reporter.report(&progress) == Signal::Cancel {
+                    return Err(ImagingError::Cancelled);
                 }
             }
+        } else {
+            let mut pos = region.pos;
 
-            engine.maybe_save_mapfile()?;
-            let progress = engine.make_progress(ImagingPhase::Copy, pos);
-            if reporter.report(&progress) == Signal::Cancel {
-                return Err(ImagingError::Cancelled);
+            while pos < region.end() {
+                let remaining = region.end() - pos;
+                let chunk_size = remaining.min(block_size);
+
+                match engine.device.read_at(pos, &mut buf) {
+                    Ok(0) => {
+                        // Past end-of-device.
+                        break 'region;
+                    }
+                    Ok(n) => {
+                        // Use at most `chunk_size` bytes (buf may contain bytes past
+                        // the region end if chunk_size < block_size).
+                        let to_write = n.min(chunk_size as usize);
+
+                        engine
+                            .output
+                            .seek(SeekFrom::Start(pos))
+                            .and_then(|_| engine.output.write_all(&buf.as_slice()[..to_write]))
+                            .map_err(|e| ImagingError::ImageWrite {
+                                offset: pos,
+                                source: e,
+                            })?;
+
+                        engine
+                            .mapfile
+                            .update_range(pos, to_write as u64, BlockStatus::Finished);
+
+                        debug!(offset = pos, bytes = to_write, "copy: chunk written");
+                        pos += to_write as u64;
+                    }
+                    Err(_) => {
+                        // Record the failure and skip — do not propagate the error.
+                        engine
+                            .mapfile
+                            .update_range(pos, chunk_size, BlockStatus::NonTrimmed);
+
+                        debug!(offset = pos, "copy: read error, marked NonTrimmed");
+                        pos += chunk_size;
+                    }
+                }
+
+                engine.maybe_save_mapfile()?;
+                let progress = engine.make_progress(ImagingPhase::Copy, pos);
+                if reporter.report(&progress) == Signal::Cancel {
+                    return Err(ImagingError::Cancelled);
+                }
             }
         }
     }

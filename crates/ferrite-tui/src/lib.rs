@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod screens;
+pub mod session;
 
 pub use app::App;
 
