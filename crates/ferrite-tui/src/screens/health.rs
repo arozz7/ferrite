@@ -158,8 +158,24 @@ impl HealthState {
                 );
             }
             HealthStatus::Error(e) => {
+                let install_hint = if cfg!(target_os = "windows") {
+                    " • Run Ferrite as Administrator (right-click → Run as administrator)\n \
+                     \n \
+                     If smartctl is not installed:\n \
+                     • winget install smartmontools\n \
+                     • Or download from https://www.smartmontools.org/wiki/Download\n \
+                     • Ensure C:\\Program Files\\smartmontools\\bin is on your PATH."
+                } else {
+                    " Install via your package manager:\n \
+                     \n \
+                       Debian/Ubuntu:  sudo apt install smartmontools\n \
+                       Fedora/RHEL:    sudo dnf install smartmontools\n \
+                       Arch:           sudo pacman -S smartmontools\n \
+                     \n \
+                     You may also need to run Ferrite with sudo."
+                };
                 let msg = format!(
-                    " Error: {e}\n\n smartctl must be installed and on PATH.\n Press r to retry."
+                    " Error: {e}\n\n smartctl must be installed and on PATH.\n\n{install_hint}\n\n Press r to retry."
                 );
                 frame.render_widget(
                     Paragraph::new(msg)

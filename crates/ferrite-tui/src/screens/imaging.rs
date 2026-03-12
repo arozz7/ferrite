@@ -397,7 +397,7 @@ impl ImagingState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(9), // config fields
+                Constraint::Length(11), // config fields + hint
                 Constraint::Length(3), // progress bar
                 Constraint::Min(0),    // stats / messages
             ])
@@ -411,8 +411,10 @@ impl ImagingState {
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
+        } else if self.dest_path.is_empty() {
+            Style::default().fg(Color::Yellow)
         } else {
-            Style::default()
+            Style::default().fg(Color::Green)
         };
         let map_style = if editing_map {
             Style::default()
@@ -435,6 +437,8 @@ impl ImagingState {
                 Span::styled(
                     if editing_dest {
                         format!("{}█", self.dest_path)
+                    } else if self.dest_path.is_empty() {
+                        "(not set — press d)  e.g. D:\\recovery\\disk.img".into()
                     } else {
                         self.dest_path.clone()
                     },
@@ -525,6 +529,11 @@ impl ImagingState {
                 ),
                 Span::raw("  (r to toggle)"),
             ]),
+            Line::from(Span::styled(
+                " Dest is the output image file path, e.g. D:\\recovery\\disk.img  \
+                 Mapfile saves progress so imaging can resume after interruption.",
+                Style::default().fg(Color::DarkGray),
+            )),
         ];
         frame.render_widget(
             Paragraph::new(config_text).block(

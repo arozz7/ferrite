@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout},
@@ -82,7 +82,9 @@ impl App {
             terminal.draw(|f| self.render(f))?;
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
-                    self.handle_key(key.code, key.modifiers);
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_key(key.code, key.modifiers);
+                    }
                 }
             }
             self.tick();
@@ -149,6 +151,8 @@ impl App {
                     self.file_browser.set_device(Arc::clone(&dev));
                     self.carving.set_device(Arc::clone(&dev));
                     self.hex_viewer.set_device(dev);
+                    // Auto-advance to Health so the user sees S.M.A.R.T. results immediately.
+                    self.screen_idx = 1;
                 }
             }
             1 => self.health.handle_key(code, modifiers),
