@@ -1,0 +1,27 @@
+[package]
+name              = "ferrite-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferrite-core       = { workspace = true }
+ferrite-blockdev   = { workspace = true }
+ferrite-smart      = { workspace = true }
+ferrite-imaging    = { workspace = true }
+ferrite-partition  = { workspace = true }
+ferrite-filesystem = { workspace = true }
+ferrite-carver     = { workspace = true }
+ratatui            = { workspace = true }
+crossterm          = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+sha2               = { workspace = true }
+chrono             = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name        = "ferrite-imaging"
+description = "Multi-pass ddrescue-style disk imaging engine for Ferrite"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+ferrite-core     = { workspace = true }
+ferrite-blockdev = { workspace = true }
+thiserror        = { workspace = true }
+serde            = { workspace = true }
+tracing          = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

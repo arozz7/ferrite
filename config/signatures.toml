@@ -1,0 +1,215 @@
+# File carving signature database
+# Each [[signature]] entry defines a file type to search for during carving.
+#
+# Fields:
+#   name       = human-readable label
+#   extension  = output file extension
+#   header     = hex bytes of the file header (magic bytes), space-separated
+#   footer     = hex bytes of the file footer (optional, "" if none)
+#   max_size   = maximum file size in bytes (caps extraction window)
+
+[[signature]]
+name      = "JPEG Image"
+extension = "jpg"
+header    = "FF D8 FF"
+footer    = "FF D9"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "PNG Image"
+extension = "png"
+header    = "89 50 4E 47 0D 0A 1A 0A"
+footer    = "49 45 4E 44 AE 42 60 82"
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "PDF Document"
+extension = "pdf"
+header    = "25 50 44 46"
+footer    = "25 25 45 4F 46"
+max_size  = 104_857_600  # 100 MiB
+
+[[signature]]
+name      = "ZIP / Office (DOCX/XLSX/PPTX)"
+extension = "zip"
+header    = "50 4B 03 04"
+footer    = "50 4B 05 06"
+max_size  = 524_288_000  # 500 MiB
+
+[[signature]]
+name      = "GIF Image"
+extension = "gif"
+header    = "47 49 46 38"
+footer    = "00 3B"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name             = "BMP Image"
+extension        = "bmp"
+header           = "42 4D"
+footer           = ""
+max_size         = 52_428_800  # 50 MiB hard cap
+# The u32 at offset 2 is the total file size (no add needed)
+size_hint_offset = 2
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 0
+
+[[signature]]
+name      = "MP3 Audio"
+extension = "mp3"
+header    = "49 44 33"
+footer    = ""
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "MP4 Video"
+extension = "mp4"
+header    = "00 00 00 20 66 74 79 70"
+footer    = ""
+max_size  = 4_294_967_296  # 4 GiB
+
+[[signature]]
+name      = "RAR Archive"
+extension = "rar"
+header    = "52 61 72 21 1A 07"
+footer    = ""
+max_size  = 524_288_000  # 500 MiB
+
+[[signature]]
+name      = "7-Zip Archive"
+extension = "7z"
+header    = "37 7A BC AF 27 1C"
+footer    = ""
+max_size  = 524_288_000  # 500 MiB
+
+[[signature]]
+name      = "SQLite Database"
+extension = "db"
+header    = "53 51 4C 69 74 65 20 66 6F 72 6D 61 74 20 33 00"
+footer    = ""
+max_size  = 10_737_418_240  # 10 GiB
+
+[[signature]]
+name             = "WAV Audio (RIFF)"
+extension        = "wav"
+# RIFF + 4-byte size (wildcard) + "WAVE" subtype discriminator
+header           = "52 49 46 46 ?? ?? ?? ?? 57 41 56 45"
+footer           = ""
+max_size         = 2_147_483_648  # 2 GiB hard cap
+# The u32 at offset 4 is the payload size; total file = value + 8
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 8
+
+[[signature]]
+name             = "AVI Video (RIFF)"
+extension        = "avi"
+# RIFF + 4-byte size (wildcard) + "AVI " subtype discriminator
+header           = "52 49 46 46 ?? ?? ?? ?? 41 56 49 20"
+footer           = ""
+max_size         = 2_147_483_648  # 2 GiB hard cap
+# The u32 at offset 4 is the payload size; total file = value + 8
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 8
+
+[[signature]]
+name      = "Matroska / MKV Video"
+extension = "mkv"
+header    = "1A 45 DF A3"
+footer    = ""
+max_size  = 42_949_672_960  # 40 GiB
+
+[[signature]]
+name      = "FLAC Audio"
+extension = "flac"
+header    = "66 4C 61 43"
+footer    = ""
+max_size  = 2_147_483_648  # 2 GiB
+
+[[signature]]
+name      = "Windows PE Executable"
+extension = "exe"
+header    = "4D 5A"
+footer    = ""
+max_size  = 524_288_000  # 500 MiB
+
+[[signature]]
+name      = "VMDK Disk Image"
+extension = "vmdk"
+header    = "4B 44 4D 56"
+footer    = ""
+max_size  = 107_374_182_400  # 100 GiB
+
+[[signature]]
+name      = "OGG Media"
+extension = "ogg"
+header    = "4F 67 67 53"
+footer    = ""
+max_size  = 4_294_967_296  # 4 GiB
+
+[[signature]]
+name      = "Windows Event Log"
+extension = "evtx"
+header    = "45 4C 46 49 4C 45 00"
+footer    = ""
+max_size  = 104_857_600  # 100 MiB
+
+[[signature]]
+name      = "Outlook PST/OST"
+extension = "pst"
+header    = "21 42 44 4E"
+footer    = ""
+max_size  = 21_474_836_480  # 20 GiB
+
+[[signature]]
+name      = "Email (EML)"
+extension = "eml"
+header    = "46 72 6F 6D 20"
+footer    = ""
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "XML Document"
+extension = "xml"
+header    = "3C 3F 78 6D 6C"
+footer    = ""
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "HTML Document"
+extension = "html"
+header    = "3C 21 44 4F 43 54 59 50 45"
+footer    = "3C 2F 68 74 6D 6C 3E"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "RTF Document"
+extension = "rtf"
+header    = "7B 5C 72 74 66 31"
+footer    = ""
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "vCard Contact"
+extension = "vcf"
+header    = "42 45 47 49 4E 3A 56 43 41 52 44"
+footer    = "45 4E 44 3A 56 43 41 52 44"
+max_size  = 1_048_576  # 1 MiB
+
+[[signature]]
+name      = "iCalendar"
+extension = "ics"
+header    = "42 45 47 49 4E 3A 56 43 41 4C 45 4E 44 41 52"
+footer    = "45 4E 44 3A 56 43 41 4C 45 4E 44 41 52"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "OLE2 Compound (DOC/XLS/PPT)"
+extension = "ole"
+header    = "D0 CF 11 E0 A1 B1 1A E1"
+footer    = ""
+max_size  = 524_288_000  # 500 MiB

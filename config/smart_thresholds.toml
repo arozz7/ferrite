@@ -1,0 +1,36 @@
+# S.M.A.R.T. attribute thresholds for drive health assessment.
+# Verdict levels: "healthy" | "warning" | "critical"
+#
+# critical  → block imaging (drive may fail mid-run)
+# warning   → proceed with caution, notify user
+# healthy   → all clear
+
+[temperature]
+# Celsius — applies to both HDD and SSD
+warning_c  = 50
+critical_c = 60
+
+# Reallocated sector count (SMART ID 5)
+[reallocated_sectors]
+warning_count  = 1    # any reallocation is a warning
+critical_count = 50
+
+# Current pending sector count (SMART ID 197)
+# Sectors waiting to be reallocated — read errors in progress
+[pending_sectors]
+warning_count  = 1
+critical_count = 10
+
+# Uncorrectable sector count (SMART ID 198)
+[uncorrectable_sectors]
+warning_count  = 1
+critical_count = 5
+
+# Spin-up time (SMART ID 3) — HDD only, milliseconds
+[spin_up_time_ms]
+warning_ms  = 10_000
+critical_ms = 20_000
+
+# Power-on hours (informational, not used for verdict)
+[power_on_hours]
+note = "informational only"
