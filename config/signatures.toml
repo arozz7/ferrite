@@ -154,3 +154,45 @@ extension = "eml"
 header    = "46 72 6F 6D 20"
 footer    = ""
 max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "XML Document"
+extension = "xml"
+header    = "3C 3F 78 6D 6C"
+footer    = ""
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "HTML Document"
+extension = "html"
+header    = "3C 21 44 4F 43 54 59 50 45"
+footer    = "3C 2F 68 74 6D 6C 3E"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "RTF Document"
+extension = "rtf"
+header    = "7B 5C 72 74 66 31"
+footer    = ""
+max_size  = 52_428_800  # 50 MiB
+
+[[signature]]
+name      = "vCard Contact"
+extension = "vcf"
+header    = "42 45 47 49 4E 3A 56 43 41 52 44"
+footer    = "45 4E 44 3A 56 43 41 52 44"
+max_size  = 1_048_576  # 1 MiB
+
+[[signature]]
+name      = "iCalendar"
+extension = "ics"
+header    = "42 45 47 49 4E 3A 56 43 41 4C 45 4E 44 41 52"
+footer    = "45 4E 44 3A 56 43 41 4C 45 4E 44 41 52"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "OLE2 Compound (DOC/XLS/PPT)"
+extension = "ole"
+header    = "D0 CF 11 E0 A1 B1 1A E1"
+footer    = ""
+max_size  = 524_288_000  # 500 MiB

@@ -6,6 +6,7 @@
 //! sliding window to handle footers that span chunk boundaries.
 
 use std::io::Write;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use memchr::memmem;
@@ -26,6 +27,17 @@ pub struct CarveHit {
     pub byte_offset: u64,
     /// The signature that matched.
     pub signature: Signature,
+}
+
+/// Periodic progress update emitted by [`Carver::scan_with_progress`].
+#[derive(Debug, Clone)]
+pub struct ScanProgress {
+    /// Bytes scanned so far.
+    pub bytes_scanned: u64,
+    /// Total device size in bytes.
+    pub device_size: u64,
+    /// Number of hits found so far (before deduplication).
+    pub hits_found: usize,
 }
 
 /// Signature-based file carving engine.
@@ -51,11 +63,36 @@ impl Carver {
 
     /// Scan the entire device and return all detected file-carving hits,
     /// sorted by byte offset.
-    ///
-    /// The device is read in `config.scan_chunk_size` increments.  An overlap
-    /// region of `max(header_len) - 1` bytes is appended to each chunk so
-    /// that headers straddling chunk boundaries are never missed.
     pub fn scan(&self) -> Result<Vec<CarveHit>> {
+        self.scan_inner(None)
+    }
+
+    /// Same as [`scan`] but sends a [`ScanProgress`] update after each chunk
+    /// and respects cancel/pause signals.
+    ///
+    /// - If `cancel` is set the scan stops between chunks and returns whatever
+    ///   hits have been found so far (partial results, not an error).
+    /// - If `pause` is set the scan spin-waits between chunks until cleared.
+    ///
+    /// Progress updates are best-effort (`try_send`) — a full channel does not
+    /// stall the scan.
+    pub fn scan_with_progress(
+        &self,
+        tx: &std::sync::mpsc::SyncSender<ScanProgress>,
+        cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        pause: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Vec<CarveHit>> {
+        self.scan_inner(Some((tx, cancel, pause)))
+    }
+
+    fn scan_inner(
+        &self,
+        progress: Option<(
+            &std::sync::mpsc::SyncSender<ScanProgress>,
+            &std::sync::Arc<std::sync::atomic::AtomicBool>,
+            &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        )>,
+    ) -> Result<Vec<CarveHit>> {
         let device_size = self.device.size();
         if device_size == 0 || self.config.signatures.is_empty() {
             return Ok(vec![]);
@@ -114,6 +151,26 @@ impl Carver {
 
             all_hits.extend(chunk_hits);
             offset += chunk_size as u64;
+
+            if let Some((tx, cancel, pause)) = &progress {
+                let _ = tx.try_send(ScanProgress {
+                    bytes_scanned: offset.min(device_size),
+                    device_size,
+                    hits_found: all_hits.len(),
+                });
+                // Spin-wait while paused; yield to avoid busy-looping.
+                while pause.load(Ordering::Relaxed) {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+                // Honour cancel — return partial hits, not an error.
+                if cancel.load(Ordering::Relaxed) {
+                    all_hits.sort_by_key(|h| h.byte_offset);
+                    return Ok(all_hits);
+                }
+            }
         }
 
         all_hits.sort_by_key(|h| h.byte_offset);

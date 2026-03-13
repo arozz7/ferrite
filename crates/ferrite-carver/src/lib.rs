@@ -26,7 +26,7 @@ mod scanner;
 mod signature;
 
 pub use error::{CarveError, Result};
-pub use scanner::{CarveHit, Carver};
+pub use scanner::{CarveHit, Carver, ScanProgress};
 pub use signature::{parse_hex, CarvingConfig, Signature};
 
 #[cfg(test)]
@@ -43,7 +43,7 @@ mod tests {
     fn builtin_signatures_parse() {
         let toml = include_str!("../../../config/signatures.toml");
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.signatures.len(), 21, "expected 21 built-in signatures");
+        assert_eq!(cfg.signatures.len(), 27, "expected 27 built-in signatures");
 
         // Spot-check a few well-known magic sequences
         let jpeg = cfg

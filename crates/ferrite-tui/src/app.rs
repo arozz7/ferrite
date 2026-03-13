@@ -110,10 +110,12 @@ impl App {
         match (code, modifiers) {
             (KeyCode::Tab, _) => {
                 self.screen_idx = (self.screen_idx + 1) % SCREEN_NAMES.len();
+                self.on_screen_enter();
                 return;
             }
             (KeyCode::BackTab, _) => {
                 self.screen_idx = (self.screen_idx + SCREEN_NAMES.len() - 1) % SCREEN_NAMES.len();
+                self.on_screen_enter();
                 return;
             }
             _ => {}
@@ -130,6 +132,7 @@ impl App {
         if code == KeyCode::Char('q') && modifiers.is_empty() {
             let in_edit = match self.screen_idx {
                 2 => self.imaging.is_editing(),
+                5 => self.carving.is_editing(),
                 6 => self.hex_viewer.editing,
                 _ => false,
             };
@@ -153,6 +156,7 @@ impl App {
                     self.hex_viewer.set_device(dev);
                     // Auto-advance to Health so the user sees S.M.A.R.T. results immediately.
                     self.screen_idx = 1;
+                    self.on_screen_enter();
                 }
             }
             1 => self.health.handle_key(code, modifiers),
@@ -201,6 +205,14 @@ impl App {
         self.partition.tick();
         self.file_browser.tick();
         self.carving.tick();
+    }
+
+    /// Called whenever the active screen changes so screens can react on entry.
+    fn on_screen_enter(&mut self) {
+        if self.screen_idx == 5 {
+            // Suggest a carved-files directory based on the imaging destination.
+            self.carving.suggest_output_dir(&self.imaging.dest_path);
+        }
     }
 
     // ── Rendering ────────────────────────────────────────────────────────────
@@ -274,7 +286,7 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
         2 => " d: dest  m: mapfile  l: start LBA  e: end LBA  b: block size  r: reverse  s: start  c: cancel  Esc: stop edit  Tab: next  q: quit",
         3 => " r: read partition table  s: scan device  w: export  Tab: next  q: quit  R: report",
         4 => " ↑/↓: navigate  Enter: open dir  Backspace: go up  d: toggle deleted  o: open fs  Tab: next  q: quit",
-        5 => " ↑/↓: navigate  Space: toggle sig  s: start scan  e: extract  Tab: next  q: quit  R: report",
+        5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  Tab: next  q: quit",
         6 => " ↑/↓: prev/next sector  g: jump to LBA  Tab: next  q: quit",
         _ => " Tab: next  q: quit",
     }
