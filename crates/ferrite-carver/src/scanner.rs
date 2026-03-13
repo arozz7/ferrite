@@ -16,7 +16,7 @@ use tracing::{trace, warn};
 use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 
 use crate::error::{CarveError, Result};
-use crate::signature::{CarvingConfig, Signature};
+use crate::signature::{CarvingConfig, Signature, SizeHint};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -197,7 +197,18 @@ impl Carver {
             return Ok(0);
         }
 
-        let max_end = (hit.byte_offset + sig.max_size).min(device_size);
+        // If the signature carries a size hint, read the true file length from
+        // the embedded field.  Fall back to max_size if the read fails or the
+        // parsed value exceeds max_size (corrupt / stale data).
+        let extraction_size = if let Some(hint) = &sig.size_hint {
+            read_size_hint(self.device.as_ref(), hit.byte_offset, hint)
+                .unwrap_or(sig.max_size)
+                .min(sig.max_size)
+        } else {
+            sig.max_size
+        };
+
+        let max_end = (hit.byte_offset + extraction_size).min(device_size);
 
         if sig.footer.is_empty() {
             stream_bytes(self.device.as_ref(), hit.byte_offset, max_end, writer)
@@ -217,8 +228,8 @@ impl Carver {
 
 /// Return all positions within `data[..report_end]` where `sig.header` begins.
 ///
-/// Uses [`memchr`] for fast single-byte scanning followed by a full-header
-/// equality check.
+/// Uses [`memchr`] on the first fixed (non-wildcard) byte for fast scanning,
+/// then verifies the full pattern including `??` wildcard positions.
 fn find_all(
     sig: &Signature,
     data: &[u8],
@@ -230,31 +241,61 @@ fn find_all(
         return vec![];
     }
 
+    // Find the first fixed byte to use as the memchr anchor.
+    let Some((anchor_idx, anchor_byte)) = header
+        .iter()
+        .enumerate()
+        .find_map(|(i, b)| b.map(|byte| (i, byte)))
+    else {
+        return vec![]; // all-wildcard header — refuse to match everything
+    };
+
     let report_end = report_end.min(data.len());
-    let first_byte = header[0];
     let mut hits = Vec::new();
-    let mut search_start = 0usize;
+    // Search window starts at anchor_idx so we can back-compute the header start.
+    let mut search_start = anchor_idx;
 
     loop {
-        if search_start >= report_end {
+        if search_start >= report_end + anchor_idx {
             break;
         }
-        let window = &data[search_start..report_end];
-        let Some(rel) = memchr::memchr(first_byte, window) else {
+        let scan_end = (report_end + anchor_idx).min(data.len());
+        let window = &data[search_start..scan_end];
+        let Some(rel) = memchr::memchr(anchor_byte, window) else {
             break;
         };
-        let pos = search_start + rel;
+        // Position of the anchor byte in data[].
+        let anchor_pos = search_start + rel;
+        // Position where the header would start.
+        let pos = anchor_pos.saturating_sub(anchor_idx);
 
-        if data.get(pos..pos + header.len()) == Some(header.as_slice()) {
+        if pos + header.len() <= data.len()
+            && pos < report_end
+            && header_matches(header, data, pos)
+        {
             hits.push(CarveHit {
                 byte_offset: chunk_abs_offset + pos as u64,
                 signature: sig.clone(),
             });
         }
-        search_start = pos + 1;
+        search_start = anchor_pos + 1;
     }
 
     hits
+}
+
+/// Check whether `header` matches `data` starting at `pos`.
+///
+/// `None` entries in `header` are wildcards and match any byte.
+#[inline]
+fn header_matches(header: &[Option<u8>], data: &[u8], pos: usize) -> bool {
+    header
+        .iter()
+        .enumerate()
+        .all(|(i, opt)| match opt {
+            None => true,
+            Some(b) => data.get(pos + i) == Some(b),
+        })
 }
 
 // ── Streaming helpers ─────────────────────────────────────────────────────────
@@ -358,6 +399,48 @@ fn stream_until_footer(
     Ok(written)
 }
 
+// ── Size hint reader ──────────────────────────────────────────────────────────
+
+/// Read an embedded size field from the device and return the total file size
+/// it implies (`parsed_value + hint.add`).
+///
+/// Returns `None` if the field cannot be read or has an unsupported width.
+fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -> Option<u64> {
+    let field_offset = file_offset + hint.offset as u64;
+    let bytes = read_bytes_clamped(device, field_offset, hint.len as usize).ok()?;
+    if bytes.len() < hint.len as usize {
+        return None;
+    }
+    let value: u64 = match hint.len {
+        2 => {
+            let arr: [u8; 2] = bytes[..2].try_into().ok()?;
+            if hint.little_endian {
+                u16::from_le_bytes(arr) as u64
+            } else {
+                u16::from_be_bytes(arr) as u64
+            }
+        }
+        4 => {
+            let arr: [u8; 4] = bytes[..4].try_into().ok()?;
+            if hint.little_endian {
+                u32::from_le_bytes(arr) as u64
+            } else {
+                u32::from_be_bytes(arr) as u64
+            }
+        }
+        8 => {
+            let arr: [u8; 8] = bytes[..8].try_into().ok()?;
+            if hint.little_endian {
+                u64::from_le_bytes(arr)
+            } else {
+                u64::from_be_bytes(arr)
+            }
+        }
+        _ => return None,
+    };
+    Some(value.saturating_add(hint.add))
+}
+
 // ── I/O helper ────────────────────────────────────────────────────────────────
 
 /// Read up to `len` bytes starting at `offset`, clamped to device bounds.
@@ -410,9 +493,10 @@ mod tests {
         Signature {
             name: "Test".into(),
             extension: "bin".into(),
-            header: header.to_vec(),
+            header: header.iter().map(|&b| Some(b)).collect(),
             footer: footer.to_vec(),
             max_size,
+            size_hint: None,
         }
     }
 
@@ -624,6 +708,91 @@ mod tests {
         let expected_len = boundary + 1; // up to and including second footer byte
         assert_eq!(written as usize, expected_len);
         assert_eq!(out[boundary - 1..=boundary], footer);
+    }
+
+    #[test]
+    fn scan_wildcard_header_matches_riff_subtypes() {
+        // Simulate two RIFF files: an AVI and a WAV.
+        // AVI: RIFF????AVI  (41 56 49 20)
+        // WAV: RIFF????WAVE (57 41 56 45)
+        let mut data = vec![0u8; 2048];
+        // AVI at offset 0: RIFF + size(u32le=100) + "AVI "
+        data[0..4].copy_from_slice(b"RIFF");
+        data[4..8].copy_from_slice(&100u32.to_le_bytes());
+        data[8..12].copy_from_slice(b"AVI ");
+        // WAV at offset 512: RIFF + size(u32le=200) + "WAVE"
+        data[512..516].copy_from_slice(b"RIFF");
+        data[516..520].copy_from_slice(&200u32.to_le_bytes());
+        data[520..524].copy_from_slice(b"WAVE");
+
+        let dev = device_from(data);
+
+        // AVI signature with wildcard bytes at positions 4-7.
+        let avi_sig = Signature {
+            name: "AVI".into(),
+            extension: "avi".into(),
+            header: vec![
+                Some(0x52), Some(0x49), Some(0x46), Some(0x46), // RIFF
+                None, None, None, None,                          // size (wildcard)
+                Some(0x41), Some(0x56), Some(0x49), Some(0x20), // AVI<space>
+            ],
+            footer: vec![],
+            max_size: 2_147_483_648,
+            size_hint: None,
+        };
+        let wav_sig = Signature {
+            name: "WAV".into(),
+            extension: "wav".into(),
+            header: vec![
+                Some(0x52), Some(0x49), Some(0x46), Some(0x46), // RIFF
+                None, None, None, None,                          // size (wildcard)
+                Some(0x57), Some(0x41), Some(0x56), Some(0x45), // WAVE
+            ],
+            footer: vec![],
+            max_size: 2_147_483_648,
+            size_hint: None,
+        };
+        let cfg = CarvingConfig { signatures: vec![avi_sig, wav_sig], scan_chunk_size: 1024 };
+        let hits = Carver::new(dev, cfg).scan().unwrap();
+
+        assert_eq!(hits.len(), 2, "expected AVI + WAV hits, got: {hits:?}");
+        assert_eq!(hits[0].byte_offset, 0);
+        assert_eq!(hits[0].signature.extension, "avi");
+        assert_eq!(hits[1].byte_offset, 512);
+        assert_eq!(hits[1].signature.extension, "wav");
+    }
+
+    #[test]
+    fn extract_size_hint_limits_output() {
+        // Build a fake RIFF-like file: header says 100 bytes of content.
+        // Total file size = 100 + 8 = 108 bytes.
+        // Device is padded to 4096; extractor must stop at 108, not max_size.
+        let mut data = vec![0xAAu8; 4096];
+        data[0..4].copy_from_slice(b"RIFF");
+        data[4..8].copy_from_slice(&100u32.to_le_bytes()); // payload = 100 bytes
+        data[8..12].copy_from_slice(b"AVI ");
+
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "AVI".into(),
+            extension: "avi".into(),
+            header: vec![Some(0x52), Some(0x49), Some(0x46), Some(0x46)],
+            footer: vec![],
+            max_size: 2_147_483_648,
+            size_hint: Some(crate::signature::SizeHint {
+                offset: 4,
+                len: 4,
+                little_endian: true,
+                add: 8,
+            }),
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        assert_eq!(written, 108, "size_hint should limit extraction to 108 bytes, got {written}");
     }
 
     #[test]

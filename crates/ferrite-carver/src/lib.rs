@@ -51,7 +51,10 @@ mod tests {
             .iter()
             .find(|s| s.extension == "jpg")
             .unwrap();
-        assert_eq!(jpeg.header, &[0xFF, 0xD8, 0xFF]);
+        assert_eq!(
+            jpeg.header,
+            &[Some(0xFF), Some(0xD8), Some(0xFF)]
+        );
         assert_eq!(jpeg.footer, &[0xFF, 0xD9]);
 
         let png = cfg
@@ -61,11 +64,26 @@ mod tests {
             .unwrap();
         assert_eq!(
             png.header,
-            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+            &[
+                Some(0x89), Some(0x50), Some(0x4E), Some(0x47),
+                Some(0x0D), Some(0x0A), Some(0x1A), Some(0x0A)
+            ]
         );
 
         let sevenz = cfg.signatures.iter().find(|s| s.extension == "7z").unwrap();
-        assert_eq!(sevenz.header, &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]);
+        assert_eq!(
+            sevenz.header,
+            &[Some(0x37), Some(0x7A), Some(0xBC), Some(0xAF), Some(0x27), Some(0x1C)]
+        );
+
+        // AVI and WAV must have wildcard bytes at positions 4-7 (the RIFF size field).
+        let avi = cfg.signatures.iter().find(|s| s.extension == "avi").unwrap();
+        assert_eq!(avi.header[4], None, "AVI header byte 4 should be wildcard");
+        assert!(avi.size_hint.is_some(), "AVI should have a size_hint");
+
+        let wav = cfg.signatures.iter().find(|s| s.extension == "wav").unwrap();
+        assert_eq!(wav.header[4], None, "WAV header byte 4 should be wildcard");
+        assert!(wav.size_hint.is_some(), "WAV should have a size_hint");
     }
 
     /// End-to-end test: embed a JPEG and PNG marker in a small device image,

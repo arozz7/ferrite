@@ -1199,9 +1199,10 @@ mod tests {
         let sig = Signature {
             name: "Test".to_string(),
             extension: "tst".to_string(),
-            header: vec![0xFF],
+            header: vec![Some(0xFF)],
             footer: vec![],
             max_size: 1024,
+            size_hint: None,
         };
         let hit = CarveHit {
             byte_offset: 0,
@@ -1238,9 +1239,10 @@ mod tests {
         let sig = Signature {
             name: "JPEG".to_string(),
             extension: "jpg".to_string(),
-            header: vec![0xFF, 0xD8, 0xFF],
+            header: vec![Some(0xFF), Some(0xD8), Some(0xFF)],
             footer: vec![0xFF, 0xD9],
             max_size: 10 * 1024 * 1024,
+            size_hint: None,
         };
         let hits = vec![
             CarveHit {
