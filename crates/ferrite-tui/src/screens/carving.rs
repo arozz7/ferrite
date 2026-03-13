@@ -2,6 +2,7 @@
 //! with live progress, then extract hits to disk.
 
 use std::collections::{HashMap, VecDeque};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -41,7 +42,13 @@ enum CarveMsg {
         total_bytes: u64,
         last_name: String,
     },
-    ExtractionDone,
+    ExtractionDone {
+        succeeded: usize,
+        truncated: usize,
+        failed: usize,
+        total_bytes: u64,
+        elapsed_secs: f64,
+    },
     Error(String),
 }
 
@@ -52,6 +59,15 @@ struct ExtractProgress {
     total_bytes: u64,
     last_name: String,
     start: Instant,
+}
+
+/// Summary shown after a bulk extraction completes.
+struct ExtractionSummary {
+    succeeded: usize,
+    truncated: usize,
+    failed: usize,
+    total_bytes: u64,
+    elapsed_secs: f64,
 }
 
 #[derive(PartialEq)]
@@ -128,6 +144,8 @@ pub struct CarvingState {
     extract_progress: Option<ExtractProgress>,
     /// Set to true to abort a running bulk extraction.
     extract_cancel: Arc<AtomicBool>,
+    /// Summary metrics shown after a bulk extraction completes.
+    extract_summary: Option<ExtractionSummary>,
     /// Byte-offset → original filename index, built in background after scan.
     meta_index: Option<Arc<MetadataIndex>>,
     /// `true` while the metadata index is being built in the background.
@@ -161,6 +179,7 @@ impl CarvingState {
             editing_dir: false,
             extract_progress: None,
             extract_cancel: Arc::new(AtomicBool::new(false)),
+            extract_summary: None,
             meta_index: None,
             meta_index_building: false,
         }
@@ -200,6 +219,7 @@ impl CarvingState {
         self.pause.store(false, Ordering::Relaxed);
         self.extract_cancel.store(false, Ordering::Relaxed);
         self.extract_progress = None;
+        self.extract_summary = None;
         self.rx = None;
         self.tx = None;
         self.meta_index = None;
@@ -275,9 +295,27 @@ impl CarvingState {
                         p.last_name = last_name;
                     }
                 }
-                Ok(CarveMsg::ExtractionDone) => {
+                Ok(CarveMsg::ExtractionDone {
+                    succeeded,
+                    truncated,
+                    failed,
+                    total_bytes,
+                    elapsed_secs,
+                }) => {
                     self.extract_progress = None;
                     self.extract_cancel.store(false, Ordering::Relaxed);
+                    // Clear pause flag in case extraction finished while paused.
+                    self.pause.store(false, Ordering::Relaxed);
+                    // Only show summary when at least one file was attempted.
+                    if succeeded + truncated + failed > 0 {
+                        self.extract_summary = Some(ExtractionSummary {
+                            succeeded,
+                            truncated,
+                            failed,
+                            total_bytes,
+                            elapsed_secs,
+                        });
+                    }
                 }
                 Ok(CarveMsg::Error(e)) => {
                     self.status = CarveStatus::Error(e);
@@ -334,6 +372,9 @@ impl CarvingState {
                 } else {
                     self.cancel_scan();
                 }
+            }
+            KeyCode::Char('d') => {
+                self.extract_summary = None;
             }
             KeyCode::Char('e') => self.extract_selected(),
             KeyCode::Char('E') => self.extract_all_selected(),
@@ -441,6 +482,12 @@ impl CarvingState {
     }
 
     fn toggle_pause(&mut self) {
+        // During active extraction the scan is already Done — handle separately.
+        if self.extract_progress.is_some() {
+            let current = self.pause.load(Ordering::Relaxed);
+            self.pause.store(!current, Ordering::Relaxed);
+            return;
+        }
         match self.status {
             CarveStatus::Running => {
                 self.pause.store(true, Ordering::Relaxed);
@@ -613,7 +660,10 @@ impl CarvingState {
         }
 
         self.extract_cancel.store(false, Ordering::Relaxed);
+        self.pause.store(false, Ordering::Relaxed);
+        self.extract_summary = None;
         let cancel = Arc::clone(&self.extract_cancel);
+        let pause = Arc::clone(&self.pause);
 
         self.extract_progress = Some(ExtractProgress {
             done: 0,
@@ -639,9 +689,16 @@ impl CarvingState {
         // progress to the TUI.  Workers communicate back via a private channel so
         // the coordinator can sequence progress messages without races.
         std::thread::spawn(move || {
+            let extract_start = Instant::now();
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 tracing::warn!(dir = %dir, error = %e, "failed to create output directory");
-                let _ = tx.send(CarveMsg::ExtractionDone);
+                let _ = tx.send(CarveMsg::ExtractionDone {
+                    succeeded: 0,
+                    truncated: 0,
+                    failed: 0,
+                    total_bytes: 0,
+                    elapsed_secs: extract_start.elapsed().as_secs_f64(),
+                });
                 return;
             }
 
@@ -656,26 +713,35 @@ impl CarvingState {
                 let device = Arc::clone(&device);
                 let done_tx = done_tx.clone();
                 let cancel = Arc::clone(&cancel);
+                let pause = Arc::clone(&pause);
 
                 std::thread::spawn(move || loop {
+                    // Honour pause between extractions; bail immediately on cancel.
+                    while pause.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let item = queue.lock().unwrap().pop_front();
                     let (idx, hit, path) = match item {
                         None => break,
                         Some(i) => i,
                     };
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
                     let _ = done_tx.send(WorkerMsg::Started { idx });
                     let config = CarvingConfig {
                         signatures: vec![hit.signature.clone()],
                         scan_chunk_size: 1024 * 1024,
                     };
                     let carver = Carver::new(Arc::clone(&device), config);
+                    // CancelWriter propagates the cancel flag into every write() call
+                    // so large-file extractions stop at the next chunk boundary rather
+                    // than running to completion before the flag is noticed.
                     let result = std::fs::File::create(&path)
                         .map_err(|e| e.to_string())
-                        .and_then(|mut f| {
-                            carver.extract(&hit, &mut f).map_err(|e| e.to_string())
+                        .and_then(|f| {
+                            let mut writer = CancelWriter { inner: f, cancel: Arc::clone(&cancel) };
+                            carver.extract(&hit, &mut writer).map_err(|e| e.to_string())
                         });
                     let _ = done_tx.send(WorkerMsg::Completed { idx, hit, path, result });
                 });
@@ -684,6 +750,9 @@ impl CarvingState {
             drop(done_tx);
 
             let mut completed = 0usize;
+            let mut succeeded = 0usize;
+            let mut truncated_count = 0usize;
+            let mut failed = 0usize;
             let mut total_bytes = 0u64;
             let mut last_name = String::new();
 
@@ -699,6 +768,11 @@ impl CarvingState {
                                 let truncated = !hit.signature.footer.is_empty()
                                     && bytes >= hit.signature.max_size;
                                 total_bytes += bytes;
+                                if truncated {
+                                    truncated_count += 1;
+                                } else {
+                                    succeeded += 1;
+                                }
                                 last_name = std::path::Path::new(&path)
                                     .file_name()
                                     .and_then(|n| n.to_str())
@@ -708,7 +782,13 @@ impl CarvingState {
                                 let _ = tx.send(CarveMsg::Extracted { idx, bytes, truncated });
                             }
                             Err(e) => {
-                                tracing::warn!(path = %path, error = %e, "extraction failed");
+                                // Cancelled mid-write is expected — don't count as failure.
+                                if e.contains("cancelled") {
+                                    tracing::debug!(path = %path, "extraction cancelled");
+                                } else {
+                                    failed += 1;
+                                    tracing::warn!(path = %path, error = %e, "extraction failed");
+                                }
                             }
                         }
                         let _ = tx.send(CarveMsg::ExtractionProgress {
@@ -720,7 +800,13 @@ impl CarvingState {
                     }
                 }
             }
-            let _ = tx.send(CarveMsg::ExtractionDone);
+            let _ = tx.send(CarveMsg::ExtractionDone {
+                succeeded,
+                truncated: truncated_count,
+                failed,
+                total_bytes,
+                elapsed_secs: extract_start.elapsed().as_secs_f64(),
+            });
         });
     }
 
@@ -846,7 +932,7 @@ impl CarvingState {
             .filter(|e| matches!(e.status, HitStatus::Ok { .. } | HitStatus::Truncated { .. }))
             .count();
         let title_str = if self.extract_progress.is_some() {
-            format!(" Hits ({hit_count})  {done_count} extracted — c: cancel extraction ")
+            format!(" Hits ({hit_count})  {done_count} extracted — p: pause  c: cancel ")
         } else if sel_count > 0 {
             format!(" Hits ({hit_count})  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected ")
         } else {
@@ -885,6 +971,13 @@ impl CarvingState {
                 .constraints([Constraint::Length(4), Constraint::Min(0)])
                 .split(inner);
             self.render_extract_progress(frame, rows[0], ep);
+            rows[1]
+        } else if let Some(summary) = &self.extract_summary {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(0)])
+                .split(inner);
+            self.render_extraction_summary(frame, rows[0], summary);
             rows[1]
         } else {
             inner
@@ -956,19 +1049,30 @@ impl CarvingState {
         let spin = SPINNER[(ep.start.elapsed().as_millis() / 100) as usize % SPINNER.len()];
 
         let cancelling = self.extract_cancel.load(Ordering::Relaxed);
+        let paused = self.pause.load(Ordering::Relaxed);
         let label = if cancelling {
             format!("Cancelling… {}/{}", ep.done, ep.total)
+        } else if paused {
+            format!("⏸ PAUSED  {}/{}", ep.done, ep.total)
         } else if ep.last_name.is_empty() {
             format!("{spin} Starting…  0/{}", ep.total)
         } else {
             format!("{spin} {}/{} — {}", ep.done, ep.total, ep.last_name)
         };
 
-        let gauge_color = if cancelling { Color::Red } else { Color::Cyan };
+        let gauge_color = if cancelling {
+            Color::Red
+        } else if paused {
+            Color::Yellow
+        } else {
+            Color::Cyan
+        };
         let bar_title = if cancelling {
             " Extracting [cancelling…] "
+        } else if paused {
+            " Extracting [PAUSED — p to resume] "
         } else {
-            " Extracting (c to cancel) "
+            " Extracting (p: pause  c: cancel) "
         };
         let gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL).title(bar_title))
@@ -1017,6 +1121,84 @@ impl CarvingState {
         frame.render_widget(
             Paragraph::new(stats).style(Style::default().fg(Color::DarkGray)),
             chunks[1],
+        );
+    }
+
+    fn render_extraction_summary(&self, frame: &mut Frame, area: Rect, s: &ExtractionSummary) {
+        use ratatui::text::Line;
+
+        let elapsed = s.elapsed_secs;
+        let rate_str = if elapsed > 0.0 && s.total_bytes > 0 {
+            let bps = s.total_bytes as f64 / elapsed;
+            format!("{:.1} MB/s avg", bps / (1024.0 * 1024.0))
+        } else {
+            String::new()
+        };
+        let elapsed_secs = elapsed as u64;
+        let elapsed_str = format!(
+            "{:02}:{:02}:{:02}",
+            elapsed_secs / 3600,
+            (elapsed_secs % 3600) / 60,
+            elapsed_secs % 60,
+        );
+
+        let ok_span = Span::styled(
+            format!("  ✓ {} extracted", s.succeeded),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        );
+        let trunc_span = if s.truncated > 0 {
+            Span::styled(
+                format!("   ⚠ {} truncated", s.truncated),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
+        let fail_span = if s.failed > 0 {
+            Span::styled(
+                format!("   ✗ {} failed", s.failed),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
+        let meta_span = Span::styled(
+            format!(
+                "   │  {}  │  {}{}",
+                fmt_bytes(s.total_bytes),
+                elapsed_str,
+                if rate_str.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {rate_str}")
+                }
+            ),
+            Style::default().fg(Color::DarkGray),
+        );
+        let dismiss_span = Span::styled(
+            "   (d to dismiss)",
+            Style::default().fg(Color::DarkGray),
+        );
+
+        let title_style = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" Extraction Complete ", title_style))
+            .border_style(Style::default().fg(Color::Green));
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                ok_span,
+                trunc_span,
+                fail_span,
+                meta_span,
+                dismiss_span,
+            ])),
+            inner,
         );
     }
 
@@ -1097,6 +1279,33 @@ impl CarvingState {
                 chunks[1],
             );
         }
+    }
+}
+
+// ── CancelWriter ──────────────────────────────────────────────────────────────
+
+/// Wraps any `Write` implementor and checks the `cancel` flag on every `write()`
+/// call.  When the flag is set the write returns `ErrorKind::Interrupted`, which
+/// propagates up through `carver.extract()` so large-file extractions abort at
+/// the next chunk boundary rather than running to completion.
+struct CancelWriter<W: Write> {
+    inner: W,
+    cancel: Arc<AtomicBool>,
+}
+
+impl<W: Write> Write for CancelWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "extraction cancelled",
+            ));
+        }
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
