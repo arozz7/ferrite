@@ -208,8 +208,11 @@ footer    = "45 4E 44 3A 56 43 41 4C 45 4E 44 41 52"
 max_size  = 10_485_760  # 10 MiB
 
 [[signature]]
-name      = "OLE2 Compound (DOC/XLS/PPT)"
-extension = "ole"
-header    = "D0 CF 11 E0 A1 B1 1A E1"
-footer    = ""
-max_size  = 524_288_000  # 500 MiB
+name           = "OLE2 Compound (DOC/XLS/PPT)"
+extension      = "ole"
+header         = "D0 CF 11 E0 A1 B1 1A E1"
+footer         = ""
+max_size       = 524_288_000  # 500 MiB hard cap
+# Reads uSectorShift (offset 30) and csectFat (offset 44) to compute the
+# actual file size: (csectFat × (sector_size/4) + 1) × sector_size
+size_hint_kind = "ole2"

@@ -6,24 +6,40 @@ use crate::error::{CarveError, Result};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// Hints the extractor to read the actual file size from a field embedded in
-/// the file header, rather than always writing `max_size` bytes.
-///
-/// Used for self-describing formats like RIFF (AVI, WAV) and BMP where the
-/// true file length is stored at a known offset.
+/// Hints the extractor on how to derive the actual file size from the file
+/// header, rather than always writing `max_size` bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SizeHint {
-    /// Byte offset *within the file* where the size field starts.
-    pub offset: usize,
-    /// Width of the size field in bytes (2, 4, or 8).
-    pub len: u8,
-    /// `true` = little-endian, `false` = big-endian.
-    pub little_endian: bool,
-    /// Value to add to the parsed integer to obtain the total file size.
+pub enum SizeHint {
+    /// Read a fixed-width integer at a known offset and add a constant.
     ///
-    /// For RIFF this is `8` because the 4-byte `RIFF` tag and the 4-byte size
-    /// field itself are not included in the stored value.
-    pub add: u64,
+    /// `total_size = parse(data[offset..offset+len]) + add`
+    ///
+    /// Used by RIFF-based formats (AVI, WAV) where bytes 4–7 store the
+    /// payload length and the total file size = value + 8.
+    /// Also used by BMP where bytes 2–5 store the total file size directly.
+    Linear {
+        /// Byte offset within the file where the size field starts.
+        offset: usize,
+        /// Width of the size field in bytes (2, 4, or 8).
+        len: u8,
+        /// `true` = little-endian, `false` = big-endian.
+        little_endian: bool,
+        /// Constant added to the parsed value to obtain the total file size.
+        add: u64,
+    },
+
+    /// OLE2 Compound File Binary Format (legacy DOC / XLS / PPT).
+    ///
+    /// File size is derived from two header fields:
+    /// - `uSectorShift` (u16 LE at offset 30): `sector_size = 1 << uSectorShift`
+    /// - `csectFat`     (u32 LE at offset 44): number of FAT sectors
+    ///
+    /// `max_size = (csectFat × (sector_size / 4) + 1) × sector_size`
+    ///
+    /// This gives a tight upper bound: each FAT sector can reference
+    /// `sector_size / 4` data sectors, so the result is the maximum possible
+    /// file size for the number of FAT sectors actually present.
+    Ole2,
 }
 
 /// A single file-type signature: header magic bytes (with optional wildcard
@@ -77,11 +93,13 @@ impl CarvingConfig {
             header: String,
             footer: String,
             max_size: u64,
-            // Optional size-hint fields.
+            // Optional size-hint fields (Linear variant).
             size_hint_offset: Option<usize>,
             size_hint_len: Option<u8>,
             size_hint_endian: Option<String>,
             size_hint_add: Option<u64>,
+            // Named variant selector (e.g. "ole2" → SizeHint::Ole2).
+            size_hint_kind: Option<String>,
         }
 
         #[derive(Deserialize)]
@@ -101,18 +119,21 @@ impl CarvingConfig {
                     parse_hex(&r.footer)?
                 };
 
-                let size_hint = match (r.size_hint_offset, r.size_hint_len) {
-                    (Some(offset), Some(len)) => Some(SizeHint {
-                        offset,
-                        len,
-                        little_endian: r
-                            .size_hint_endian
-                            .as_deref()
-                            .map(|e| e.eq_ignore_ascii_case("le"))
-                            .unwrap_or(true),
-                        add: r.size_hint_add.unwrap_or(0),
-                    }),
-                    _ => None,
+                let size_hint = match r.size_hint_kind.as_deref() {
+                    Some(k) if k.eq_ignore_ascii_case("ole2") => Some(SizeHint::Ole2),
+                    _ => match (r.size_hint_offset, r.size_hint_len) {
+                        (Some(offset), Some(len)) => Some(SizeHint::Linear {
+                            offset,
+                            len,
+                            little_endian: r
+                                .size_hint_endian
+                                .as_deref()
+                                .map(|e| e.eq_ignore_ascii_case("le"))
+                                .unwrap_or(true),
+                            add: r.size_hint_add.unwrap_or(0),
+                        }),
+                        _ => None,
+                    },
                 };
 
                 Ok(Signature {
@@ -234,7 +255,7 @@ max_size  = 52428800
     }
 
     #[test]
-    fn load_toml_size_hint() {
+    fn load_toml_size_hint_linear() {
         let toml = r#"
 [[signature]]
 name             = "AVI Video (RIFF)"
@@ -252,11 +273,31 @@ size_hint_add    = 8
         assert_eq!(sig.header[0], Some(0x52));
         assert_eq!(sig.header[4], None); // wildcard
         assert_eq!(sig.header[8], Some(0x41));
-        let hint = sig.size_hint.as_ref().unwrap();
-        assert_eq!(hint.offset, 4);
-        assert_eq!(hint.len, 4);
-        assert!(hint.little_endian);
-        assert_eq!(hint.add, 8);
+        match sig.size_hint.as_ref().unwrap() {
+            SizeHint::Linear { offset, len, little_endian, add } => {
+                assert_eq!(*offset, 4);
+                assert_eq!(*len, 4);
+                assert!(little_endian);
+                assert_eq!(*add, 8);
+            }
+            other => panic!("expected Linear, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_toml_size_hint_ole2() {
+        let toml = r#"
+[[signature]]
+name           = "OLE2 Compound"
+extension      = "ole"
+header         = "D0 CF 11 E0 A1 B1 1A E1"
+footer         = ""
+max_size       = 524288000
+size_hint_kind = "ole2"
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        let sig = &cfg.signatures[0];
+        assert_eq!(sig.size_hint, Some(SizeHint::Ole2));
     }
 
     #[test]

@@ -401,44 +401,59 @@ fn stream_until_footer(
 
 // ── Size hint reader ──────────────────────────────────────────────────────────
 
-/// Read an embedded size field from the device and return the total file size
-/// it implies (`parsed_value + hint.add`).
-///
-/// Returns `None` if the field cannot be read or has an unsupported width.
+/// Read the embedded size hint from the device and return the implied total
+/// file size.  Returns `None` if any read fails or the header is malformed.
 fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -> Option<u64> {
-    let field_offset = file_offset + hint.offset as u64;
-    let bytes = read_bytes_clamped(device, field_offset, hint.len as usize).ok()?;
-    if bytes.len() < hint.len as usize {
-        return None;
+    match hint {
+        SizeHint::Linear { offset, len, little_endian, add } => {
+            let field_offset = file_offset + *offset as u64;
+            let bytes = read_bytes_clamped(device, field_offset, *len as usize).ok()?;
+            if bytes.len() < *len as usize {
+                return None;
+            }
+            let value: u64 = match len {
+                2 => {
+                    let arr: [u8; 2] = bytes[..2].try_into().ok()?;
+                    if *little_endian { u16::from_le_bytes(arr) as u64 }
+                    else              { u16::from_be_bytes(arr) as u64 }
+                }
+                4 => {
+                    let arr: [u8; 4] = bytes[..4].try_into().ok()?;
+                    if *little_endian { u32::from_le_bytes(arr) as u64 }
+                    else              { u32::from_be_bytes(arr) as u64 }
+                }
+                8 => {
+                    let arr: [u8; 8] = bytes[..8].try_into().ok()?;
+                    if *little_endian { u64::from_le_bytes(arr) }
+                    else              { u64::from_be_bytes(arr) }
+                }
+                _ => return None,
+            };
+            Some(value.saturating_add(*add))
+        }
+
+        SizeHint::Ole2 => {
+            // uSectorShift (u16 LE) at offset 30: sector_size = 1 << uSectorShift
+            // Valid values: 9 (512-byte sectors, version 3) or 12 (4096-byte, v4).
+            let shift_bytes = read_bytes_clamped(device, file_offset + 30, 2).ok()?;
+            let shift_arr: [u8; 2] = shift_bytes[..2].try_into().ok()?;
+            let sector_shift = u16::from_le_bytes(shift_arr) as u32;
+            if !(7..=16).contains(&sector_shift) {
+                return None; // sanity-check: reject implausible values
+            }
+            let sector_size = 1u64 << sector_shift;
+
+            // csectFat (u32 LE) at offset 44: number of FAT sectors.
+            // Each FAT sector can reference (sector_size / 4) data sectors.
+            let fat_bytes = read_bytes_clamped(device, file_offset + 44, 4).ok()?;
+            let fat_arr: [u8; 4] = fat_bytes[..4].try_into().ok()?;
+            let csect_fat = u32::from_le_bytes(fat_arr) as u64;
+
+            // Upper bound: all addressable sectors occupied + 1 header sector.
+            let addressable = csect_fat.saturating_mul(sector_size / 4);
+            Some(addressable.saturating_add(1).saturating_mul(sector_size))
+        }
     }
-    let value: u64 = match hint.len {
-        2 => {
-            let arr: [u8; 2] = bytes[..2].try_into().ok()?;
-            if hint.little_endian {
-                u16::from_le_bytes(arr) as u64
-            } else {
-                u16::from_be_bytes(arr) as u64
-            }
-        }
-        4 => {
-            let arr: [u8; 4] = bytes[..4].try_into().ok()?;
-            if hint.little_endian {
-                u32::from_le_bytes(arr) as u64
-            } else {
-                u32::from_be_bytes(arr) as u64
-            }
-        }
-        8 => {
-            let arr: [u8; 8] = bytes[..8].try_into().ok()?;
-            if hint.little_endian {
-                u64::from_le_bytes(arr)
-            } else {
-                u64::from_be_bytes(arr)
-            }
-        }
-        _ => return None,
-    };
-    Some(value.saturating_add(hint.add))
 }
 
 // ── I/O helper ────────────────────────────────────────────────────────────────
@@ -779,7 +794,7 @@ mod tests {
             header: vec![Some(0x52), Some(0x49), Some(0x46), Some(0x46)],
             footer: vec![],
             max_size: 2_147_483_648,
-            size_hint: Some(crate::signature::SizeHint {
+            size_hint: Some(crate::signature::SizeHint::Linear {
                 offset: 4,
                 len: 4,
                 little_endian: true,
@@ -793,6 +808,42 @@ mod tests {
             .unwrap();
 
         assert_eq!(written, 108, "size_hint should limit extraction to 108 bytes, got {written}");
+    }
+
+    #[test]
+    fn extract_ole2_size_hint_limits_output() {
+        // Build a minimal OLE2 header:
+        //   uSectorShift = 9  (sector_size = 512)
+        //   csectFat     = 2  → 2 × (512/4) = 256 addressable sectors
+        //   expected max = (256 + 1) × 512 = 131,584 bytes
+        let mut data = vec![0u8; 512 * 1024]; // 512 KiB device
+        // Magic bytes
+        data[0..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+        // uSectorShift = 9 (little-endian u16 at offset 30)
+        data[30..32].copy_from_slice(&9u16.to_le_bytes());
+        // csectFat = 2 (little-endian u32 at offset 44)
+        data[44..48].copy_from_slice(&2u32.to_le_bytes());
+
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "OLE2".into(),
+            extension: "ole".into(),
+            header: vec![
+                Some(0xD0), Some(0xCF), Some(0x11), Some(0xE0),
+                Some(0xA1), Some(0xB1), Some(0x1A), Some(0xE1),
+            ],
+            footer: vec![],
+            max_size: 524_288_000,
+            size_hint: Some(crate::signature::SizeHint::Ole2),
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        // (2 × 128 + 1) × 512 = 131,584 — capped by device size (512 KiB = 524,288)
+        assert_eq!(written, 131_584, "OLE2 size_hint gave {written}, expected 131584");
     }
 
     #[test]

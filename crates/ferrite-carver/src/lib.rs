@@ -27,7 +27,7 @@ mod signature;
 
 pub use error::{CarveError, Result};
 pub use scanner::{CarveHit, Carver, ScanProgress};
-pub use signature::{parse_hex, CarvingConfig, Signature};
+pub use signature::{parse_hex, CarvingConfig, Signature, SizeHint};
 
 #[cfg(test)]
 mod tests {
@@ -84,6 +84,14 @@ mod tests {
         let wav = cfg.signatures.iter().find(|s| s.extension == "wav").unwrap();
         assert_eq!(wav.header[4], None, "WAV header byte 4 should be wildcard");
         assert!(wav.size_hint.is_some(), "WAV should have a size_hint");
+
+        // OLE2 must use the Ole2 size hint variant.
+        let ole = cfg.signatures.iter().find(|s| s.extension == "ole").unwrap();
+        assert_eq!(
+            ole.size_hint,
+            Some(super::SizeHint::Ole2),
+            "OLE2 should use SizeHint::Ole2"
+        );
     }
 
     /// End-to-end test: embed a JPEG and PNG marker in a small device image,
