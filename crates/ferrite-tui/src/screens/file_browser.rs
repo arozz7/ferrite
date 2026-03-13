@@ -455,6 +455,7 @@ mod tests {
             first_cluster: None,
             mft_record: None,
             inode_number: None,
+            data_byte_offset: None,
         });
         // Directory selected, no parser — extract is a no-op.
         s.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);

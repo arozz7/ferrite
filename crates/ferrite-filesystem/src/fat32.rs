@@ -203,6 +203,11 @@ impl Fat32Parser {
             let first_cluster = (cluster_hi << 16) | cluster_lo;
             let size = u32::from_le_bytes(entry[28..32].try_into().unwrap()) as u64;
 
+            let data_byte_offset = if is_dir || first_cluster < 2 {
+                None
+            } else {
+                Some(self.data_offset + (first_cluster as u64 - 2) * self.cluster_size)
+            };
             result.push(FileEntry {
                 name: name.clone(),
                 path: format!("/{name}"),
@@ -214,6 +219,7 @@ impl Fat32Parser {
                 first_cluster: Some(first_cluster),
                 mft_record: None,
                 inode_number: None,
+                data_byte_offset,
             });
         }
         result
@@ -477,5 +483,48 @@ mod tests {
     fn rejects_non_fat32() {
         let dev = Arc::new(MockBlockDevice::zeroed(512, 512));
         assert!(Fat32Parser::new(dev).is_err());
+    }
+
+    #[test]
+    fn data_byte_offset_for_regular_file() {
+        // In build_image(): cluster_size=512, data_offset = 4*512 + 2*1*512 = 3072.
+        // HELLO.TXT lives in cluster 3.
+        // Expected: data_offset + (3 - 2) * cluster_size = 3072 + 512 = 3584.
+        let dev = Arc::new(build_image());
+        let parser = Fat32Parser::new(dev).unwrap();
+        let entries = parser.root_directory().unwrap();
+        let file = entries.iter().find(|e| e.name == "HELLO.TXT").unwrap();
+        assert_eq!(
+            file.data_byte_offset,
+            Some(3584),
+            "unexpected data_byte_offset for HELLO.TXT"
+        );
+    }
+
+    #[test]
+    fn data_byte_offset_for_directory_is_none() {
+        // Directories should never have a data_byte_offset.
+        let dev: Arc<dyn BlockDevice> = Arc::new(build_image());
+        let parser = Fat32Parser::new(Arc::clone(&dev)).unwrap();
+        // Build a directory entry directly to verify the code path.
+        // In practice, build_entries marks is_dir=true for ATTR_DIRECTORY entries.
+        // Use the existing helper indirectly: create a raw entry that looks like a dir.
+        let raw_dir_entry: [u8; 32] = {
+            let mut e = [0u8; 32];
+            e[0..8].copy_from_slice(b"TESTDIR ");
+            e[8..11].copy_from_slice(b"   ");
+            e[11] = 0x10; // ATTR_DIRECTORY
+            e[20..22].copy_from_slice(&0u16.to_le_bytes()); // cluster_hi
+            e[26..28].copy_from_slice(&4u16.to_le_bytes()); // cluster_lo = 4
+            e[28..32].copy_from_slice(&0u32.to_le_bytes()); // size = 0
+            e
+        };
+        let result = parser.build_entries(&[raw_dir_entry], false);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_dir);
+        assert!(
+            result[0].data_byte_offset.is_none(),
+            "directory must not have data_byte_offset"
+        );
     }
 }

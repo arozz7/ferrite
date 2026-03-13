@@ -579,6 +579,68 @@ fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -
 
             Some(32u64.saturating_add(next_offset).saturating_add(next_size))
         }
+
+        SizeHint::OggStream => {
+            // Walk Ogg pages from `file_offset` until the end-of-stream (EOS) page.
+            //
+            // Ogg page layout (all offsets relative to the start of this page):
+            //   [0..4]   capture_pattern "OggS" (4F 67 67 53)
+            //   [4]      stream_structure_version (must be 0)
+            //   [5]      header_type_flag — bit 2 (0x04) = EOS (last page)
+            //   [6..14]  granule_position (u64 LE)
+            //   [14..18] bitstream_serial_number (u32 LE)
+            //   [18..22] page_sequence_number (u32 LE)
+            //   [22..26] CRC checksum (u32 LE)
+            //   [26]     number_page_segments (u8)
+            //   [27..27+N] segment_table[N] — each byte is a lace value
+            //   data: sum(segment_table) bytes
+            //
+            // page_size = 27 + num_segments + sum(segment_table)
+            //
+            // Returns the total file size when EOS page is found, None otherwise.
+
+            const OGG_MAGIC: &[u8; 4] = b"OggS";
+            // Safety cap: abort if no EOS found within 100 000 pages (~typical
+            // for a multi-hour audio file at 44 Hz page rate) to prevent hangs
+            // on corrupt data.
+            const MAX_PAGES: u32 = 100_000;
+
+            let device_size = device.size();
+            let mut pos = file_offset;
+
+            for _ in 0..MAX_PAGES {
+                if pos >= device_size {
+                    break;
+                }
+                // Read the fixed part of the page header (27 bytes).
+                let hdr = read_bytes_clamped(device, pos, 27).ok()?;
+                if hdr.len() < 27 {
+                    break;
+                }
+                if &hdr[0..4] != OGG_MAGIC {
+                    break; // lost sync — corrupt or overlapping hit
+                }
+                let header_type = hdr[5];
+                let num_segments = hdr[26] as u64;
+
+                // Read segment table to determine data payload length.
+                let seg_table = read_bytes_clamped(device, pos + 27, num_segments as usize).ok()?;
+                if seg_table.len() < num_segments as usize {
+                    break;
+                }
+                let data_size: u64 = seg_table.iter().map(|&b| b as u64).sum();
+                let page_size = 27 + num_segments + data_size;
+
+                if header_type & 0x04 != 0 {
+                    // EOS page found — total file size = distance from start of file to end of this page.
+                    return Some(pos - file_offset + page_size);
+                }
+
+                pos = pos.saturating_add(page_size);
+            }
+
+            None // EOS not found within limit; fall back to max_size
+        }
     }
 }
 
@@ -1146,5 +1208,90 @@ mod tests {
             .extract(&hit, &mut out)
             .unwrap();
         assert_eq!(written, 300);
+    }
+
+    // ── Ogg page-walk size hint tests ──────────────────────────────────────────
+
+    /// Build a minimal Ogg page: `header_type` controls BOS/EOS flags, and
+    /// `seg_sizes` defines the segment table (each entry is one lace value).
+    fn build_ogg_page(header_type: u8, seg_sizes: &[u8]) -> Vec<u8> {
+        let mut page = Vec::new();
+        page.extend_from_slice(b"OggS"); // capture pattern
+        page.push(0); // stream_structure_version
+        page.push(header_type);
+        page.extend_from_slice(&[0u8; 8]); // granule_position
+        page.extend_from_slice(&[0u8; 4]); // bitstream_serial_number
+        page.extend_from_slice(&[0u8; 4]); // page_sequence_number
+        page.extend_from_slice(&[0u8; 4]); // CRC (zeroed — not validated by carver)
+        page.push(seg_sizes.len() as u8); // number_page_segments
+        page.extend_from_slice(seg_sizes); // segment_table
+        // Pad data bytes (content doesn't matter for size calculation).
+        let data_len: usize = seg_sizes.iter().map(|&b| b as usize).sum();
+        page.extend(std::iter::repeat(0xBBu8).take(data_len));
+        page
+    }
+
+    #[test]
+    fn extract_ogg_stream_size_hint_stops_at_eos() {
+        // Three pages:
+        //   page 0: BOS  (header_type 0x02), 1 segment × 100 bytes → size 128
+        //   page 1: data (header_type 0x00), 2 segments × 50 bytes  → size 129
+        //   page 2: EOS  (header_type 0x04), 1 segment × 30 bytes   → size  58
+        // Total: 315 bytes.  Device is padded with extra bytes that must NOT
+        // be written.
+        let mut data = Vec::new();
+        data.extend(build_ogg_page(0x02, &[100])); //  128 bytes
+        data.extend(build_ogg_page(0x00, &[50, 50])); //  129 bytes
+        data.extend(build_ogg_page(0x04, &[30])); //   58 bytes
+        let expected = data.len(); // 315
+
+        // Append padding — extractor must stop before it.
+        data.extend(vec![0xFFu8; 1024]);
+
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "OGG Media".into(),
+            extension: "ogg".into(),
+            header: vec![Some(0x4F), Some(0x67), Some(0x67), Some(0x53)],
+            footer: vec![],
+            footer_last: false,
+            max_size: 65536,
+            size_hint: Some(crate::signature::SizeHint::OggStream),
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        assert_eq!(written, expected as u64, "OggStream: expected {expected} bytes, got {written}");
+        // Verify the EOS page is included — last byte of page 2 is 0xBB.
+        assert_eq!(out[written as usize - 1], 0xBB);
+    }
+
+    #[test]
+    fn extract_ogg_stream_no_eos_falls_back_to_max_size() {
+        // A stream with only a BOS page and no EOS page — should fall back to max_size.
+        let mut data = build_ogg_page(0x02, &[100]); // 128 bytes, no EOS
+        data.extend(vec![0xCCu8; 2048]);
+
+        let max_size = 200u64;
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "OGG Media".into(),
+            extension: "ogg".into(),
+            header: vec![Some(0x4F), Some(0x67), Some(0x67), Some(0x53)],
+            footer: vec![],
+            footer_last: false,
+            max_size,
+            size_hint: Some(crate::signature::SizeHint::OggStream),
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        assert_eq!(written, max_size, "should fall back to max_size when no EOS found");
     }
 }

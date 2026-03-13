@@ -141,8 +141,15 @@ impl NtfsParser {
             let in_use = flags & 1 != 0;
             let is_dir = flags & 2 != 0;
 
-            if let Some((name, parent_ref, data_size)) = parse_file_info(&raw) {
+            if let Some((name, parent_ref, data_size, first_lcn)) = parse_file_info(&raw) {
                 if filter(parent_ref, in_use, is_dir) {
+                    // Convert first LCN to a byte offset within the device.
+                    // `None` for directories and resident (tiny) files.
+                    let data_byte_offset = if is_dir {
+                        None
+                    } else {
+                        first_lcn.map(|lcn| lcn * self.cluster_size)
+                    };
                     entries.push(FileEntry {
                         name: name.clone(),
                         path: format!("/{name}"),
@@ -154,6 +161,7 @@ impl NtfsParser {
                         first_cluster: None,
                         mft_record: Some(i),
                         inode_number: None,
+                        data_byte_offset,
                     });
                 }
             }
@@ -279,6 +287,11 @@ impl FilesystemParser for NtfsParser {
     fn deleted_files(&self) -> Result<Vec<FileEntry>> {
         self.scan(|parent_ref, in_use, _| !in_use && parent_ref == ROOT_MFT_RECORD)
     }
+
+    fn enumerate_files(&self) -> Result<Vec<FileEntry>> {
+        // Return every non-directory MFT record (in-use or deleted), across all directories.
+        self.scan(|_, _, is_dir| !is_dir)
+    }
 }
 
 // ── Attribute / record helpers ────────────────────────────────────────────────
@@ -325,16 +338,18 @@ fn apply_fixup(mut record: Vec<u8>) -> Vec<u8> {
     record
 }
 
-/// Extract `(win32_name, parent_mft_ref, data_size)` from a FILE record.
+/// Extract `(win32_name, parent_mft_ref, data_size, first_lcn)` from a FILE record.
 ///
 /// Prefers the Win32 namespace (namespace = 1 or 3) for the filename.
+/// `first_lcn` is `None` for resident (tiny) files or when the run-list is absent.
 /// Returns `None` when no `$FILE_NAME` attribute is found.
-fn parse_file_info(raw: &[u8]) -> Option<(String, u64, u64)> {
+fn parse_file_info(raw: &[u8]) -> Option<(String, u64, u64, Option<u64>)> {
     let first_attr = u16::from_le_bytes(raw[20..22].try_into().ok()?) as usize;
     let mut pos = first_attr;
 
     let mut best_name: Option<(String, u64)> = None; // (name, parent_ref)
     let mut data_size: u64 = 0;
+    let mut first_lcn: Option<u64> = None;
 
     while pos + 8 <= raw.len() {
         let type_id = u32::from_le_bytes(raw[pos..pos + 4].try_into().ok()?);
@@ -373,18 +388,24 @@ fn parse_file_info(raw: &[u8]) -> Option<(String, u64, u64)> {
             }
         } else if type_id == ATTR_DATA {
             if raw[pos + 8] == 0 {
-                // Resident
+                // Resident — data lives inside the MFT record; no LCN
                 let val_len = u32::from_le_bytes(raw[pos + 16..pos + 20].try_into().ok()?) as u64;
                 if data_size == 0 {
                     data_size = val_len;
                 }
             } else {
-                // Non-resident: real size at offset +0x30
-                if pos + 0x38 <= raw.len() {
+                // Non-resident: real size at +0x30, run-list at +0x20 (relative offset)
+                if pos + 0x40 <= raw.len() {
                     let real_size =
                         u64::from_le_bytes(raw[pos + 0x30..pos + 0x38].try_into().ok()?);
                     if data_size == 0 {
                         data_size = real_size;
+                    }
+                    let rl_off =
+                        u16::from_le_bytes(raw[pos + 0x20..pos + 0x22].try_into().ok()?) as usize;
+                    let rl_start = pos + rl_off;
+                    if rl_start < raw.len() && first_lcn.is_none() {
+                        first_lcn = first_lcn_from_run_list(&raw[rl_start..]);
                     }
                 }
             }
@@ -394,7 +415,35 @@ fn parse_file_info(raw: &[u8]) -> Option<(String, u64, u64)> {
     }
 
     let (name, parent_ref) = best_name?;
-    Some((name, parent_ref, data_size))
+    Some((name, parent_ref, data_size, first_lcn))
+}
+
+/// Extract the first LCN (Logical Cluster Number) from an NTFS run-list.
+///
+/// Only decodes the first run entry.  Returns `None` if the run-list is empty,
+/// starts with a terminator, or the offset field is absent (sparse run).
+fn first_lcn_from_run_list(run_list: &[u8]) -> Option<u64> {
+    if run_list.is_empty() || run_list[0] == 0 {
+        return None;
+    }
+    let header = run_list[0];
+    let len_bytes = (header & 0x0F) as usize;
+    let off_bytes = ((header >> 4) & 0x0F) as usize;
+    if off_bytes == 0 {
+        return None; // sparse run — no physical location
+    }
+    if 1 + len_bytes + off_bytes > run_list.len() {
+        return None;
+    }
+    let mut run_off: i64 = 0;
+    for i in 0..off_bytes {
+        run_off |= (run_list[1 + len_bytes + i] as i64) << (i * 8);
+    }
+    // Sign-extend
+    if run_list[1 + len_bytes + off_bytes - 1] & 0x80 != 0 {
+        run_off |= -1i64 << (off_bytes * 8);
+    }
+    if run_off <= 0 { None } else { Some(run_off as u64) }
 }
 
 /// Decode an NTFS data run list and stream the file content to `writer`.
@@ -754,5 +803,38 @@ mod tests {
             read_run_list(dev_ref.as_ref(), &run_list, cluster_size, 4, &mut buf).unwrap();
         assert_eq!(written, 4);
         assert_eq!(&buf, b"DATA");
+    }
+
+    #[test]
+    fn resident_file_data_byte_offset_is_none() {
+        // Resident files live inside the MFT record — no physical cluster offset.
+        let dev = Arc::new(build_image());
+        let parser = NtfsParser::new(dev).unwrap();
+        let entries = parser.root_directory().unwrap();
+        let file = entries.iter().find(|e| e.name == "hello.txt").unwrap();
+        assert!(
+            file.data_byte_offset.is_none(),
+            "resident file should have data_byte_offset = None"
+        );
+    }
+
+    #[test]
+    fn first_lcn_from_run_list_single_run() {
+        // header 0x11: 1 length byte, 1 offset byte → len=1, off=5 (LCN 5)
+        let run_list = [0x11u8, 0x01, 0x05, 0x00];
+        assert_eq!(first_lcn_from_run_list(&run_list), Some(5));
+    }
+
+    #[test]
+    fn first_lcn_from_run_list_sparse_returns_none() {
+        // Sparse run: off_bytes = 0 (upper nibble of header is 0)
+        let run_list = [0x01u8, 0x01, 0x00];
+        assert_eq!(first_lcn_from_run_list(&run_list), None);
+    }
+
+    #[test]
+    fn first_lcn_from_run_list_empty_returns_none() {
+        assert_eq!(first_lcn_from_run_list(&[]), None);
+        assert_eq!(first_lcn_from_run_list(&[0x00]), None);
     }
 }

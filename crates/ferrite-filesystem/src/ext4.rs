@@ -224,6 +224,29 @@ impl Ext4Parser {
         Ok(blocks)
     }
 
+    /// Return the byte offset of the first data block for `inode_num`, or `None`.
+    ///
+    /// Works for regular files only; returns `None` for directories, empty
+    /// files, or inodes that cannot be read.
+    fn first_data_block_byte_offset(&self, inode_num: u32) -> Option<u64> {
+        let inode = self.read_inode(inode_num).ok()?;
+        if inode.len() < 100 {
+            return None;
+        }
+        let i_flags = u32::from_le_bytes(inode[32..36].try_into().ok()?);
+        let uses_extents = i_flags & EXT4_INODE_EXTENTS != 0;
+
+        let first_block = if uses_extents {
+            self.walk_extent_node(&inode[40..]).ok()?.into_iter().next()?
+        } else {
+            let blk = u32::from_le_bytes(inode[40..44].try_into().ok()?);
+            if blk == 0 { return None; }
+            blk as u64
+        };
+
+        Some(first_block * self.block_size)
+    }
+
     /// Parse all directory entries from the blocks of directory inode `inode_num`.
     ///
     /// When `include_deleted` is `true`, entries with `de_inode == 0` are included.
@@ -314,6 +337,15 @@ impl Ext4Parser {
                     let mut block_entries =
                         parse_dir_block(&block_data, path_prefix, include_deleted);
                     entries.append(&mut block_entries);
+                }
+            }
+        }
+
+        // Enrich non-directory, non-deleted entries with their first data block offset.
+        for entry in entries.iter_mut() {
+            if !entry.is_dir && !entry.is_deleted {
+                if let Some(ino) = entry.inode_number {
+                    entry.data_byte_offset = self.first_data_block_byte_offset(ino);
                 }
             }
         }
@@ -548,6 +580,7 @@ fn parse_dir_block(block: &[u8], path_prefix: &str, include_deleted: bool) -> Ve
                         first_cluster: None,
                         mft_record: None,
                         inode_number: Some(inode_num),
+                        data_byte_offset: None, // enriched by list_inode() afterwards
                     });
                 }
             }
@@ -978,6 +1011,7 @@ mod tests {
             first_cluster: None,
             mft_record: None,
             inode_number: Some(3),
+            data_byte_offset: None,
         };
 
         let mut buf = Vec::new();
@@ -1127,6 +1161,7 @@ mod tests {
             first_cluster: None,
             mft_record: None,
             inode_number: Some(3),
+            data_byte_offset: None,
         };
 
         let mut buf = Vec::new();

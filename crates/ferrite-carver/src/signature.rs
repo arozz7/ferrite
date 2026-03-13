@@ -73,6 +73,25 @@ pub enum SizeHint {
     ///
     /// `total_size = 32 + NextHeaderOffset + NextHeaderSize`
     SevenZip,
+
+    /// Ogg bitstream container (Ogg Vorbis, Ogg Opus, Ogg FLAC, …).
+    ///
+    /// The container uses a sequence of *pages*.  Each page begins with the
+    /// four-byte capture pattern `OggS` and carries a `header_type_flag` byte
+    /// (at page offset 5) where bit 2 (`0x04`) marks the last page of the
+    /// logical bitstream.  Page size is derived by reading the segment table
+    /// stored in the page header:
+    ///
+    /// ```text
+    /// page_size = 27 + num_page_segments + sum(segment_table)
+    /// ```
+    ///
+    /// The extractor walks pages forward from the file header until a page with
+    /// `header_type_flag & 0x04` is found, then returns
+    /// `page_start_offset - file_offset + page_size` as the total file size.
+    /// Returns `None` if no EOS page is found within `max_size` bytes (falls
+    /// back to writing `max_size` bytes, as before).
+    OggStream,
 }
 
 impl SizeHint {
@@ -84,6 +103,7 @@ impl SizeHint {
             SizeHint::LinearScaled { .. } => "linear_scaled",
             SizeHint::Sqlite              => "sqlite",
             SizeHint::SevenZip            => "seven_zip",
+            SizeHint::OggStream           => "ogg_stream",
         }
     }
 }
@@ -185,6 +205,7 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("ole2")         => Some(SizeHint::Ole2),
                     Some(k) if k.eq_ignore_ascii_case("sqlite")       => Some(SizeHint::Sqlite),
                     Some(k) if k.eq_ignore_ascii_case("seven_zip")    => Some(SizeHint::SevenZip),
+                    Some(k) if k.eq_ignore_ascii_case("ogg_stream")   => Some(SizeHint::OggStream),
                     Some(k) if k.eq_ignore_ascii_case("linear_scaled") => {
                         match (r.size_hint_offset, r.size_hint_len, r.size_hint_scale) {
                             (Some(offset), Some(len), Some(scale)) => {
@@ -486,6 +507,22 @@ max_size    = 104857600
 "#;
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
         assert!(cfg.signatures[0].footer_last, "footer_last should be true when set");
+    }
+
+    #[test]
+    fn load_toml_size_hint_ogg_stream() {
+        let toml = r#"
+[[signature]]
+name           = "OGG Media"
+extension      = "ogg"
+header         = "4F 67 67 53"
+footer         = ""
+max_size       = 2147483648
+size_hint_kind = "ogg_stream"
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        let sig = &cfg.signatures[0];
+        assert_eq!(sig.size_hint, Some(SizeHint::OggStream));
     }
 
     #[test]

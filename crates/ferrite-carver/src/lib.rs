@@ -135,6 +135,19 @@ mod tests {
             }
             other => panic!("EVTX should use SizeHint::LinearScaled, got {other:?}"),
         }
+
+        // OGG must use OggStream size hint.
+        let ogg = cfg.signatures.iter().find(|s| s.extension == "ogg").unwrap();
+        assert_eq!(
+            ogg.size_hint,
+            Some(super::SizeHint::OggStream),
+            "OGG should use SizeHint::OggStream"
+        );
+        assert_eq!(
+            ogg.header,
+            &[Some(0x4F), Some(0x67), Some(0x67), Some(0x53)],
+            "OGG header should be 'OggS'"
+        );
     }
 
     /// End-to-end test: embed a JPEG and PNG marker in a small device image,

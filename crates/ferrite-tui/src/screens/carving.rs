@@ -11,6 +11,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
+use ferrite_filesystem::{build_metadata_index, MetadataIndex};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -25,6 +26,7 @@ use sha2::{Digest, Sha256};
 enum CarveMsg {
     Progress(ScanProgress),
     Done(Vec<CarveHit>),
+    MetadataReady(MetadataIndex),
     Extracted {
         idx: usize,
         bytes: u64,
@@ -126,6 +128,10 @@ pub struct CarvingState {
     extract_progress: Option<ExtractProgress>,
     /// Set to true to abort a running bulk extraction.
     extract_cancel: Arc<AtomicBool>,
+    /// Byte-offset → original filename index, built in background after scan.
+    meta_index: Option<Arc<MetadataIndex>>,
+    /// `true` while the metadata index is being built in the background.
+    meta_index_building: bool,
 }
 
 impl Default for CarvingState {
@@ -155,6 +161,8 @@ impl CarvingState {
             editing_dir: false,
             extract_progress: None,
             extract_cancel: Arc::new(AtomicBool::new(false)),
+            meta_index: None,
+            meta_index_building: false,
         }
     }
 
@@ -194,6 +202,8 @@ impl CarvingState {
         self.extract_progress = None;
         self.rx = None;
         self.tx = None;
+        self.meta_index = None;
+        self.meta_index_building = false;
     }
 
     /// Drain the background carving channel.
@@ -217,8 +227,22 @@ impl CarvingState {
                         })
                         .collect();
                     self.hit_sel = 0;
+                    // Spawn background thread to build filename index from filesystem metadata.
+                    if let (Some(device), Some(meta_tx)) = (self.device.as_ref(), self.tx.as_ref()) {
+                        self.meta_index_building = true;
+                        let device = Arc::clone(device);
+                        let meta_tx = meta_tx.clone();
+                        std::thread::spawn(move || {
+                            let index = build_metadata_index(device);
+                            let _ = meta_tx.send(CarveMsg::MetadataReady(index));
+                        });
+                    }
                     self.status = CarveStatus::Done;
                     // Keep rx alive so extraction results can still arrive.
+                }
+                Ok(CarveMsg::MetadataReady(index)) => {
+                    self.meta_index = Some(Arc::new(index));
+                    self.meta_index_building = false;
                 }
                 Ok(CarveMsg::Extracted {
                     idx,
@@ -443,6 +467,27 @@ impl CarvingState {
         // extract_progress is cleared when ExtractionDone arrives.
     }
 
+    /// Build an output path for `hit` inside `dir`.
+    ///
+    /// If the metadata index contains the original filename for this offset,
+    /// uses it.  Otherwise falls back to `ferrite_<ext>_<offset>.<ext>`.
+    fn filename_for_hit(&self, hit: &CarveHit, dir: &str) -> String {
+        if let Some(idx) = &self.meta_index {
+            if let Some(meta) = idx.lookup(hit.byte_offset) {
+                let safe = meta
+                    .name
+                    .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+                if !safe.is_empty() {
+                    return format!("{dir}\\{safe}");
+                }
+            }
+        }
+        format!(
+            "{dir}\\ferrite_{}_{}.{}",
+            hit.signature.extension, hit.byte_offset, hit.signature.extension
+        )
+    }
+
     fn extract_selected(&mut self) {
         let entry = match self.hits.get_mut(self.hit_sel) {
             Some(e) => e,
@@ -461,16 +506,12 @@ impl CarvingState {
         };
         let idx = self.hit_sel;
 
-        // Resolve output path: <output_dir>/ferrite_<ext>_<offset>.<ext>
         let dir = if self.output_dir.is_empty() {
             "carved".to_string()
         } else {
             self.output_dir.clone()
         };
-        let filename = format!(
-            "{}\\ferrite_{}_{}.{}",
-            dir, hit.signature.extension, hit.byte_offset, hit.signature.extension
-        );
+        let filename = self.filename_for_hit(&hit, &dir);
         let config = CarvingConfig {
             signatures: vec![hit.signature.clone()],
             scan_chunk_size: 1024 * 1024,
@@ -553,10 +594,7 @@ impl CarvingState {
             .enumerate()
             .filter(|(_, e)| e.selected && matches!(e.status, HitStatus::Unextracted))
             .map(|(idx, e)| {
-                let path = format!(
-                    "{}\\ferrite_{}_{}.{}",
-                    dir, e.hit.signature.extension, e.hit.byte_offset, e.hit.signature.extension
-                );
+                let path = self.filename_for_hit(&e.hit, &dir);
                 (idx, e.hit.clone(), path)
             })
             .collect();
@@ -591,8 +629,7 @@ impl CarvingState {
         let concurrency = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
-            .min(8)
-            .max(2);
+            .clamp(2, 8);
 
         // Shared work queue drained by all workers.
         let queue: Arc<Mutex<VecDeque<(usize, CarveHit, String)>>> =
@@ -692,6 +729,7 @@ impl CarvingState {
             CarveStatus::Idle => " idle ",
             CarveStatus::Running => " scanning… ",
             CarveStatus::Paused => " PAUSED ",
+            CarveStatus::Done if self.meta_index_building => " done · building filename index… ",
             CarveStatus::Done => " done ",
             CarveStatus::Error(e) => {
                 let msg = format!(" Carving Error: {e}");
@@ -877,9 +915,16 @@ impl CarvingState {
                         Style::default().fg(Color::Red),
                     ),
                 };
+                let orig_name = self
+                    .meta_index
+                    .as_ref()
+                    .and_then(|idx| idx.lookup(entry.hit.byte_offset))
+                    .map(|m| format!(" ({})", m.name));
                 let label = format!(
-                    "{} @ {:#x}",
-                    entry.hit.signature.name, entry.hit.byte_offset
+                    "{} @ {:#x}{}",
+                    entry.hit.signature.name,
+                    entry.hit.byte_offset,
+                    orig_name.as_deref().unwrap_or("")
                 );
                 use ratatui::text::Line;
                 ListItem::new(Line::from(vec![check, Span::raw(label), status_span]))
