@@ -77,18 +77,22 @@ footer    = ""
 max_size  = 524_288_000  # 500 MiB
 
 [[signature]]
-name      = "7-Zip Archive"
-extension = "7z"
-header    = "37 7A BC AF 27 1C"
-footer    = ""
-max_size  = 524_288_000  # 500 MiB
+name           = "7-Zip Archive"
+extension      = "7z"
+header         = "37 7A BC AF 27 1C"
+footer         = ""
+max_size       = 524_288_000  # 500 MiB hard cap
+# total = 32 + NextHeaderOffset (u64 LE @12) + NextHeaderSize (u64 LE @20)
+size_hint_kind = "seven_zip"
 
 [[signature]]
-name      = "SQLite Database"
-extension = "db"
-header    = "53 51 4C 69 74 65 20 66 6F 72 6D 61 74 20 33 00"
-footer    = ""
-max_size  = 10_737_418_240  # 10 GiB
+name           = "SQLite Database"
+extension      = "db"
+header         = "53 51 4C 69 74 65 20 66 6F 72 6D 61 74 20 33 00"
+footer         = ""
+max_size       = 10_737_418_240  # 10 GiB hard cap
+# page_size (u16 BE @16, value 1 → 65536) × db_pages (u32 BE @28) = exact file size
+size_hint_kind = "sqlite"
 
 [[signature]]
 name             = "WAV Audio (RIFF)"
@@ -152,11 +156,18 @@ footer    = ""
 max_size  = 4_294_967_296  # 4 GiB
 
 [[signature]]
-name      = "Windows Event Log"
-extension = "evtx"
-header    = "45 4C 46 49 4C 45 00"
-footer    = ""
-max_size  = 104_857_600  # 100 MiB
+name              = "Windows Event Log"
+extension         = "evtx"
+header            = "45 4C 46 49 4C 45 00"
+footer            = ""
+max_size          = 104_857_600   # 100 MiB hard cap
+# chunk_count (u16 LE @42) × 65536 + 4096 (file header) = exact file size
+size_hint_kind    = "linear_scaled"
+size_hint_offset  = 42
+size_hint_len     = 2
+size_hint_endian  = "le"
+size_hint_scale   = 65536
+size_hint_add     = 4096
 
 [[signature]]
 name      = "Outlook PST/OST"

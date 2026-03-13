@@ -453,6 +453,70 @@ fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -
             let addressable = csect_fat.saturating_mul(sector_size / 4);
             Some(addressable.saturating_add(1).saturating_mul(sector_size))
         }
+
+        SizeHint::LinearScaled { offset, len, little_endian, scale, add } => {
+            let field_offset = file_offset + *offset as u64;
+            let bytes = read_bytes_clamped(device, field_offset, *len as usize).ok()?;
+            if bytes.len() < *len as usize {
+                return None;
+            }
+            let value: u64 = match len {
+                2 => {
+                    let arr: [u8; 2] = bytes[..2].try_into().ok()?;
+                    if *little_endian { u16::from_le_bytes(arr) as u64 }
+                    else              { u16::from_be_bytes(arr) as u64 }
+                }
+                4 => {
+                    let arr: [u8; 4] = bytes[..4].try_into().ok()?;
+                    if *little_endian { u32::from_le_bytes(arr) as u64 }
+                    else              { u32::from_be_bytes(arr) as u64 }
+                }
+                8 => {
+                    let arr: [u8; 8] = bytes[..8].try_into().ok()?;
+                    if *little_endian { u64::from_le_bytes(arr) }
+                    else              { u64::from_be_bytes(arr) }
+                }
+                _ => return None,
+            };
+            Some(value.saturating_mul(*scale).saturating_add(*add))
+        }
+
+        SizeHint::Sqlite => {
+            // page_size: u16 BE at offset 16; value 1 encodes 65536.
+            let ps_bytes = read_bytes_clamped(device, file_offset + 16, 2).ok()?;
+            let ps_arr: [u8; 2] = ps_bytes[..2].try_into().ok()?;
+            let raw_page_size = u16::from_be_bytes(ps_arr);
+            let page_size: u64 = if raw_page_size == 1 { 65536 } else { raw_page_size as u64 };
+            if page_size < 512 {
+                return None; // corrupt or not an SQLite file
+            }
+
+            // db_pages: u32 BE at offset 28; 0 means not written (pre-3.7.0).
+            let dp_bytes = read_bytes_clamped(device, file_offset + 28, 4).ok()?;
+            let dp_arr: [u8; 4] = dp_bytes[..4].try_into().ok()?;
+            let db_pages = u32::from_be_bytes(dp_arr) as u64;
+            if db_pages == 0 {
+                return None; // field not set — caller will fall back to max_size
+            }
+
+            Some(page_size.saturating_mul(db_pages))
+        }
+
+        SizeHint::SevenZip => {
+            // Start header (32 bytes total):
+            //   offset 12: NextHeaderOffset (u64 LE) — bytes from end of start header
+            //   offset 20: NextHeaderSize   (u64 LE) — byte length of encoded header
+            // total = 32 + NextHeaderOffset + NextHeaderSize
+            let off_bytes = read_bytes_clamped(device, file_offset + 12, 8).ok()?;
+            let off_arr: [u8; 8] = off_bytes[..8].try_into().ok()?;
+            let next_offset = u64::from_le_bytes(off_arr);
+
+            let sz_bytes = read_bytes_clamped(device, file_offset + 20, 8).ok()?;
+            let sz_arr: [u8; 8] = sz_bytes[..8].try_into().ok()?;
+            let next_size = u64::from_le_bytes(sz_arr);
+
+            Some(32u64.saturating_add(next_offset).saturating_add(next_size))
+        }
     }
 }
 
@@ -844,6 +908,105 @@ mod tests {
 
         // (2 × 128 + 1) × 512 = 131,584 — capped by device size (512 KiB = 524,288)
         assert_eq!(written, 131_584, "OLE2 size_hint gave {written}, expected 131584");
+    }
+
+    #[test]
+    fn extract_linear_scaled_size_hint_limits_output() {
+        // Simulate an EVTX header: chunk_count = 3 at offset 42 (u16 LE).
+        // expected = 3 × 65536 + 4096 = 200,704 bytes
+        let mut data = vec![0u8; 512 * 1024]; // 512 KiB device
+        data[0..7].copy_from_slice(&[0x45, 0x4C, 0x46, 0x49, 0x4C, 0x45, 0x00]);
+        data[42..44].copy_from_slice(&3u16.to_le_bytes());
+
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "EVTX".into(),
+            extension: "evtx".into(),
+            header: vec![
+                Some(0x45), Some(0x4C), Some(0x46), Some(0x49),
+                Some(0x4C), Some(0x45), Some(0x00),
+            ],
+            footer: vec![],
+            max_size: 104_857_600,
+            size_hint: Some(crate::signature::SizeHint::LinearScaled {
+                offset: 42,
+                len: 2,
+                little_endian: true,
+                scale: 65536,
+                add: 4096,
+            }),
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        assert_eq!(written, 200_704, "EVTX size_hint gave {written}, expected 200704");
+    }
+
+    #[test]
+    fn extract_sqlite_size_hint_limits_output() {
+        // page_size = 4096 (u16 BE = 0x10_00 at offset 16)
+        // db_pages  = 5    (u32 BE at offset 28)
+        // expected  = 4096 × 5 = 20480 bytes
+        let mut data = vec![0u8; 512 * 1024];
+        data[0..16].copy_from_slice(b"SQLite format 3\0");
+        data[16..18].copy_from_slice(&4096u16.to_be_bytes());
+        data[28..32].copy_from_slice(&5u32.to_be_bytes());
+
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "SQLite".into(),
+            extension: "db".into(),
+            header: vec![
+                Some(0x53), Some(0x51), Some(0x4C), Some(0x69),
+                Some(0x74), Some(0x65), Some(0x20), Some(0x66),
+                Some(0x6F), Some(0x72), Some(0x6D), Some(0x61),
+                Some(0x74), Some(0x20), Some(0x33), Some(0x00),
+            ],
+            footer: vec![],
+            max_size: 10_737_418_240,
+            size_hint: Some(crate::signature::SizeHint::Sqlite),
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        assert_eq!(written, 20_480, "SQLite size_hint gave {written}, expected 20480");
+    }
+
+    #[test]
+    fn extract_seven_zip_size_hint_limits_output() {
+        // NextHeaderOffset = 1000 (u64 LE at offset 12)
+        // NextHeaderSize   = 200  (u64 LE at offset 20)
+        // expected = 32 + 1000 + 200 = 1232 bytes
+        let mut data = vec![0u8; 512 * 1024];
+        data[0..6].copy_from_slice(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]);
+        data[12..20].copy_from_slice(&1000u64.to_le_bytes());
+        data[20..28].copy_from_slice(&200u64.to_le_bytes());
+
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "7-Zip".into(),
+            extension: "7z".into(),
+            header: vec![
+                Some(0x37), Some(0x7A), Some(0xBC), Some(0xAF),
+                Some(0x27), Some(0x1C),
+            ],
+            footer: vec![],
+            max_size: 524_288_000,
+            size_hint: Some(crate::signature::SizeHint::SevenZip),
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        assert_eq!(written, 1_232, "7-Zip size_hint gave {written}, expected 1232");
     }
 
     #[test]

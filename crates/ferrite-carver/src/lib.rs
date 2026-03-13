@@ -92,6 +92,34 @@ mod tests {
             Some(super::SizeHint::Ole2),
             "OLE2 should use SizeHint::Ole2"
         );
+
+        // SQLite must use the Sqlite size hint variant.
+        let sqlite = cfg.signatures.iter().find(|s| s.extension == "db").unwrap();
+        assert_eq!(
+            sqlite.size_hint,
+            Some(super::SizeHint::Sqlite),
+            "SQLite should use SizeHint::Sqlite"
+        );
+
+        // 7-Zip must use the SevenZip size hint variant.
+        let sevenz = cfg.signatures.iter().find(|s| s.extension == "7z").unwrap();
+        assert_eq!(
+            sevenz.size_hint,
+            Some(super::SizeHint::SevenZip),
+            "7-Zip should use SizeHint::SevenZip"
+        );
+
+        // EVTX must use LinearScaled with the correct parameters.
+        let evtx = cfg.signatures.iter().find(|s| s.extension == "evtx").unwrap();
+        match evtx.size_hint.as_ref().unwrap() {
+            super::SizeHint::LinearScaled { offset, len, scale, add, .. } => {
+                assert_eq!(*offset, 42, "EVTX size_hint offset");
+                assert_eq!(*len, 2, "EVTX size_hint len");
+                assert_eq!(*scale, 65536, "EVTX chunk size");
+                assert_eq!(*add, 4096, "EVTX header size");
+            }
+            other => panic!("EVTX should use SizeHint::LinearScaled, got {other:?}"),
+        }
     }
 
     /// End-to-end test: embed a JPEG and PNG marker in a small device image,

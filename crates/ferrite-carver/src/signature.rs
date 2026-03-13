@@ -35,11 +35,57 @@ pub enum SizeHint {
     /// - `csectFat`     (u32 LE at offset 44): number of FAT sectors
     ///
     /// `max_size = (csectFat × (sector_size / 4) + 1) × sector_size`
-    ///
-    /// This gives a tight upper bound: each FAT sector can reference
-    /// `sector_size / 4` data sectors, so the result is the maximum possible
-    /// file size for the number of FAT sectors actually present.
     Ole2,
+
+    /// Read a fixed-width integer, multiply by a scale factor, then add a constant.
+    ///
+    /// `total_size = parse(data[offset..offset+len]) × scale + add`
+    ///
+    /// Used by Windows Event Log (EVTX) where offset 42 holds the chunk count
+    /// (u16 LE), each chunk is exactly 65536 bytes, and the file header is
+    /// 4096 bytes: `total = chunk_count × 65536 + 4096`.
+    LinearScaled {
+        offset: usize,
+        len: u8,
+        little_endian: bool,
+        scale: u64,
+        add: u64,
+    },
+
+    /// SQLite database file.
+    ///
+    /// File size is derived from two big-endian header fields:
+    /// - `page_size`  (u16 BE at offset 16): bytes per page; value `1` encodes 65536.
+    /// - `db_pages`   (u32 BE at offset 28): total pages in the database file.
+    ///   A value of `0` means the field is not set (pre-3.7.0 databases);
+    ///   the extractor falls back to `max_size` in that case.
+    ///
+    /// `total_size = page_size × db_pages`
+    Sqlite,
+
+    /// 7-Zip archive.
+    ///
+    /// The 32-byte start header contains two u64 LE fields that together
+    /// describe where the encoded header ends:
+    /// - `NextHeaderOffset` (u64 LE at offset 12): bytes from end of start header
+    ///   to the encoded header.
+    /// - `NextHeaderSize`   (u64 LE at offset 20): byte length of the encoded header.
+    ///
+    /// `total_size = 32 + NextHeaderOffset + NextHeaderSize`
+    SevenZip,
+}
+
+impl SizeHint {
+    /// Returns a short label used in display/debug contexts.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            SizeHint::Linear { .. }       => "linear",
+            SizeHint::Ole2                => "ole2",
+            SizeHint::LinearScaled { .. } => "linear_scaled",
+            SizeHint::Sqlite              => "sqlite",
+            SizeHint::SevenZip            => "seven_zip",
+        }
+    }
 }
 
 /// A single file-type signature: header magic bytes (with optional wildcard
@@ -93,11 +139,12 @@ impl CarvingConfig {
             header: String,
             footer: String,
             max_size: u64,
-            // Optional size-hint fields (Linear variant).
+            // Optional size-hint fields (Linear / LinearScaled variants).
             size_hint_offset: Option<usize>,
             size_hint_len: Option<u8>,
             size_hint_endian: Option<String>,
             size_hint_add: Option<u64>,
+            size_hint_scale: Option<u64>,
             // Named variant selector (e.g. "ole2" → SizeHint::Ole2).
             size_hint_kind: Option<String>,
         }
@@ -119,17 +166,35 @@ impl CarvingConfig {
                     parse_hex(&r.footer)?
                 };
 
+                let le = r
+                    .size_hint_endian
+                    .as_deref()
+                    .map(|e| e.eq_ignore_ascii_case("le"))
+                    .unwrap_or(true);
+
                 let size_hint = match r.size_hint_kind.as_deref() {
-                    Some(k) if k.eq_ignore_ascii_case("ole2") => Some(SizeHint::Ole2),
+                    Some(k) if k.eq_ignore_ascii_case("ole2")         => Some(SizeHint::Ole2),
+                    Some(k) if k.eq_ignore_ascii_case("sqlite")       => Some(SizeHint::Sqlite),
+                    Some(k) if k.eq_ignore_ascii_case("seven_zip")    => Some(SizeHint::SevenZip),
+                    Some(k) if k.eq_ignore_ascii_case("linear_scaled") => {
+                        match (r.size_hint_offset, r.size_hint_len, r.size_hint_scale) {
+                            (Some(offset), Some(len), Some(scale)) => {
+                                Some(SizeHint::LinearScaled {
+                                    offset,
+                                    len,
+                                    little_endian: le,
+                                    scale,
+                                    add: r.size_hint_add.unwrap_or(0),
+                                })
+                            }
+                            _ => None,
+                        }
+                    }
                     _ => match (r.size_hint_offset, r.size_hint_len) {
                         (Some(offset), Some(len)) => Some(SizeHint::Linear {
                             offset,
                             len,
-                            little_endian: r
-                                .size_hint_endian
-                                .as_deref()
-                                .map(|e| e.eq_ignore_ascii_case("le"))
-                                .unwrap_or(true),
+                            little_endian: le,
                             add: r.size_hint_add.unwrap_or(0),
                         }),
                         _ => None,
@@ -298,6 +363,68 @@ size_hint_kind = "ole2"
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
         let sig = &cfg.signatures[0];
         assert_eq!(sig.size_hint, Some(SizeHint::Ole2));
+    }
+
+    #[test]
+    fn load_toml_size_hint_sqlite() {
+        let toml = r#"
+[[signature]]
+name           = "SQLite Database"
+extension      = "db"
+header         = "53 51 4C 69 74 65 20 66 6F 72 6D 61 74 20 33 00"
+footer         = ""
+max_size       = 10737418240
+size_hint_kind = "sqlite"
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        let sig = &cfg.signatures[0];
+        assert_eq!(sig.size_hint, Some(SizeHint::Sqlite));
+    }
+
+    #[test]
+    fn load_toml_size_hint_seven_zip() {
+        let toml = r#"
+[[signature]]
+name           = "7-Zip Archive"
+extension      = "7z"
+header         = "37 7A BC AF 27 1C"
+footer         = ""
+max_size       = 524288000
+size_hint_kind = "seven_zip"
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        let sig = &cfg.signatures[0];
+        assert_eq!(sig.size_hint, Some(SizeHint::SevenZip));
+    }
+
+    #[test]
+    fn load_toml_size_hint_linear_scaled() {
+        let toml = r#"
+[[signature]]
+name              = "Windows Event Log"
+extension         = "evtx"
+header            = "45 4C 46 49 4C 45 00"
+footer            = ""
+max_size          = 104857600
+size_hint_kind    = "linear_scaled"
+size_hint_offset  = 42
+size_hint_len     = 2
+size_hint_endian  = "le"
+size_hint_scale   = 65536
+size_hint_add     = 4096
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        let sig = &cfg.signatures[0];
+        match sig.size_hint.as_ref().unwrap() {
+            SizeHint::LinearScaled { offset, len, little_endian, scale, add } => {
+                assert_eq!(*offset, 42);
+                assert_eq!(*len, 2);
+                assert!(little_endian);
+                assert_eq!(*scale, 65536);
+                assert_eq!(*add, 4096);
+            }
+            other => panic!("expected LinearScaled, got {other:?}"),
+        }
     }
 
     #[test]
