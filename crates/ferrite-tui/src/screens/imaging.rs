@@ -398,8 +398,8 @@ impl ImagingState {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(11), // config fields + hint
-                Constraint::Length(3), // progress bar
-                Constraint::Min(0),    // stats / messages
+                Constraint::Length(3),  // progress bar
+                Constraint::Min(0),     // stats / messages
             ])
             .split(inner);
 

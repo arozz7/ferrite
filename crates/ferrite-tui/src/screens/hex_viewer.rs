@@ -89,7 +89,11 @@ impl HexViewerState {
         if let Some(device) = &self.device {
             let ss = device.sector_size() as u64;
             let size = device.size();
-            if size == 0 { 0 } else { (size - 1) / ss }
+            if size == 0 {
+                0
+            } else {
+                (size - 1) / ss
+            }
         } else {
             0
         }
@@ -123,7 +127,9 @@ impl HexViewerState {
                         self.edit_mode = EditMode::None;
                     }
                     KeyCode::Esc => self.edit_mode = EditMode::None,
-                    KeyCode::Backspace => { self.input.pop(); }
+                    KeyCode::Backspace => {
+                        self.input.pop();
+                    }
                     KeyCode::Char(c) if c.is_ascii_digit() => self.input.push(c),
                     _ => {}
                 }
@@ -144,11 +150,11 @@ impl HexViewerState {
                         self.edit_mode = EditMode::None;
                     }
                     KeyCode::Esc => self.edit_mode = EditMode::None,
-                    KeyCode::Backspace => { self.input.pop(); }
+                    KeyCode::Backspace => {
+                        self.input.pop();
+                    }
                     // Accept hex digits and the 'x'/'X' for a 0x prefix.
-                    KeyCode::Char(c)
-                        if c.is_ascii_hexdigit() || c == 'x' || c == 'X' =>
-                    {
+                    KeyCode::Char(c) if c.is_ascii_hexdigit() || c == 'x' || c == 'X' => {
                         self.input.push(c);
                     }
                     _ => {}
@@ -226,7 +232,9 @@ impl HexViewerState {
         };
         let offset_base = self.current_lba * ss;
 
-        let sector_type = self.data.as_deref()
+        let sector_type = self
+            .data
+            .as_deref()
             .and_then(|d| detect_sector_type(d, self.current_lba));
 
         let mut lines: Vec<Line> = Vec::new();
@@ -240,12 +248,16 @@ impl HexViewerState {
         );
         let mut header_spans = vec![Span::styled(
             header,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )];
         if let Some(t) = sector_type {
             header_spans.push(Span::styled(
                 format!("  [{t}]"),
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
         lines.push(Line::from(header_spans));
@@ -426,9 +438,7 @@ fn detect_sector_type(data: &[u8], lba: u64) -> Option<&'static str> {
         return Some("SQLite Database");
     }
     // OLE2 Compound Document (DOC/XLS/PPT/PST/MDB).
-    if len >= 8
-        && data[0..8] == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]
-    {
+    if len >= 8 && data[0..8] == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1] {
         return Some("OLE2 Compound Doc (DOC/XLS/PPT/PST)");
     }
     // RIFF container (WAV/AVI) — checked before MZ to avoid misidentifying.
@@ -578,7 +588,10 @@ mod tests {
         let mut data = vec![0u8; 512];
         data[510] = 0x55;
         data[511] = 0xAA;
-        assert_eq!(detect_sector_type(&data, 0), Some("MBR — Master Boot Record"));
+        assert_eq!(
+            detect_sector_type(&data, 0),
+            Some("MBR — Master Boot Record")
+        );
         // Same signature at LBA 1 should NOT be labelled MBR.
         assert_eq!(detect_sector_type(&data, 1), None);
     }
@@ -599,7 +612,10 @@ mod tests {
     fn detect_sector_type_ntfs() {
         let mut data = vec![0u8; 512];
         data[3..11].copy_from_slice(b"NTFS    ");
-        assert_eq!(detect_sector_type(&data, 0), Some("NTFS Volume Boot Record"));
+        assert_eq!(
+            detect_sector_type(&data, 0),
+            Some("NTFS Volume Boot Record")
+        );
     }
 
     #[test]
@@ -617,7 +633,10 @@ mod tests {
     #[test]
     fn detect_sector_type_zip() {
         let data = b"PK\x03\x04extra".to_vec();
-        assert_eq!(detect_sector_type(&data, 0), Some("ZIP / DOCX / XLSX / PPTX"));
+        assert_eq!(
+            detect_sector_type(&data, 0),
+            Some("ZIP / DOCX / XLSX / PPTX")
+        );
     }
 
     #[test]

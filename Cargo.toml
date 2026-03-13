@@ -40,6 +40,9 @@ toml       = "0.8"
 ratatui   = "0.29"
 crossterm = "0.28"
 
+# Image decoding
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp", "gif"] }
+
 # Utilities
 uuid      = { version = "1", features = ["v4"] }
 chrono    = { version = "0.4", features = ["serde"] }

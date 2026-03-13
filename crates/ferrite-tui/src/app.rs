@@ -296,7 +296,7 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
         2 => " d: dest  m: mapfile  l: start LBA  e: end LBA  b: block size  r: reverse  s: start  c: cancel  Esc: stop edit  Tab: next  q: quit",
         3 => " r: read partition table  s: scan device  w: export  Tab: next  q: quit  R: report",
         4 => " ↑/↓: navigate  Enter: open dir  Backspace: go up  d: toggle deleted  o: open fs  Tab: next  q: quit",
-        5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  h: view in hex  Tab: next  q: quit",
+        5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  h: hex  v: preview  Tab: next  q: quit",
         6 => " ↑/↓: sector  PgUp/PgDn: ±16  Home/End  g: jump to LBA  b: jump to offset  Tab: next  q: quit",
         _ => " Tab: next  q: quit",
     }
