@@ -133,7 +133,7 @@ impl App {
             let in_edit = match self.screen_idx {
                 2 => self.imaging.is_editing(),
                 5 => self.carving.is_editing(),
-                6 => self.hex_viewer.editing,
+                6 => self.hex_viewer.is_editing(),
                 _ => false,
             };
             if !in_edit {
@@ -163,7 +163,17 @@ impl App {
             2 => self.imaging.handle_key(code, modifiers),
             3 => self.partition.handle_key(code, modifiers),
             4 => self.file_browser.handle_key(code, modifiers),
-            5 => self.carving.handle_key(code, modifiers),
+            5 => {
+                // 'h' on a selected hit deep-links into the hex viewer.
+                if code == KeyCode::Char('h') && modifiers.is_empty() {
+                    if let Some(offset) = self.carving.selected_hit_offset() {
+                        self.hex_viewer.jump_to_byte_offset(offset);
+                        self.screen_idx = 6;
+                        return;
+                    }
+                }
+                self.carving.handle_key(code, modifiers);
+            }
             6 => self.hex_viewer.handle_key(code, modifiers),
             _ => {}
         }
@@ -286,8 +296,8 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
         2 => " d: dest  m: mapfile  l: start LBA  e: end LBA  b: block size  r: reverse  s: start  c: cancel  Esc: stop edit  Tab: next  q: quit",
         3 => " r: read partition table  s: scan device  w: export  Tab: next  q: quit  R: report",
         4 => " ↑/↓: navigate  Enter: open dir  Backspace: go up  d: toggle deleted  o: open fs  Tab: next  q: quit",
-        5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  Tab: next  q: quit",
-        6 => " ↑/↓: prev/next sector  g: jump to LBA  Tab: next  q: quit",
+        5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  h: view in hex  Tab: next  q: quit",
+        6 => " ↑/↓: sector  PgUp/PgDn: ±16  Home/End  g: jump to LBA  b: jump to offset  Tab: next  q: quit",
         _ => " Tab: next  q: quit",
     }
 }

@@ -195,6 +195,16 @@ impl CarvingState {
         self.editing_dir
     }
 
+    /// Returns the byte offset of the currently selected hit when focus is on
+    /// the Hits panel.  Used by `app.rs` to deep-link into the hex viewer.
+    pub fn selected_hit_offset(&self) -> Option<u64> {
+        if self.focus == CarveFocus::Hits {
+            self.hits.get(self.hit_sel).map(|e| e.hit.byte_offset)
+        } else {
+            None
+        }
+    }
+
     /// Suggest an output directory derived from the imaging destination path.
     /// Called by `app.rs` whenever the user navigates to this screen.
     /// Only updates if `output_dir` is still empty (user hasn't set one yet).
