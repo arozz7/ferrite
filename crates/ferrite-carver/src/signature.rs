@@ -103,6 +103,13 @@ pub struct Signature {
     pub header: Vec<Option<u8>>,
     /// Optional footer magic bytes that mark the end.  Empty = no footer.
     pub footer: Vec<u8>,
+    /// When `true`, extraction uses the **last** occurrence of `footer` within
+    /// the extraction window rather than the first.
+    ///
+    /// Use for formats like PDF that may contain the footer byte sequence
+    /// inside binary streams, or that accumulate multiple EOF markers through
+    /// incremental updates.
+    pub footer_last: bool,
     /// Maximum number of bytes to extract (caps the search window).
     pub max_size: u64,
     /// If present, the extractor reads the actual file size from this field
@@ -138,6 +145,8 @@ impl CarvingConfig {
             extension: String,
             header: String,
             footer: String,
+            #[serde(default)]
+            footer_last: bool,
             max_size: u64,
             // Optional size-hint fields (Linear / LinearScaled variants).
             size_hint_offset: Option<usize>,
@@ -206,6 +215,7 @@ impl CarvingConfig {
                     extension: r.extension,
                     header: parse_hex_pattern(&r.header)?,
                     footer,
+                    footer_last: r.footer_last,
                     max_size: r.max_size,
                     size_hint,
                 })
@@ -447,6 +457,35 @@ max_size  = 200
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
         assert_eq!(cfg.signatures.len(), 2);
         assert_eq!(cfg.signatures[1].header, vec![Some(0xBB), Some(0xCC)]);
+    }
+
+    #[test]
+    fn load_toml_footer_last_defaults_false() {
+        let toml = r#"
+[[signature]]
+name      = "Test"
+extension = "tst"
+header    = "AA BB"
+footer    = "CC DD"
+max_size  = 1000
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        assert!(!cfg.signatures[0].footer_last, "footer_last should default to false");
+    }
+
+    #[test]
+    fn load_toml_footer_last_explicit_true() {
+        let toml = r#"
+[[signature]]
+name        = "PDF Document"
+extension   = "pdf"
+header      = "25 50 44 46"
+footer      = "25 25 45 4F 46"
+footer_last = true
+max_size    = 104857600
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        assert!(cfg.signatures[0].footer_last, "footer_last should be true when set");
     }
 
     #[test]

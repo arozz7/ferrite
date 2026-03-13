@@ -212,6 +212,14 @@ impl Carver {
 
         if sig.footer.is_empty() {
             stream_bytes(self.device.as_ref(), hit.byte_offset, max_end, writer)
+        } else if sig.footer_last {
+            stream_until_last_footer(
+                self.device.as_ref(),
+                hit.byte_offset,
+                max_end,
+                &sig.footer,
+                writer,
+            )
         } else {
             stream_until_footer(
                 self.device.as_ref(),
@@ -399,6 +407,60 @@ fn stream_until_footer(
     Ok(written)
 }
 
+/// Write from `start` up to and including the **last** occurrence of `footer`
+/// within `[start, max_end)`, capped at `max_end`.
+///
+/// Reads the full extraction window into memory in chunks, tracking every
+/// footer match.  At the end, writes exactly `last_footer_end` bytes.
+/// If no footer is found, writes the entire window (same behaviour as
+/// [`stream_bytes`]).
+///
+/// This is the correct strategy for formats like PDF where the footer byte
+/// sequence (`%%EOF`) can appear inside binary streams, and for incrementally
+/// updated files that accumulate multiple EOF markers.
+fn stream_until_last_footer(
+    device: &dyn BlockDevice,
+    start: u64,
+    max_end: u64,
+    footer: &[u8],
+    writer: &mut dyn Write,
+) -> Result<u64> {
+    // We need to see all data before we can identify the last footer position.
+    // Read in chunks and maintain a running candidate for the last match.
+    let overlap = footer.len().saturating_sub(1);
+    let mut pos = start;
+    let mut buf: Vec<u8> = Vec::new();
+
+    // Accumulate all bytes (respecting EXTRACT_CHUNK to avoid huge allocations
+    // on single reads while still streaming in manageable pieces).
+    while pos < max_end {
+        let to_read = EXTRACT_CHUNK.min((max_end - pos) as usize);
+        let chunk = read_bytes_clamped(device, pos, to_read)?;
+        if chunk.is_empty() {
+            break;
+        }
+        pos += chunk.len() as u64;
+        buf.extend_from_slice(&chunk);
+    }
+
+    // Find the last occurrence of footer in the accumulated buffer.
+    // `memmem::rfind` scans from the right, which is O(n) and avoids
+    // iterating over every match manually.
+    let write_end = if let Some(last_pos) = memmem::rfind(&buf, footer) {
+        last_pos + footer.len()
+    } else {
+        // No footer found — write everything (same as stream_bytes).
+        buf.len()
+    };
+
+    let _ = overlap; // overlap concept not needed here (full buffer in hand)
+    writer
+        .write_all(&buf[..write_end])
+        .map_err(|e| CarveError::Io(e.to_string()))?;
+
+    Ok(write_end as u64)
+}
+
 // ── Size hint reader ──────────────────────────────────────────────────────────
 
 /// Read the embedded size hint from the device and return the implied total
@@ -574,6 +636,7 @@ mod tests {
             extension: "bin".into(),
             header: header.iter().map(|&b| Some(b)).collect(),
             footer: footer.to_vec(),
+            footer_last: false,
             max_size,
             size_hint: None,
         }
@@ -816,6 +879,7 @@ mod tests {
                 Some(0x41), Some(0x56), Some(0x49), Some(0x20), // AVI<space>
             ],
             footer: vec![],
+            footer_last: false,
             max_size: 2_147_483_648,
             size_hint: None,
         };
@@ -828,6 +892,7 @@ mod tests {
                 Some(0x57), Some(0x41), Some(0x56), Some(0x45), // WAVE
             ],
             footer: vec![],
+            footer_last: false,
             max_size: 2_147_483_648,
             size_hint: None,
         };
@@ -857,6 +922,7 @@ mod tests {
             extension: "avi".into(),
             header: vec![Some(0x52), Some(0x49), Some(0x46), Some(0x46)],
             footer: vec![],
+            footer_last: false,
             max_size: 2_147_483_648,
             size_hint: Some(crate::signature::SizeHint::Linear {
                 offset: 4,
@@ -897,6 +963,7 @@ mod tests {
                 Some(0xA1), Some(0xB1), Some(0x1A), Some(0xE1),
             ],
             footer: vec![],
+            footer_last: false,
             max_size: 524_288_000,
             size_hint: Some(crate::signature::SizeHint::Ole2),
         };
@@ -927,6 +994,7 @@ mod tests {
                 Some(0x4C), Some(0x45), Some(0x00),
             ],
             footer: vec![],
+            footer_last: false,
             max_size: 104_857_600,
             size_hint: Some(crate::signature::SizeHint::LinearScaled {
                 offset: 42,
@@ -966,6 +1034,7 @@ mod tests {
                 Some(0x74), Some(0x20), Some(0x33), Some(0x00),
             ],
             footer: vec![],
+            footer_last: false,
             max_size: 10_737_418_240,
             size_hint: Some(crate::signature::SizeHint::Sqlite),
         };
@@ -997,6 +1066,7 @@ mod tests {
                 Some(0x27), Some(0x1C),
             ],
             footer: vec![],
+            footer_last: false,
             max_size: 524_288_000,
             size_hint: Some(crate::signature::SizeHint::SevenZip),
         };
@@ -1007,6 +1077,59 @@ mod tests {
             .unwrap();
 
         assert_eq!(written, 1_232, "7-Zip size_hint gave {written}, expected 1232");
+    }
+
+    #[test]
+    fn extract_footer_last_stops_at_last_occurrence() {
+        // Build data with footer appearing three times — extractor must stop
+        // at the LAST one, not the first.
+        let footer = [0xFF, 0xD9u8];
+        let mut data = vec![0xAAu8; 1024];
+        data[10..12].copy_from_slice(&footer); // first  (should NOT stop here)
+        data[50..52].copy_from_slice(&footer); // second (should NOT stop here)
+        data[200..202].copy_from_slice(&footer); // last  (should stop here → 202 bytes)
+
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "Test".into(),
+            extension: "tst".into(),
+            header: vec![Some(0xAA)],
+            footer: footer.to_vec(),
+            footer_last: true,
+            max_size: 1024,
+            size_hint: None,
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        assert_eq!(written, 202, "footer_last should stop after the last footer at offset 200, got {written}");
+        assert_eq!(&out[200..202], &footer);
+    }
+
+    #[test]
+    fn extract_footer_last_no_footer_writes_all() {
+        // With footer_last and no footer present, writes the full max_size.
+        let data = vec![0xBBu8; 500];
+        let dev = device_from(data);
+        let sig = Signature {
+            name: "Test".into(),
+            extension: "tst".into(),
+            header: vec![Some(0xBB)],
+            footer: vec![0xFF, 0xFE],
+            footer_last: true,
+            max_size: 300,
+            size_hint: None,
+        };
+        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let mut out = Vec::new();
+        let written = Carver::new(dev, CarvingConfig::default())
+            .extract(&hit, &mut out)
+            .unwrap();
+
+        assert_eq!(written, 300);
     }
 
     #[test]

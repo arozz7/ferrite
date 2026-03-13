@@ -43,19 +43,34 @@ mod tests {
     fn builtin_signatures_parse() {
         let toml = include_str!("../../../config/signatures.toml");
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.signatures.len(), 27, "expected 27 built-in signatures");
+        assert_eq!(cfg.signatures.len(), 28, "expected 28 built-in signatures");
 
-        // Spot-check a few well-known magic sequences
-        let jpeg = cfg
+        // Both JPEG variants must be present with 4-byte headers.
+        let jpeg_jfif = cfg
             .signatures
             .iter()
-            .find(|s| s.extension == "jpg")
-            .unwrap();
+            .find(|s| s.extension == "jpg" && s.header.get(3) == Some(&Some(0xE0)))
+            .expect("JPEG JFIF (FF D8 FF E0) not found");
         assert_eq!(
-            jpeg.header,
-            &[Some(0xFF), Some(0xD8), Some(0xFF)]
+            jpeg_jfif.header,
+            &[Some(0xFF), Some(0xD8), Some(0xFF), Some(0xE0)]
         );
-        assert_eq!(jpeg.footer, &[0xFF, 0xD9]);
+        assert_eq!(jpeg_jfif.footer, &[0xFF, 0xD9]);
+
+        let jpeg_exif = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "jpg" && s.header.get(3) == Some(&Some(0xE1)))
+            .expect("JPEG Exif (FF D8 FF E1) not found");
+        assert_eq!(
+            jpeg_exif.header,
+            &[Some(0xFF), Some(0xD8), Some(0xFF), Some(0xE1)]
+        );
+        assert_eq!(jpeg_exif.footer, &[0xFF, 0xD9]);
+
+        // PDF must use footer_last mode.
+        let pdf = cfg.signatures.iter().find(|s| s.extension == "pdf").unwrap();
+        assert!(pdf.footer_last, "PDF should have footer_last = true");
 
         let png = cfg
             .signatures
@@ -131,8 +146,8 @@ mod tests {
         cfg.scan_chunk_size = 512; // small chunks to stress-test boundaries
 
         let mut data = vec![0u8; 4096];
-        // JPEG at offset 0
-        data[0..3].copy_from_slice(&[0xFF, 0xD8, 0xFF]);
+        // JPEG (Exif) at offset 0 — use FF D8 FF E1 to match the 4-byte Exif signature.
+        data[0..4].copy_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
         data[20..22].copy_from_slice(&[0xFF, 0xD9]); // JPEG footer
                                                      // PNG at offset 1024
         data[1024..1032].copy_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);

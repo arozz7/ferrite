@@ -1201,6 +1201,7 @@ mod tests {
             extension: "tst".to_string(),
             header: vec![Some(0xFF)],
             footer: vec![],
+            footer_last: false,
             max_size: 1024,
             size_hint: None,
         };
@@ -1241,6 +1242,7 @@ mod tests {
             extension: "jpg".to_string(),
             header: vec![Some(0xFF), Some(0xD8), Some(0xFF)],
             footer: vec![0xFF, 0xD9],
+            footer_last: false,
             max_size: 10 * 1024 * 1024,
             size_hint: None,
         };

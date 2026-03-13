@@ -9,9 +9,20 @@
 #   max_size   = maximum file size in bytes (caps extraction window)
 
 [[signature]]
-name      = "JPEG Image"
+name      = "JPEG Image (JFIF)"
 extension = "jpg"
-header    = "FF D8 FF"
+# 4-byte header: FF D8 FF E0 — standard JFIF JPEGs written by cameras/software.
+# Using 4 bytes avoids matching embedded EXIF thumbnails which typically start
+# with FF D8 FF DB (quantization table) rather than FF D8 FF E0.
+header    = "FF D8 FF E0"
+footer    = "FF D9"
+max_size  = 10_485_760  # 10 MiB
+
+[[signature]]
+name      = "JPEG Image (Exif)"
+extension = "jpg"
+# 4-byte header: FF D8 FF E1 — camera photos with EXIF/APP1 metadata block.
+header    = "FF D8 FF E1"
 footer    = "FF D9"
 max_size  = 10_485_760  # 10 MiB
 
@@ -23,11 +34,15 @@ footer    = "49 45 4E 44 AE 42 60 82"
 max_size  = 52_428_800  # 50 MiB
 
 [[signature]]
-name      = "PDF Document"
-extension = "pdf"
-header    = "25 50 44 46"
-footer    = "25 25 45 4F 46"
-max_size  = 104_857_600  # 100 MiB
+name        = "PDF Document"
+extension   = "pdf"
+header      = "25 50 44 46"
+footer      = "25 25 45 4F 46"
+# footer_last = true: PDF binary streams can contain %%EOF internally, and
+# incrementally-updated PDFs accumulate multiple %%EOF markers.  Using the
+# last occurrence gives the complete, valid file.
+footer_last = true
+max_size    = 104_857_600  # 100 MiB
 
 [[signature]]
 name      = "ZIP / Office (DOCX/XLSX/PPTX)"
