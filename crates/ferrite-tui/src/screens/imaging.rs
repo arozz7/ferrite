@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_blockdev::BlockDevice;
+use ferrite_imaging::mapfile::BlockStatus;
 use ferrite_imaging::{ImagingConfig, ImagingEngine, ProgressReporter, ProgressUpdate, Signal};
 use ferrite_smart;
 use ratatui::{
@@ -57,20 +58,22 @@ enum EditField {
 
 /// `ProgressReporter` impl that forwards updates through a sync channel.
 ///
-/// When `pause` is set (by the thermal guard thread), `report` spin-waits
+/// When `pause` (thermal) or `user_pause` (manual) is set, `report` spin-waits
 /// until the flag is cleared or the user cancels.
 struct ChannelReporter {
     tx: SyncSender<ImagingMsg>,
     cancel: Arc<AtomicBool>,
     /// Thermal pause flag — set by the thermal guard thread.
     pause: Arc<AtomicBool>,
+    /// Manual pause flag — set by the user pressing `p`.
+    user_pause: Arc<AtomicBool>,
 }
 
 impl ProgressReporter for ChannelReporter {
     fn report(&mut self, update: &ProgressUpdate) -> Signal {
         let _ = self.tx.try_send(ImagingMsg::Progress(update.clone()));
-        // Spin-wait while thermally paused; yield to avoid busy-looping.
-        while self.pause.load(Ordering::Relaxed) {
+        // Spin-wait while thermally paused or manually paused; yield to avoid busy-looping.
+        while self.pause.load(Ordering::Relaxed) || self.user_pause.load(Ordering::Relaxed) {
             if self.cancel.load(Ordering::Relaxed) {
                 return Signal::Cancel;
             }
@@ -116,6 +119,14 @@ pub struct ImagingState {
     pub write_blocked: Option<bool>,
     /// When `true`, the copy pass reads from end to start.
     pub reverse: bool,
+    /// Latest mapfile block snapshot for sector-map rendering.
+    sector_map: Vec<ferrite_imaging::mapfile::Block>,
+    /// User-initiated pause flag (shared with the ChannelReporter).
+    user_pause: Arc<AtomicBool>,
+    /// `true` while the user has manually paused imaging.
+    pub user_paused: bool,
+    /// `true` when the imaging session is resuming from an existing mapfile.
+    pub imaging_resumed: bool,
 }
 
 impl Default for ImagingState {
@@ -144,6 +155,10 @@ impl ImagingState {
             thermal_paused: false,
             write_blocked: None,
             reverse: false,
+            sector_map: Vec::new(),
+            user_pause: Arc::new(AtomicBool::new(false)),
+            user_paused: false,
+            imaging_resumed: false,
         }
     }
 
@@ -159,6 +174,10 @@ impl ImagingState {
         self.write_blocked = None;
         self.start_lba_str = String::new();
         self.end_lba_str = String::new();
+        self.sector_map = Vec::new();
+        self.user_pause.store(false, Ordering::Relaxed);
+        self.user_paused = false;
+        self.imaging_resumed = false;
     }
 
     /// Returns `true` while the user is typing into a path field.
@@ -175,6 +194,9 @@ impl ImagingState {
         loop {
             match rx.try_recv() {
                 Ok(ImagingMsg::Progress(u)) => {
+                    if let Some(snapshot) = u.map_snapshot.clone() {
+                        self.sector_map = snapshot;
+                    }
                     self.latest = Some(u);
                 }
                 Ok(ImagingMsg::Done(sha256)) => {
@@ -237,6 +259,17 @@ impl ImagingState {
             KeyCode::Char('e') => self.edit_field = Some(EditField::EndLba),
             KeyCode::Char('b') => self.edit_field = Some(EditField::BlockSize),
             KeyCode::Char('r') => self.reverse = !self.reverse,
+            KeyCode::Char('p') => {
+                if self.status == ImagingStatus::Running || self.user_paused {
+                    if self.user_paused {
+                        self.user_pause.store(false, Ordering::Relaxed);
+                        self.user_paused = false;
+                    } else {
+                        self.user_pause.store(true, Ordering::Relaxed);
+                        self.user_paused = true;
+                    }
+                }
+            }
             KeyCode::Char('s') => self.start_imaging(),
             KeyCode::Char('c') => self.cancel_imaging(),
             _ => {}
@@ -266,10 +299,18 @@ impl ImagingState {
             return;
         }
 
+        // Detect resume: mapfile path is set and the file already exists.
+        self.imaging_resumed =
+            !self.mapfile_path.is_empty() && std::path::Path::new(&self.mapfile_path).exists();
+
         self.cancel.store(false, Ordering::Relaxed);
         self.pause.store(false, Ordering::Relaxed);
+        self.user_pause.store(false, Ordering::Relaxed);
+        self.user_paused = false;
+        self.sector_map = Vec::new();
         let cancel = Arc::clone(&self.cancel);
         let pause = Arc::clone(&self.pause);
+        let user_pause_reporter = Arc::clone(&self.user_pause);
         let (tx, rx) = mpsc::sync_channel::<ImagingMsg>(64);
         self.rx = Some(rx);
         self.status = ImagingStatus::Running;
@@ -367,6 +408,7 @@ impl ImagingState {
                 tx: reporter_tx,
                 cancel,
                 pause,
+                user_pause: user_pause_reporter,
             };
             match engine.run(&mut reporter) {
                 Ok(()) => {
@@ -397,8 +439,9 @@ impl ImagingState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(11), // config fields + hint
+                Constraint::Length(12), // config fields + hint + resume line
                 Constraint::Length(3),  // progress bar
+                Constraint::Length(6),  // sector map
                 Constraint::Min(0),     // stats / messages
             ])
             .split(inner);
@@ -427,7 +470,18 @@ impl ImagingState {
         let source_label = self
             .device
             .as_ref()
-            .map(|d| d.device_info().path.clone())
+            .map(|d| {
+                let info = d.device_info();
+                let size_gib = info.size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                match (&info.model, &info.serial) {
+                    (Some(m), Some(s)) => {
+                        let _ = s;
+                        format!("{} — {} ({:.1} GiB)", info.path, m, size_gib)
+                    }
+                    (Some(m), None) => format!("{} — {} ({:.1} GiB)", info.path, m, size_gib),
+                    _ => format!("{} ({:.1} GiB)", info.path, size_gib),
+                }
+            })
             .unwrap_or_else(|| "—".into());
 
         let config_text = vec![
@@ -457,6 +511,19 @@ impl ImagingState {
                     },
                     map_style,
                 ),
+            ]),
+            Line::from(vec![
+                Span::raw(" Resume  : "),
+                if self.imaging_resumed {
+                    Span::styled(
+                        "YES — continuing from saved mapfile",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::styled("NO — fresh start", Style::default().fg(Color::DarkGray))
+                },
             ]),
             Line::from(vec![
                 Span::raw(" Start   : "),
@@ -579,18 +646,31 @@ impl ImagingState {
         };
 
         let bar_style = match &self.status {
+            ImagingStatus::Running if self.user_paused || self.thermal_paused => {
+                Style::default().fg(Color::Yellow)
+            }
             ImagingStatus::Running => Style::default().fg(Color::Green),
             ImagingStatus::Complete => Style::default().fg(Color::Green),
             ImagingStatus::Error(_) => Style::default().fg(Color::Red),
             _ => Style::default().fg(Color::DarkGray),
         };
 
+        let bar_title = if self.thermal_paused {
+            " Progress [⚠ THERMAL PAUSE] "
+        } else if self.user_paused {
+            " Progress [⏸ PAUSED — p to resume] "
+        } else {
+            " Progress "
+        };
         let gauge = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title(" Progress "))
+            .block(Block::default().borders(Borders::ALL).title(bar_title))
             .ratio(ratio)
             .label(bar_label)
             .gauge_style(bar_style);
         frame.render_widget(gauge, chunks[1]);
+
+        // ── Sector map ────────────────────────────────────────────────────────
+        self.render_sector_map(frame, chunks[2]);
 
         // ── Stats ─────────────────────────────────────────────────────────────
         // ── Write-blocker status line ─────────────────────────────────────────
@@ -625,6 +705,24 @@ impl ImagingState {
                 format!(" Rate: {rate_mbps:.1} MB/s")
             };
 
+            let eta_str = if u.read_rate_bps > 0 && u.bytes_finished < u.device_size {
+                let remaining = u.device_size - u.bytes_finished;
+                let eta_secs = (remaining as f64 / u.read_rate_bps as f64) as u64;
+                if eta_secs >= 3600 {
+                    format!(
+                        "  ETA {:02}h{:02}m",
+                        eta_secs / 3600,
+                        (eta_secs % 3600) / 60
+                    )
+                } else if eta_secs >= 60 {
+                    format!("  ETA {:02}m{:02}s", eta_secs / 60, eta_secs % 60)
+                } else {
+                    format!("  ETA {eta_secs}s")
+                }
+            } else {
+                String::new()
+            };
+
             let temp_str = match (self.current_temp, self.thermal_paused) {
                 (Some(t), true) => format!("  Temp: {t}°C ⚠ PAUSED (>55°C)"),
                 (Some(t), false) => format!("  Temp: {t}°C"),
@@ -632,7 +730,7 @@ impl ImagingState {
             };
 
             let mut stats = format!(
-                " Finished: {}  Bad: {}  Non-tried: {}  Elapsed: {:02}:{:02}:{:02}\n{}{}",
+                " Finished: {}  Bad: {}  Non-tried: {}  Elapsed: {:02}:{:02}:{:02}\n{}{}{}",
                 fmt_bytes(u.bytes_finished),
                 fmt_bytes(u.bytes_bad),
                 fmt_bytes(u.bytes_non_tried),
@@ -640,6 +738,7 @@ impl ImagingState {
                 (elapsed % 3600) / 60,
                 elapsed % 60,
                 rate_str,
+                eta_str,
                 temp_str,
             );
             if let Some(hash) = &self.image_sha256 {
@@ -652,13 +751,13 @@ impl ImagingState {
                 frame.render_widget(
                     Paragraph::new(text)
                         .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
-                    chunks[2],
+                    chunks[3],
                 );
             } else {
                 frame.render_widget(
                     Paragraph::new(stats)
                         .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
-                    chunks[2],
+                    chunks[3],
                 );
             }
         } else {
@@ -670,16 +769,111 @@ impl ImagingState {
                 frame.render_widget(
                     Paragraph::new(text)
                         .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
-                    chunks[2],
+                    chunks[3],
                 );
             } else {
                 frame.render_widget(
                     Paragraph::new(base_msg)
                         .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
-                    chunks[2],
+                    chunks[3],
                 );
             }
         }
+    }
+
+    fn render_sector_map(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::text::{Line, Span, Text};
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Sector Map  ██ Finished  ░░ Non-tried  ▒▒ Error  ██ Bad  ▶ Current ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if inner.width == 0 || inner.height == 0 || self.sector_map.is_empty() {
+            let msg = if self.status == ImagingStatus::Idle {
+                " Start imaging to see the sector map."
+            } else {
+                " Waiting for sector map data…"
+            };
+            frame.render_widget(
+                Paragraph::new(msg).style(Style::default().fg(Color::DarkGray)),
+                inner,
+            );
+            return;
+        }
+
+        let device_size = self.latest.as_ref().map(|u| u.device_size).unwrap_or(0);
+        if device_size == 0 {
+            return;
+        }
+
+        let current_offset = self.latest.as_ref().map(|u| u.current_offset).unwrap_or(0);
+
+        let total_cells = (inner.width as usize) * (inner.height as usize);
+        if total_cells == 0 {
+            return;
+        }
+        let bytes_per_cell = (device_size as usize).div_ceil(total_cells);
+
+        // For each cell, find the dominant block status at that byte range.
+        let mut cells: Vec<(char, Color)> = Vec::with_capacity(total_cells);
+
+        for cell_idx in 0..total_cells {
+            let cell_start = cell_idx as u64 * bytes_per_cell as u64;
+            let cell_end = (cell_start + bytes_per_cell as u64).min(device_size);
+
+            // Current position marker
+            if current_offset >= cell_start && current_offset < cell_end {
+                cells.push(('▶', Color::Cyan));
+                continue;
+            }
+
+            // Find the dominant status in this cell range
+            let mut counts = [0u64; 5]; // NonTried, NonTrimmed, NonScraped, BadSector, Finished
+            for block in &self.sector_map {
+                let block_end = block.pos + block.size;
+                if block.pos >= cell_end || block_end <= cell_start {
+                    continue;
+                }
+                let overlap_start = block.pos.max(cell_start);
+                let overlap_end = block_end.min(cell_end);
+                let overlap = overlap_end - overlap_start;
+                match block.status {
+                    BlockStatus::NonTried => counts[0] += overlap,
+                    BlockStatus::NonTrimmed => counts[1] += overlap,
+                    BlockStatus::NonScraped => counts[2] += overlap,
+                    BlockStatus::BadSector => counts[3] += overlap,
+                    BlockStatus::Finished => counts[4] += overlap,
+                }
+            }
+
+            // Priority: BadSector > NonTrimmed > NonScraped > Finished > NonTried
+            let (ch, color) = if counts[3] > 0 {
+                ('█', Color::Red)
+            } else if counts[1] > 0 || counts[2] > 0 {
+                ('▒', Color::Yellow)
+            } else if counts[4] > counts[0] {
+                ('█', Color::Green)
+            } else {
+                ('░', Color::DarkGray)
+            };
+            cells.push((ch, color));
+        }
+
+        // Build lines
+        let mut lines: Vec<Line> = Vec::new();
+        let width = inner.width as usize;
+        for row_start in (0..cells.len()).step_by(width) {
+            let row_end = (row_start + width).min(cells.len());
+            let spans: Vec<Span> = cells[row_start..row_end]
+                .iter()
+                .map(|(ch, color)| Span::styled(ch.to_string(), Style::default().fg(*color)))
+                .collect();
+            lines.push(Line::from(spans));
+        }
+
+        frame.render_widget(Paragraph::new(Text::from(lines)), inner);
     }
 }
 

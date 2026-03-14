@@ -44,6 +44,9 @@ pub struct ProgressUpdate {
     /// Rolling read throughput over the last ~1 second, in bytes per second.
     /// Zero until at least one full second has elapsed.
     pub read_rate_bps: u64,
+    /// Periodic snapshot of the mapfile block list for sector-map rendering.
+    /// `None` on most ticks — only populated every 50 calls.
+    pub map_snapshot: Option<Vec<crate::mapfile::Block>>,
 }
 
 impl ProgressUpdate {

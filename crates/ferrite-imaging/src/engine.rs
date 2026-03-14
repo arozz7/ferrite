@@ -26,6 +26,9 @@ pub struct ImagingEngine {
     pub(crate) last_rate_bytes: u64,
     /// Most recently computed rolling read rate (bytes/sec).
     pub(crate) current_rate_bps: u64,
+    /// Counter incremented on every `make_progress` call; used to throttle
+    /// mapfile snapshots sent to the TUI.
+    pub(crate) snapshot_counter: u32,
 }
 
 impl ImagingEngine {
@@ -94,6 +97,7 @@ impl ImagingEngine {
             last_rate_instant: now,
             last_rate_bytes: 0,
             current_rate_bps: 0,
+            snapshot_counter: 0,
         })
     }
 
@@ -188,6 +192,13 @@ impl ImagingEngine {
             self.last_rate_bytes = bytes_finished;
         }
 
+        self.snapshot_counter = self.snapshot_counter.wrapping_add(1);
+        let map_snapshot = if self.snapshot_counter % 50 == 1 {
+            Some(self.mapfile.blocks().to_vec())
+        } else {
+            None
+        };
+
         ProgressUpdate {
             phase,
             bytes_finished,
@@ -199,6 +210,7 @@ impl ImagingEngine {
             current_offset,
             elapsed: self.started_at.elapsed(),
             read_rate_bps: self.current_rate_bps,
+            map_snapshot,
         }
     }
 }

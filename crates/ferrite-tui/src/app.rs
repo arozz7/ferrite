@@ -293,7 +293,7 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
     match screen {
         0 => " ↑/↓: navigate  Enter: select device  r: refresh list  Tab: next  q: quit  R: report",
         1 => " r: refresh S.M.A.R.T.  ↑/↓: scroll attrs  Tab: next  q: quit  R: report",
-        2 => " d: dest  m: mapfile  l: start LBA  e: end LBA  b: block size  r: reverse  s: start  c: cancel  Esc: stop edit  Tab: next  q: quit",
+        2 => " d: dest  m: mapfile  l: start LBA  e: end LBA  b: block size  r: reverse  p: pause  s: start  c: cancel  Esc: stop edit  Tab: next  q: quit",
         3 => " r: read partition table  s: scan device  w: export  Tab: next  q: quit  R: report",
         4 => " ↑/↓: navigate  Enter: open dir  Backspace: go up  d: toggle deleted  o: open fs  Tab: next  q: quit",
         5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  h: hex  v: preview  Tab: next  q: quit",
