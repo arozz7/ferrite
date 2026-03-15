@@ -43,7 +43,7 @@ mod tests {
     fn builtin_signatures_parse() {
         let toml = include_str!("../../../config/signatures.toml");
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.signatures.len(), 28, "expected 28 built-in signatures");
+        assert_eq!(cfg.signatures.len(), 27, "expected 27 built-in signatures");
 
         // Both JPEG variants must be present with 4-byte headers.
         let jpeg_jfif = cfg
@@ -69,7 +69,11 @@ mod tests {
         assert_eq!(jpeg_exif.footer, &[0xFF, 0xD9]);
 
         // PDF must use footer_last mode.
-        let pdf = cfg.signatures.iter().find(|s| s.extension == "pdf").unwrap();
+        let pdf = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "pdf")
+            .unwrap();
         assert!(pdf.footer_last, "PDF should have footer_last = true");
 
         let png = cfg
@@ -80,28 +84,53 @@ mod tests {
         assert_eq!(
             png.header,
             &[
-                Some(0x89), Some(0x50), Some(0x4E), Some(0x47),
-                Some(0x0D), Some(0x0A), Some(0x1A), Some(0x0A)
+                Some(0x89),
+                Some(0x50),
+                Some(0x4E),
+                Some(0x47),
+                Some(0x0D),
+                Some(0x0A),
+                Some(0x1A),
+                Some(0x0A)
             ]
         );
 
         let sevenz = cfg.signatures.iter().find(|s| s.extension == "7z").unwrap();
         assert_eq!(
             sevenz.header,
-            &[Some(0x37), Some(0x7A), Some(0xBC), Some(0xAF), Some(0x27), Some(0x1C)]
+            &[
+                Some(0x37),
+                Some(0x7A),
+                Some(0xBC),
+                Some(0xAF),
+                Some(0x27),
+                Some(0x1C)
+            ]
         );
 
         // AVI and WAV must have wildcard bytes at positions 4-7 (the RIFF size field).
-        let avi = cfg.signatures.iter().find(|s| s.extension == "avi").unwrap();
+        let avi = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "avi")
+            .unwrap();
         assert_eq!(avi.header[4], None, "AVI header byte 4 should be wildcard");
         assert!(avi.size_hint.is_some(), "AVI should have a size_hint");
 
-        let wav = cfg.signatures.iter().find(|s| s.extension == "wav").unwrap();
+        let wav = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "wav")
+            .unwrap();
         assert_eq!(wav.header[4], None, "WAV header byte 4 should be wildcard");
         assert!(wav.size_hint.is_some(), "WAV should have a size_hint");
 
         // OLE2 must use the Ole2 size hint variant.
-        let ole = cfg.signatures.iter().find(|s| s.extension == "ole").unwrap();
+        let ole = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "ole")
+            .unwrap();
         assert_eq!(
             ole.size_hint,
             Some(super::SizeHint::Ole2),
@@ -125,9 +154,19 @@ mod tests {
         );
 
         // EVTX must use LinearScaled with the correct parameters.
-        let evtx = cfg.signatures.iter().find(|s| s.extension == "evtx").unwrap();
+        let evtx = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "evtx")
+            .unwrap();
         match evtx.size_hint.as_ref().unwrap() {
-            super::SizeHint::LinearScaled { offset, len, scale, add, .. } => {
+            super::SizeHint::LinearScaled {
+                offset,
+                len,
+                scale,
+                add,
+                ..
+            } => {
                 assert_eq!(*offset, 42, "EVTX size_hint offset");
                 assert_eq!(*len, 2, "EVTX size_hint len");
                 assert_eq!(*scale, 65536, "EVTX chunk size");
@@ -137,7 +176,11 @@ mod tests {
         }
 
         // OGG must use OggStream size hint.
-        let ogg = cfg.signatures.iter().find(|s| s.extension == "ogg").unwrap();
+        let ogg = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "ogg")
+            .unwrap();
         assert_eq!(
             ogg.size_hint,
             Some(super::SizeHint::OggStream),

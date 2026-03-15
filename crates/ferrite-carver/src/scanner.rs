@@ -21,7 +21,7 @@ use crate::signature::{CarvingConfig, Signature, SizeHint};
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// A single file-carving hit returned by [`Carver::scan`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CarveHit {
     /// Absolute byte offset of the file header on the device.
     pub byte_offset: u64,
@@ -38,6 +38,10 @@ pub struct ScanProgress {
     pub device_size: u64,
     /// Number of hits found so far (before deduplication).
     pub hits_found: usize,
+    /// Scan window start byte (from `CarvingConfig::start_byte`).
+    pub scan_start: u64,
+    /// Scan window end byte (from `CarvingConfig::end_byte`, or `device_size`).
+    pub scan_end: u64,
 }
 
 /// Signature-based file carving engine.
@@ -64,14 +68,18 @@ impl Carver {
     /// Scan the entire device and return all detected file-carving hits,
     /// sorted by byte offset.
     pub fn scan(&self) -> Result<Vec<CarveHit>> {
-        self.scan_inner(None)
+        let mut all_hits = Vec::new();
+        let mut collect = |batch: Vec<CarveHit>| all_hits.extend(batch);
+        self.scan_impl(None, &mut collect)?;
+        all_hits.sort_by_key(|h| h.byte_offset);
+        Ok(all_hits)
     }
 
     /// Same as [`scan`] but sends a [`ScanProgress`] update after each chunk
     /// and respects cancel/pause signals.
     ///
-    /// - If `cancel` is set the scan stops between chunks and returns whatever
-    ///   hits have been found so far (partial results, not an error).
+    /// - If `cancel` is set the scan stops between chunks and returns partial
+    ///   hits accumulated so far (not an error).
     /// - If `pause` is set the scan spin-waits between chunks until cleared.
     ///
     /// Progress updates are best-effort (`try_send`) — a full channel does not
@@ -82,20 +90,47 @@ impl Carver {
         cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
         pause: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Vec<CarveHit>> {
-        self.scan_inner(Some((tx, cancel, pause)))
+        let mut all_hits = Vec::new();
+        let mut collect = |batch: Vec<CarveHit>| all_hits.extend(batch);
+        self.scan_impl(Some((tx, cancel, pause)), &mut collect)?;
+        all_hits.sort_by_key(|h| h.byte_offset);
+        Ok(all_hits)
     }
 
-    fn scan_inner(
+    /// Same as [`scan_with_progress`] but streams each chunk's hits to
+    /// `on_hits` immediately instead of accumulating in memory.
+    ///
+    /// Hits within each chunk are sorted by byte offset before being delivered.
+    /// Returns `Ok(())` on completion, including early cancellation (partial
+    /// results have already been delivered via `on_hits`).
+    pub fn scan_streaming(
+        &self,
+        tx: &std::sync::mpsc::SyncSender<ScanProgress>,
+        cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        pause: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        on_hits: &mut impl FnMut(Vec<CarveHit>),
+    ) -> Result<()> {
+        self.scan_impl(Some((tx, cancel, pause)), on_hits)
+    }
+
+    fn scan_impl(
         &self,
         progress: Option<(
             &std::sync::mpsc::SyncSender<ScanProgress>,
             &std::sync::Arc<std::sync::atomic::AtomicBool>,
             &std::sync::Arc<std::sync::atomic::AtomicBool>,
         )>,
-    ) -> Result<Vec<CarveHit>> {
+        on_hits: &mut impl FnMut(Vec<CarveHit>),
+    ) -> Result<()> {
         let device_size = self.device.size();
         if device_size == 0 || self.config.signatures.is_empty() {
-            return Ok(vec![]);
+            return Ok(());
+        }
+
+        let scan_start = self.config.start_byte.min(device_size);
+        let scan_end = self.config.end_byte.unwrap_or(device_size).min(device_size);
+        if scan_start >= scan_end {
+            return Ok(());
         }
 
         let chunk_size = self.config.scan_chunk_size;
@@ -109,16 +144,16 @@ impl Carver {
             .max()
             .unwrap_or(0);
 
-        let mut all_hits: Vec<CarveHit> = Vec::new();
-        let mut offset = 0u64;
+        let mut total_hits = 0usize;
+        let mut offset = scan_start;
 
-        while offset < device_size {
-            let remaining = (device_size - offset) as usize;
+        while offset < scan_end {
+            let remaining = (scan_end - offset) as usize;
             let read_size = (chunk_size + overlap).min(remaining);
 
             // Only report hits whose header starts strictly before the
             // non-overlap boundary, preventing duplicates in the next chunk.
-            let is_last = offset + chunk_size as u64 >= device_size;
+            let is_last = offset + chunk_size as u64 >= scan_end;
             let report_end = if is_last {
                 read_size
             } else {
@@ -135,12 +170,16 @@ impl Carver {
             };
 
             // Search all signatures in parallel within this chunk.
-            let chunk_hits: Vec<CarveHit> = self
+            let mut chunk_hits: Vec<CarveHit> = self
                 .config
                 .signatures
                 .par_iter()
                 .flat_map(|sig| find_all(sig, &data, offset, report_end))
                 .collect();
+
+            // Sort within chunk so callers receive hits in ascending offset order.
+            chunk_hits.sort_by_key(|h| h.byte_offset);
+            total_hits += chunk_hits.len();
 
             trace!(
                 offset,
@@ -149,14 +188,16 @@ impl Carver {
                 "scanned chunk"
             );
 
-            all_hits.extend(chunk_hits);
+            on_hits(chunk_hits);
             offset += chunk_size as u64;
 
             if let Some((tx, cancel, pause)) = &progress {
                 let _ = tx.try_send(ScanProgress {
-                    bytes_scanned: offset.min(device_size),
+                    bytes_scanned: offset.min(scan_end),
                     device_size,
-                    hits_found: all_hits.len(),
+                    hits_found: total_hits,
+                    scan_start,
+                    scan_end,
                 });
                 // Spin-wait while paused; yield to avoid busy-looping.
                 while pause.load(Ordering::Relaxed) {
@@ -165,16 +206,14 @@ impl Carver {
                     }
                     std::thread::yield_now();
                 }
-                // Honour cancel — return partial hits, not an error.
+                // Honour cancel — partial hits already delivered via on_hits.
                 if cancel.load(Ordering::Relaxed) {
-                    all_hits.sort_by_key(|h| h.byte_offset);
-                    return Ok(all_hits);
+                    return Ok(());
                 }
             }
         }
 
-        all_hits.sort_by_key(|h| h.byte_offset);
-        Ok(all_hits)
+        Ok(())
     }
 
     // ── Extraction ────────────────────────────────────────────────────────────
@@ -277,9 +316,7 @@ fn find_all(
         // Position where the header would start.
         let pos = anchor_pos.saturating_sub(anchor_idx);
 
-        if pos + header.len() <= data.len()
-            && pos < report_end
-            && header_matches(header, data, pos)
+        if pos + header.len() <= data.len() && pos < report_end && header_matches(header, data, pos)
         {
             hits.push(CarveHit {
                 byte_offset: chunk_abs_offset + pos as u64,
@@ -297,13 +334,10 @@ fn find_all(
 /// `None` entries in `header` are wildcards and match any byte.
 #[inline]
 fn header_matches(header: &[Option<u8>], data: &[u8], pos: usize) -> bool {
-    header
-        .iter()
-        .enumerate()
-        .all(|(i, opt)| match opt {
-            None => true,
-            Some(b) => data.get(pos + i) == Some(b),
-        })
+    header.iter().enumerate().all(|(i, opt)| match opt {
+        None => true,
+        Some(b) => data.get(pos + i) == Some(b),
+    })
 }
 
 // ── Streaming helpers ─────────────────────────────────────────────────────────
@@ -467,7 +501,12 @@ fn stream_until_last_footer(
 /// file size.  Returns `None` if any read fails or the header is malformed.
 fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -> Option<u64> {
     match hint {
-        SizeHint::Linear { offset, len, little_endian, add } => {
+        SizeHint::Linear {
+            offset,
+            len,
+            little_endian,
+            add,
+        } => {
             let field_offset = file_offset + *offset as u64;
             let bytes = read_bytes_clamped(device, field_offset, *len as usize).ok()?;
             if bytes.len() < *len as usize {
@@ -476,18 +515,27 @@ fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -
             let value: u64 = match len {
                 2 => {
                     let arr: [u8; 2] = bytes[..2].try_into().ok()?;
-                    if *little_endian { u16::from_le_bytes(arr) as u64 }
-                    else              { u16::from_be_bytes(arr) as u64 }
+                    if *little_endian {
+                        u16::from_le_bytes(arr) as u64
+                    } else {
+                        u16::from_be_bytes(arr) as u64
+                    }
                 }
                 4 => {
                     let arr: [u8; 4] = bytes[..4].try_into().ok()?;
-                    if *little_endian { u32::from_le_bytes(arr) as u64 }
-                    else              { u32::from_be_bytes(arr) as u64 }
+                    if *little_endian {
+                        u32::from_le_bytes(arr) as u64
+                    } else {
+                        u32::from_be_bytes(arr) as u64
+                    }
                 }
                 8 => {
                     let arr: [u8; 8] = bytes[..8].try_into().ok()?;
-                    if *little_endian { u64::from_le_bytes(arr) }
-                    else              { u64::from_be_bytes(arr) }
+                    if *little_endian {
+                        u64::from_le_bytes(arr)
+                    } else {
+                        u64::from_be_bytes(arr)
+                    }
                 }
                 _ => return None,
             };
@@ -516,7 +564,13 @@ fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -
             Some(addressable.saturating_add(1).saturating_mul(sector_size))
         }
 
-        SizeHint::LinearScaled { offset, len, little_endian, scale, add } => {
+        SizeHint::LinearScaled {
+            offset,
+            len,
+            little_endian,
+            scale,
+            add,
+        } => {
             let field_offset = file_offset + *offset as u64;
             let bytes = read_bytes_clamped(device, field_offset, *len as usize).ok()?;
             if bytes.len() < *len as usize {
@@ -525,18 +579,27 @@ fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -
             let value: u64 = match len {
                 2 => {
                     let arr: [u8; 2] = bytes[..2].try_into().ok()?;
-                    if *little_endian { u16::from_le_bytes(arr) as u64 }
-                    else              { u16::from_be_bytes(arr) as u64 }
+                    if *little_endian {
+                        u16::from_le_bytes(arr) as u64
+                    } else {
+                        u16::from_be_bytes(arr) as u64
+                    }
                 }
                 4 => {
                     let arr: [u8; 4] = bytes[..4].try_into().ok()?;
-                    if *little_endian { u32::from_le_bytes(arr) as u64 }
-                    else              { u32::from_be_bytes(arr) as u64 }
+                    if *little_endian {
+                        u32::from_le_bytes(arr) as u64
+                    } else {
+                        u32::from_be_bytes(arr) as u64
+                    }
                 }
                 8 => {
                     let arr: [u8; 8] = bytes[..8].try_into().ok()?;
-                    if *little_endian { u64::from_le_bytes(arr) }
-                    else              { u64::from_be_bytes(arr) }
+                    if *little_endian {
+                        u64::from_le_bytes(arr)
+                    } else {
+                        u64::from_be_bytes(arr)
+                    }
                 }
                 _ => return None,
             };
@@ -548,7 +611,11 @@ fn read_size_hint(device: &dyn BlockDevice, file_offset: u64, hint: &SizeHint) -
             let ps_bytes = read_bytes_clamped(device, file_offset + 16, 2).ok()?;
             let ps_arr: [u8; 2] = ps_bytes[..2].try_into().ok()?;
             let raw_page_size = u16::from_be_bytes(ps_arr);
-            let page_size: u64 = if raw_page_size == 1 { 65536 } else { raw_page_size as u64 };
+            let page_size: u64 = if raw_page_size == 1 {
+                65536
+            } else {
+                raw_page_size as u64
+            };
             if page_size < 512 {
                 return None; // corrupt or not an SQLite file
             }
@@ -701,6 +768,7 @@ mod tests {
             footer_last: false,
             max_size,
             size_hint: None,
+            min_size: 0,
         }
     }
 
@@ -708,6 +776,8 @@ mod tests {
         CarvingConfig {
             signatures: sigs,
             scan_chunk_size: chunk_size,
+            start_byte: 0,
+            end_byte: None,
         }
     }
 
@@ -936,29 +1006,54 @@ mod tests {
             name: "AVI".into(),
             extension: "avi".into(),
             header: vec![
-                Some(0x52), Some(0x49), Some(0x46), Some(0x46), // RIFF
-                None, None, None, None,                          // size (wildcard)
-                Some(0x41), Some(0x56), Some(0x49), Some(0x20), // AVI<space>
+                Some(0x52),
+                Some(0x49),
+                Some(0x46),
+                Some(0x46), // RIFF
+                None,
+                None,
+                None,
+                None, // size (wildcard)
+                Some(0x41),
+                Some(0x56),
+                Some(0x49),
+                Some(0x20), // AVI<space>
             ],
             footer: vec![],
             footer_last: false,
             max_size: 2_147_483_648,
             size_hint: None,
+            min_size: 0,
         };
         let wav_sig = Signature {
             name: "WAV".into(),
             extension: "wav".into(),
             header: vec![
-                Some(0x52), Some(0x49), Some(0x46), Some(0x46), // RIFF
-                None, None, None, None,                          // size (wildcard)
-                Some(0x57), Some(0x41), Some(0x56), Some(0x45), // WAVE
+                Some(0x52),
+                Some(0x49),
+                Some(0x46),
+                Some(0x46), // RIFF
+                None,
+                None,
+                None,
+                None, // size (wildcard)
+                Some(0x57),
+                Some(0x41),
+                Some(0x56),
+                Some(0x45), // WAVE
             ],
             footer: vec![],
             footer_last: false,
             max_size: 2_147_483_648,
             size_hint: None,
+            min_size: 0,
         };
-        let cfg = CarvingConfig { signatures: vec![avi_sig, wav_sig], scan_chunk_size: 1024 };
+        let cfg = CarvingConfig {
+            signatures: vec![avi_sig, wav_sig],
+            scan_chunk_size: 1024,
+            start_byte: 0,
+            end_byte: None,
+        };
         let hits = Carver::new(dev, cfg).scan().unwrap();
 
         assert_eq!(hits.len(), 2, "expected AVI + WAV hits, got: {hits:?}");
@@ -992,14 +1087,21 @@ mod tests {
                 little_endian: true,
                 add: 8,
             }),
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
             .unwrap();
 
-        assert_eq!(written, 108, "size_hint should limit extraction to 108 bytes, got {written}");
+        assert_eq!(
+            written, 108,
+            "size_hint should limit extraction to 108 bytes, got {written}"
+        );
     }
 
     #[test]
@@ -1009,7 +1111,7 @@ mod tests {
         //   csectFat     = 2  → 2 × (512/4) = 256 addressable sectors
         //   expected max = (256 + 1) × 512 = 131,584 bytes
         let mut data = vec![0u8; 512 * 1024]; // 512 KiB device
-        // Magic bytes
+                                              // Magic bytes
         data[0..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
         // uSectorShift = 9 (little-endian u16 at offset 30)
         data[30..32].copy_from_slice(&9u16.to_le_bytes());
@@ -1021,22 +1123,35 @@ mod tests {
             name: "OLE2".into(),
             extension: "ole".into(),
             header: vec![
-                Some(0xD0), Some(0xCF), Some(0x11), Some(0xE0),
-                Some(0xA1), Some(0xB1), Some(0x1A), Some(0xE1),
+                Some(0xD0),
+                Some(0xCF),
+                Some(0x11),
+                Some(0xE0),
+                Some(0xA1),
+                Some(0xB1),
+                Some(0x1A),
+                Some(0xE1),
             ],
             footer: vec![],
             footer_last: false,
             max_size: 524_288_000,
             size_hint: Some(crate::signature::SizeHint::Ole2),
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
             .unwrap();
 
         // (2 × 128 + 1) × 512 = 131,584 — capped by device size (512 KiB = 524,288)
-        assert_eq!(written, 131_584, "OLE2 size_hint gave {written}, expected 131584");
+        assert_eq!(
+            written, 131_584,
+            "OLE2 size_hint gave {written}, expected 131584"
+        );
     }
 
     #[test]
@@ -1052,8 +1167,13 @@ mod tests {
             name: "EVTX".into(),
             extension: "evtx".into(),
             header: vec![
-                Some(0x45), Some(0x4C), Some(0x46), Some(0x49),
-                Some(0x4C), Some(0x45), Some(0x00),
+                Some(0x45),
+                Some(0x4C),
+                Some(0x46),
+                Some(0x49),
+                Some(0x4C),
+                Some(0x45),
+                Some(0x00),
             ],
             footer: vec![],
             footer_last: false,
@@ -1065,14 +1185,21 @@ mod tests {
                 scale: 65536,
                 add: 4096,
             }),
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
             .unwrap();
 
-        assert_eq!(written, 200_704, "EVTX size_hint gave {written}, expected 200704");
+        assert_eq!(
+            written, 200_704,
+            "EVTX size_hint gave {written}, expected 200704"
+        );
     }
 
     #[test]
@@ -1090,23 +1217,42 @@ mod tests {
             name: "SQLite".into(),
             extension: "db".into(),
             header: vec![
-                Some(0x53), Some(0x51), Some(0x4C), Some(0x69),
-                Some(0x74), Some(0x65), Some(0x20), Some(0x66),
-                Some(0x6F), Some(0x72), Some(0x6D), Some(0x61),
-                Some(0x74), Some(0x20), Some(0x33), Some(0x00),
+                Some(0x53),
+                Some(0x51),
+                Some(0x4C),
+                Some(0x69),
+                Some(0x74),
+                Some(0x65),
+                Some(0x20),
+                Some(0x66),
+                Some(0x6F),
+                Some(0x72),
+                Some(0x6D),
+                Some(0x61),
+                Some(0x74),
+                Some(0x20),
+                Some(0x33),
+                Some(0x00),
             ],
             footer: vec![],
             footer_last: false,
             max_size: 10_737_418_240,
             size_hint: Some(crate::signature::SizeHint::Sqlite),
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
             .unwrap();
 
-        assert_eq!(written, 20_480, "SQLite size_hint gave {written}, expected 20480");
+        assert_eq!(
+            written, 20_480,
+            "SQLite size_hint gave {written}, expected 20480"
+        );
     }
 
     #[test]
@@ -1124,21 +1270,32 @@ mod tests {
             name: "7-Zip".into(),
             extension: "7z".into(),
             header: vec![
-                Some(0x37), Some(0x7A), Some(0xBC), Some(0xAF),
-                Some(0x27), Some(0x1C),
+                Some(0x37),
+                Some(0x7A),
+                Some(0xBC),
+                Some(0xAF),
+                Some(0x27),
+                Some(0x1C),
             ],
             footer: vec![],
             footer_last: false,
             max_size: 524_288_000,
             size_hint: Some(crate::signature::SizeHint::SevenZip),
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
             .unwrap();
 
-        assert_eq!(written, 1_232, "7-Zip size_hint gave {written}, expected 1232");
+        assert_eq!(
+            written, 1_232,
+            "7-Zip size_hint gave {written}, expected 1232"
+        );
     }
 
     #[test]
@@ -1160,14 +1317,21 @@ mod tests {
             footer_last: true,
             max_size: 1024,
             size_hint: None,
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
             .unwrap();
 
-        assert_eq!(written, 202, "footer_last should stop after the last footer at offset 200, got {written}");
+        assert_eq!(
+            written, 202,
+            "footer_last should stop after the last footer at offset 200, got {written}"
+        );
         assert_eq!(&out[200..202], &footer);
     }
 
@@ -1184,8 +1348,12 @@ mod tests {
             footer_last: true,
             max_size: 300,
             size_hint: None,
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
@@ -1225,7 +1393,7 @@ mod tests {
         page.extend_from_slice(&[0u8; 4]); // CRC (zeroed — not validated by carver)
         page.push(seg_sizes.len() as u8); // number_page_segments
         page.extend_from_slice(seg_sizes); // segment_table
-        // Pad data bytes (content doesn't matter for size calculation).
+                                           // Pad data bytes (content doesn't matter for size calculation).
         let data_len: usize = seg_sizes.iter().map(|&b| b as usize).sum();
         page.extend(std::iter::repeat(0xBBu8).take(data_len));
         page
@@ -1257,14 +1425,21 @@ mod tests {
             footer_last: false,
             max_size: 65536,
             size_hint: Some(crate::signature::SizeHint::OggStream),
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
             .unwrap();
 
-        assert_eq!(written, expected as u64, "OggStream: expected {expected} bytes, got {written}");
+        assert_eq!(
+            written, expected as u64,
+            "OggStream: expected {expected} bytes, got {written}"
+        );
         // Verify the EOS page is included — last byte of page 2 is 0xBB.
         assert_eq!(out[written as usize - 1], 0xBB);
     }
@@ -1285,13 +1460,20 @@ mod tests {
             footer_last: false,
             max_size,
             size_hint: Some(crate::signature::SizeHint::OggStream),
+            min_size: 0,
         };
-        let hit = CarveHit { byte_offset: 0, signature: sig };
+        let hit = CarveHit {
+            byte_offset: 0,
+            signature: sig,
+        };
         let mut out = Vec::new();
         let written = Carver::new(dev, CarvingConfig::default())
             .extract(&hit, &mut out)
             .unwrap();
 
-        assert_eq!(written, max_size, "should fall back to max_size when no EOS found");
+        assert_eq!(
+            written, max_size,
+            "should fall back to max_size when no EOS found"
+        );
     }
 }

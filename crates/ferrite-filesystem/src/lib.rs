@@ -213,9 +213,18 @@ pub fn build_metadata_index(device: Arc<dyn BlockDevice>) -> MetadataIndex {
 
         let fs_type = detect_at(vol.as_ref(), 0);
         let parser: Box<dyn FilesystemParser> = match fs_type {
-            FilesystemType::Ntfs  => match NtfsParser::new(Arc::clone(&vol))  { Ok(p) => Box::new(p), Err(_) => continue },
-            FilesystemType::Fat32 => match Fat32Parser::new(Arc::clone(&vol)) { Ok(p) => Box::new(p), Err(_) => continue },
-            FilesystemType::Ext4  => match Ext4Parser::new(Arc::clone(&vol))  { Ok(p) => Box::new(p), Err(_) => continue },
+            FilesystemType::Ntfs => match NtfsParser::new(Arc::clone(&vol)) {
+                Ok(p) => Box::new(p),
+                Err(_) => continue,
+            },
+            FilesystemType::Fat32 => match Fat32Parser::new(Arc::clone(&vol)) {
+                Ok(p) => Box::new(p),
+                Err(_) => continue,
+            },
+            FilesystemType::Ext4 => match Ext4Parser::new(Arc::clone(&vol)) {
+                Ok(p) => Box::new(p),
+                Err(_) => continue,
+            },
             _ => continue,
         };
 
@@ -253,36 +262,63 @@ fn partition_byte_offsets_mbr(device: &dyn BlockDevice) -> Option<Vec<u64>> {
     let mut offsets = Vec::new();
     for i in 0..4usize {
         let base = 446 + i * 16;
-        if boot[base + 4] == 0 { continue; }
+        if boot[base + 4] == 0 {
+            continue;
+        }
         let lba = u32::from_le_bytes(boot[base + 8..base + 12].try_into().ok()?) as u64;
-        if lba > 0 { offsets.push(lba * sector_size); }
+        if lba > 0 {
+            offsets.push(lba * sector_size);
+        }
     }
-    if offsets.is_empty() { None } else { Some(offsets) }
+    if offsets.is_empty() {
+        None
+    } else {
+        Some(offsets)
+    }
 }
 
 /// Collect all partition start byte offsets from a GPT partition table.
 fn partition_byte_offsets_gpt(device: &dyn BlockDevice) -> Option<Vec<u64>> {
     let sector_size = device.sector_size() as u64;
     let header = io::read_bytes(device, sector_size, 92).ok()?;
-    if header.len() < 92 || &header[0..8] != b"EFI PART" { return None; }
+    if header.len() < 92 || &header[0..8] != b"EFI PART" {
+        return None;
+    }
 
     let entry_start_lba = u64::from_le_bytes(header[72..80].try_into().ok()?);
-    let entry_count     = u32::from_le_bytes(header[80..84].try_into().ok()?) as usize;
-    let entry_size      = u32::from_le_bytes(header[84..88].try_into().ok()?) as usize;
+    let entry_count = u32::from_le_bytes(header[80..84].try_into().ok()?) as usize;
+    let entry_size = u32::from_le_bytes(header[84..88].try_into().ok()?) as usize;
 
-    if entry_size < 128 || entry_count == 0 { return None; }
+    if entry_size < 128 || entry_count == 0 {
+        return None;
+    }
     let probe_count = entry_count.min(128);
-    let entries_data = io::read_bytes(device, entry_start_lba * sector_size, probe_count * entry_size).ok()?;
+    let entries_data = io::read_bytes(
+        device,
+        entry_start_lba * sector_size,
+        probe_count * entry_size,
+    )
+    .ok()?;
 
     let mut offsets = Vec::new();
     for i in 0..probe_count {
         let base = i * entry_size;
-        if base + 48 > entries_data.len() { break; }
-        if entries_data[base..base + 16].iter().all(|&b| b == 0) { continue; }
+        if base + 48 > entries_data.len() {
+            break;
+        }
+        if entries_data[base..base + 16].iter().all(|&b| b == 0) {
+            continue;
+        }
         let start_lba = u64::from_le_bytes(entries_data[base + 32..base + 40].try_into().ok()?);
-        if start_lba > 0 { offsets.push(start_lba * sector_size); }
+        if start_lba > 0 {
+            offsets.push(start_lba * sector_size);
+        }
     }
-    if offsets.is_empty() { None } else { Some(offsets) }
+    if offsets.is_empty() {
+        None
+    } else {
+        Some(offsets)
+    }
 }
 
 // ── OffsetDevice ──────────────────────────────────────────────────────────────
@@ -298,11 +334,7 @@ struct OffsetDevice {
 }
 
 impl BlockDevice for OffsetDevice {
-    fn read_at(
-        &self,
-        offset: u64,
-        buf: &mut AlignedBuffer,
-    ) -> ferrite_blockdev::Result<usize> {
+    fn read_at(&self, offset: u64, buf: &mut AlignedBuffer) -> ferrite_blockdev::Result<usize> {
         self.inner.read_at(self.offset + offset, buf)
     }
 
@@ -445,11 +477,7 @@ fn probe_mbr(device: &dyn BlockDevice) -> Option<(FilesystemType, u64)> {
         if part_type == 0 {
             continue; // empty slot
         }
-        let lba = u32::from_le_bytes(
-            boot[base + 8..base + 12]
-                .try_into()
-                .ok()?,
-        ) as u64;
+        let lba = u32::from_le_bytes(boot[base + 8..base + 12].try_into().ok()?) as u64;
         if lba == 0 {
             continue;
         }
@@ -472,12 +500,9 @@ fn probe_gpt(device: &dyn BlockDevice) -> Option<(FilesystemType, u64)> {
         return None;
     }
 
-    let entry_start_lba =
-        u64::from_le_bytes(header[72..80].try_into().ok()?);
-    let entry_count =
-        u32::from_le_bytes(header[80..84].try_into().ok()?) as usize;
-    let entry_size =
-        u32::from_le_bytes(header[84..88].try_into().ok()?) as usize;
+    let entry_start_lba = u64::from_le_bytes(header[72..80].try_into().ok()?);
+    let entry_count = u32::from_le_bytes(header[80..84].try_into().ok()?) as usize;
+    let entry_size = u32::from_le_bytes(header[84..88].try_into().ok()?) as usize;
 
     if entry_size < 128 || entry_count == 0 {
         return None;
@@ -485,8 +510,12 @@ fn probe_gpt(device: &dyn BlockDevice) -> Option<(FilesystemType, u64)> {
 
     // Cap at 128 entries to bound the read size.
     let probe_count = entry_count.min(128);
-    let entries_data =
-        io::read_bytes(device, entry_start_lba * sector_size, probe_count * entry_size).ok()?;
+    let entries_data = io::read_bytes(
+        device,
+        entry_start_lba * sector_size,
+        probe_count * entry_size,
+    )
+    .ok()?;
 
     for i in 0..probe_count {
         let base = i * entry_size;
@@ -497,9 +526,7 @@ fn probe_gpt(device: &dyn BlockDevice) -> Option<(FilesystemType, u64)> {
         if entries_data[base..base + 16].iter().all(|&b| b == 0) {
             continue;
         }
-        let start_lba = u64::from_le_bytes(
-            entries_data[base + 32..base + 40].try_into().ok()?,
-        );
+        let start_lba = u64::from_le_bytes(entries_data[base + 32..base + 40].try_into().ok()?);
         if start_lba == 0 {
             continue;
         }

@@ -18,9 +18,15 @@ use ferrite_blockdev::BlockDevice;
 use crate::session::Session;
 use crate::{
     screens::{
-        carving::CarvingState, drive_select::DriveSelectState, file_browser::FileBrowserState,
-        health::HealthState, hex_viewer::HexViewerState, imaging::ImagingState,
-        partition::PartitionState, report::generate_report,
+        carving::CarvingState,
+        drive_select::DriveSelectState,
+        file_browser::FileBrowserState,
+        health::HealthState,
+        hex_viewer::HexViewerState,
+        imaging::ImagingState,
+        partition::PartitionState,
+        report::generate_report,
+        session_manager::{SessionManagerState, SessionMsg},
     },
     Result,
 };
@@ -48,6 +54,8 @@ pub struct App {
     pub file_browser: FileBrowserState,
     pub carving: CarvingState,
     pub hex_viewer: HexViewerState,
+    /// Saved-session manager overlay.
+    pub session_manager: SessionManagerState,
     /// Status message from the last report generation.
     pub report_status: Option<String>,
 }
@@ -66,6 +74,7 @@ impl App {
             file_browser: FileBrowserState::new(),
             carving: CarvingState::new(),
             hex_viewer: HexViewerState::new(),
+            session_manager: SessionManagerState::default(),
             report_status: None,
         };
         app.imaging.dest_path = session.imaging_dest;
@@ -73,6 +82,12 @@ impl App {
         app.imaging.start_lba_str = session.imaging_start_lba;
         app.imaging.end_lba_str = session.imaging_end_lba;
         app.imaging.reverse = session.imaging_reverse;
+        if !session.carving_output_dir.is_empty() {
+            app.carving.output_dir = session.carving_output_dir;
+        }
+        app.carving.scan_start_lba_str = session.carving_scan_start_lba;
+        app.carving.scan_end_lba_str = session.carving_scan_end_lba;
+        app.hex_viewer.current_lba = session.hex_last_lba;
         app
     }
 
@@ -92,12 +107,24 @@ impl App {
                 break;
             }
         }
+        // Save carving session if there are hits or a checkpoint.
+        if let Some(dev) = &self.selected_device {
+            let info = dev.device_info().clone();
+            if self.carving.has_hits() || self.carving.checkpoint_path().is_some() {
+                let session = self.carving.build_session(&info);
+                let _ = session.save();
+            }
+        }
         Session {
             imaging_dest: self.imaging.dest_path.clone(),
             imaging_mapfile: self.imaging.mapfile_path.clone(),
             imaging_start_lba: self.imaging.start_lba_str.clone(),
             imaging_end_lba: self.imaging.end_lba_str.clone(),
             imaging_reverse: self.imaging.reverse,
+            carving_output_dir: self.carving.output_dir.clone(),
+            carving_scan_start_lba: self.carving.scan_start_lba_str.clone(),
+            carving_scan_end_lba: self.carving.scan_end_lba_str.clone(),
+            hex_last_lba: self.hex_viewer.current_lba,
         }
         .save();
         Ok(())
@@ -106,6 +133,29 @@ impl App {
     // ── Key routing ──────────────────────────────────────────────────────────
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // Session manager overlay gets first priority when visible.
+        if self.session_manager.visible {
+            if let Some(msg) = self.session_manager.handle_key(code, modifiers) {
+                match msg {
+                    SessionMsg::Resume { session, device } => {
+                        let path = device.device_info().path.clone();
+                        self.selected_device = Some(Arc::clone(&device));
+                        self.health.set_device(path);
+                        self.imaging.set_device(Arc::clone(&device));
+                        self.partition.set_device(Arc::clone(&device));
+                        self.file_browser.set_device(Arc::clone(&device));
+                        self.carving.restore_from_session(&session);
+                        self.carving.set_device(Arc::clone(&device));
+                        self.hex_viewer.set_device(device);
+                        self.screen_idx = 5; // go to carving screen
+                        self.on_screen_enter();
+                    }
+                    SessionMsg::Dismissed => {}
+                }
+            }
+            return;
+        }
+
         // Tab / Shift-Tab always switch screens.
         match (code, modifiers) {
             (KeyCode::Tab, _) => {
@@ -131,6 +181,7 @@ impl App {
         // 'q' quits unless a text-input field on the current screen is active.
         if code == KeyCode::Char('q') && modifiers.is_empty() {
             let in_edit = match self.screen_idx {
+                0 => self.drive_select.is_filtering(),
                 2 => self.imaging.is_editing(),
                 5 => self.carving.is_editing(),
                 6 => self.hex_viewer.is_editing(),
@@ -144,6 +195,17 @@ impl App {
 
         match self.screen_idx {
             0 => {
+                // 'o' opens the saved session manager overlay.
+                if code == KeyCode::Char('o') && modifiers.is_empty() {
+                    if crate::carving_session::CarvingSession::load_all().is_empty() {
+                        self.report_status = Some(
+                            "No saved sessions — sessions are created automatically when you carve a drive and quit.".into(),
+                        );
+                    } else {
+                        self.session_manager.open();
+                    }
+                    return;
+                }
                 if let Some(dev) = self.drive_select.handle_key(code, modifiers) {
                     let path = dev.device_info().path.clone();
                     self.selected_device = Some(Arc::clone(&dev));
@@ -260,6 +322,11 @@ impl App {
             5 => self.carving.render(frame, chunks[1]),
             6 => self.hex_viewer.render(frame, chunks[1]),
             _ => {}
+        }
+
+        // Session manager overlay (rendered on top of everything).
+        if self.session_manager.visible {
+            self.session_manager.render(frame, area);
         }
 
         // Help bar — show report_status for one render if set, else normal help.

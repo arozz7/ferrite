@@ -443,7 +443,11 @@ fn first_lcn_from_run_list(run_list: &[u8]) -> Option<u64> {
     if run_list[1 + len_bytes + off_bytes - 1] & 0x80 != 0 {
         run_off |= -1i64 << (off_bytes * 8);
     }
-    if run_off <= 0 { None } else { Some(run_off as u64) }
+    if run_off <= 0 {
+        None
+    } else {
+        Some(run_off as u64)
+    }
 }
 
 /// Decode an NTFS data run list and stream the file content to `writer`.

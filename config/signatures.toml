@@ -5,7 +5,9 @@
 #   name       = human-readable label
 #   extension  = output file extension
 #   header     = hex bytes of the file header (magic bytes), space-separated
+#                Use ?? for wildcard bytes.
 #   footer     = hex bytes of the file footer (optional, "" if none)
+#   min_size   = minimum file size in bytes (hits smaller than this are skipped)
 #   max_size   = maximum file size in bytes (caps extraction window)
 
 [[signature]]
@@ -49,7 +51,13 @@ name      = "ZIP / Office (DOCX/XLSX/PPTX)"
 extension = "zip"
 header    = "50 4B 03 04"
 footer    = "50 4B 05 06"
-max_size  = 524_288_000  # 500 MiB
+# Note: every local-file-header inside an existing ZIP also matches PK\x03\x04,
+# so a multi-file archive generates multiple hits.  The footer (End of Central
+# Directory record) terminates extraction cleanly when the archive is intact.
+# min_size rejects the stub local headers that appear mid-archive.
+min_size  = 512
+max_size  = 104_857_600  # 100 MiB (reduced from 500 MiB to limit disk waste
+                          # when footer is missing/fragmented)
 
 [[signature]]
 name      = "GIF Image"
@@ -61,7 +69,11 @@ max_size  = 10_485_760  # 10 MiB
 [[signature]]
 name             = "BMP Image"
 extension        = "bmp"
-header           = "42 4D"
+# 10-byte header: "BM" + 4-byte file size (wildcarded, read via size_hint) +
+# reserved1 (00 00) + reserved2 (00 00).  The two reserved fields are always
+# zero in every valid BMP writer; anchoring on them eliminates the massive
+# false-positive rate of the original 2-byte "42 4D" match.
+header           = "42 4D ?? ?? ?? ?? 00 00 00 00"
 footer           = ""
 max_size         = 52_428_800  # 50 MiB hard cap
 # The u32 at offset 2 is the total file size (no add needed)
@@ -73,15 +85,26 @@ size_hint_add    = 0
 [[signature]]
 name      = "MP3 Audio"
 extension = "mp3"
-header    = "49 44 33"
+# ID3v2 tag header: "ID3" (3 bytes) + major version (wildcarded: 02/03/04) +
+# revision byte (ALWAYS 0x00 in all ID3v2 versions) — anchoring on the
+# revision byte extends effective discrimination from 3 to 5 bytes and
+# eliminates the bulk of false positives from random binary data.
+# Note: some AAC/M4A files also carry ID3v2 tags; those will be extracted
+# with a .mp3 extension but are still valid ID3-tagged audio.
+header    = "49 44 33 ?? 00"
 footer    = ""
-max_size  = 52_428_800  # 50 MiB
+min_size  = 4096           # reject sub-4 KiB noise hits
+max_size  = 52_428_800     # 50 MiB hard cap (no footer to terminate cleanly)
 
 [[signature]]
 name      = "MP4 Video"
 extension = "mp4"
-header    = "00 00 00 20 66 74 79 70"
+# Wildcards the 4-byte ftyp box size (varies: 24/28/32/36 bytes depending on
+# brand list length) and anchors on "ftyp" which is unique to ISO base media
+# files.  Catches MP4, MOV, M4A, M4V, and 3GP in a single signature.
+header    = "?? ?? ?? ?? 66 74 79 70"
 footer    = ""
+min_size  = 4096
 max_size  = 4_294_967_296  # 4 GiB
 
 [[signature]]
@@ -140,7 +163,8 @@ name      = "Matroska / MKV Video"
 extension = "mkv"
 header    = "1A 45 DF A3"
 footer    = ""
-max_size  = 42_949_672_960  # 40 GiB
+max_size  = 8_589_934_592  # 8 GiB (reduced from 40 GiB; covers typical 1080p
+                            # films while limiting disk waste on false positives)
 
 [[signature]]
 name      = "FLAC Audio"
@@ -152,16 +176,24 @@ max_size  = 2_147_483_648  # 2 GiB
 [[signature]]
 name      = "Windows PE Executable"
 extension = "exe"
-header    = "4D 5A"
+# Extended from 2 bytes ("MZ") to 4 bytes by anchoring on the standard MSVC
+# linker DOS stub: 4D 5A 90 00.  Byte 2 = 0x90 (144 = bytes on last page of
+# stub) and byte 3 = 0x00 are written by every modern PE/COFF linker.  This
+# eliminates the near-identical false-positive problem that "MZ" alone had.
+header    = "4D 5A 90 00"
 footer    = ""
-max_size  = 524_288_000  # 500 MiB
+min_size  = 4096
+max_size  = 104_857_600  # 100 MiB (reduced from 500 MiB; covers virtually all
+                          # EXE/DLL/SYS files; limits disk waste on false positives)
 
 [[signature]]
 name      = "VMDK Disk Image"
 extension = "vmdk"
 header    = "4B 44 4D 56"
 footer    = ""
-max_size  = 107_374_182_400  # 100 GiB
+min_size  = 65536
+max_size  = 10_737_418_240  # 10 GiB (reduced from 100 GiB; niche use case,
+                             # limits catastrophic disk waste on false positives)
 
 [[signature]]
 name           = "OGG Media"
@@ -192,21 +224,20 @@ name      = "Outlook PST/OST"
 extension = "pst"
 header    = "21 42 44 4E"
 footer    = ""
+min_size  = 65536      # 64 KiB minimum — a real PST file has at least a full
+                        # header block; rejects false positives from triggering
+                        # a 20 GiB extraction attempt
 max_size  = 21_474_836_480  # 20 GiB
-
-[[signature]]
-name      = "Email (EML)"
-extension = "eml"
-header    = "46 72 6F 6D 20"
-footer    = ""
-max_size  = 10_485_760  # 10 MiB
 
 [[signature]]
 name      = "XML Document"
 extension = "xml"
 header    = "3C 3F 78 6D 6C"
 footer    = ""
-max_size  = 52_428_800  # 50 MiB
+# XML fragments appear embedded inside DOCX/XLSX internals, Android APKs,
+# config files, etc. — standalone XML worth recovering is almost always small.
+min_size  = 256
+max_size  = 5_242_880   # 5 MiB (reduced from 50 MiB)
 
 [[signature]]
 name      = "HTML Document"

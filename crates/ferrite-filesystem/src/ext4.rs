@@ -237,10 +237,15 @@ impl Ext4Parser {
         let uses_extents = i_flags & EXT4_INODE_EXTENTS != 0;
 
         let first_block = if uses_extents {
-            self.walk_extent_node(&inode[40..]).ok()?.into_iter().next()?
+            self.walk_extent_node(&inode[40..])
+                .ok()?
+                .into_iter()
+                .next()?
         } else {
             let blk = u32::from_le_bytes(inode[40..44].try_into().ok()?);
-            if blk == 0 { return None; }
+            if blk == 0 {
+                return None;
+            }
             blk as u64
         };
 

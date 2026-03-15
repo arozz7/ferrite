@@ -1,6 +1,7 @@
 //! `ferrite-tui` — ratatui 0.29 + crossterm 0.28 terminal UI for Ferrite.
 
 pub mod app;
+pub mod carving_session;
 pub mod screens;
 pub mod session;
 

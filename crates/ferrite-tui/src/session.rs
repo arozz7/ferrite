@@ -21,6 +21,18 @@ pub struct Session {
     /// Whether reverse imaging mode is enabled.
     #[serde(default)]
     pub imaging_reverse: bool,
+    /// Last carving output directory (empty = use default "carved").
+    #[serde(default)]
+    pub carving_output_dir: String,
+    /// Last carving scan start LBA (empty = beginning of device).
+    #[serde(default)]
+    pub carving_scan_start_lba: String,
+    /// Last carving scan end LBA (empty = end of device).
+    #[serde(default)]
+    pub carving_scan_end_lba: String,
+    /// Last hex viewer LBA (0 = beginning of device).
+    #[serde(default)]
+    pub hex_last_lba: u64,
 }
 
 impl Session {
@@ -53,6 +65,10 @@ mod tests {
             imaging_start_lba: String::new(),
             imaging_end_lba: String::new(),
             imaging_reverse: false,
+            carving_output_dir: String::new(),
+            carving_scan_start_lba: String::new(),
+            carving_scan_end_lba: String::new(),
+            hex_last_lba: 0,
         };
         assert!(s.imaging_dest.is_empty());
     }
@@ -68,6 +84,10 @@ mod tests {
             imaging_start_lba: "100".into(),
             imaging_end_lba: "500".into(),
             imaging_reverse: false,
+            carving_output_dir: "carved_out".into(),
+            carving_scan_start_lba: "1000".into(),
+            carving_scan_end_lba: "5000".into(),
+            hex_last_lba: 42,
         };
         let json = serde_json::to_string_pretty(&session).unwrap();
         let mut f = std::fs::File::create(&path).unwrap();
@@ -77,5 +97,7 @@ mod tests {
         assert_eq!(loaded.imaging_dest, "/tmp/image.raw");
         assert_eq!(loaded.imaging_start_lba, "100");
         assert_eq!(loaded.imaging_end_lba, "500");
+        assert_eq!(loaded.carving_output_dir, "carved_out");
+        assert_eq!(loaded.hex_last_lba, 42);
     }
 }

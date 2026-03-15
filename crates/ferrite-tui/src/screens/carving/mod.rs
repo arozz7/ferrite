@@ -1,30 +1,62 @@
 //! Screen 6 — File Carving: select signature types and run the carving engine
 //! with live progress, then extract hits to disk.
 
-use std::collections::{HashMap, VecDeque};
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyModifiers};
-use ferrite_blockdev::{AlignedBuffer, BlockDevice};
-use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
-use ferrite_filesystem::{build_metadata_index, MetadataIndex};
+use ferrite_blockdev::BlockDevice;
+use ferrite_carver::{CarveHit, ScanProgress, Signature};
+use ferrite_filesystem::MetadataIndex;
 
-use sha2::{Digest, Sha256};
-
+mod checkpoint;
+mod events;
+mod extract;
+mod helpers;
+mod input;
 mod preview;
 mod render;
+mod session_ops;
+pub(crate) use helpers::fmt_bytes;
 pub(crate) use preview::ColorCap;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/// Maximum number of hits stored in the TUI list.  Hits beyond this cap are
+/// counted in `total_hits_found` but not stored in memory.
+pub(crate) const DISPLAY_CAP: usize = 100_000;
+
+/// Auto-extract queue length at which the scan is automatically paused to let
+/// extraction catch up.  Kept intentionally small: at high hit densities the
+/// scan can enqueue thousands of hits per second, so the primary trigger is
+/// whether an extraction batch is already running (see events.rs).
+const AUTO_EXTRACT_HIGH_WATER: usize = 100;
+
+/// Auto-extract queue length below which a back-pressure pause is lifted and
+/// the scan resumes.  Using a near-zero value means we only resume once the
+/// queue is essentially empty.
+const AUTO_EXTRACT_LOW_WATER: usize = 10;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/// Which scan-range LBA field is currently being edited.
+#[derive(Debug, Clone, PartialEq)]
+enum ScanRangeField {
+    None,
+    Start,
+    End,
+}
+
 enum CarveMsg {
     Progress(ScanProgress),
-    Done(Vec<CarveHit>),
+    /// A batch of hits streamed from the scanner thread (replaces the old
+    /// `Done(Vec<CarveHit>)` accumulation model).
+    HitBatch(Vec<CarveHit>),
+    /// Scan completed (or was cancelled).  All hits have been delivered via
+    /// `HitBatch` messages; no payload.
+    Done,
     MetadataReady(MetadataIndex),
     Extracted {
         idx: usize,
@@ -91,7 +123,7 @@ pub struct SigEntry {
 }
 
 /// Per-hit extraction status.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum HitStatus {
     Unextracted,
     /// Waiting in the work queue — a worker hasn't picked it up yet.
@@ -122,10 +154,19 @@ pub struct CarvingState {
     sig_sel: usize,
     hits: Vec<HitEntry>,
     hit_sel: usize,
+    /// Number of visible rows in the hits list (updated each render for PgUp/PgDn).
+    pub(crate) hits_page_size: usize,
     focus: CarveFocus,
     status: CarveStatus,
     cancel: Arc<AtomicBool>,
+    /// Pause flag for the scan thread only.  Also used for back-pressure when
+    /// auto-extract is on.  Extraction workers use `extract_pause` instead so
+    /// that pausing the scan never inadvertently stalls extraction.
     pause: Arc<AtomicBool>,
+    /// Pause flag for extraction workers only (user-initiated via `p` key
+    /// while extraction is running).  Kept separate from `pause` so that
+    /// back-pressure scan gating never blocks the extraction pipeline.
+    extract_pause: Arc<AtomicBool>,
     rx: Option<Receiver<CarveMsg>>,
     /// Persistent sender kept alive after scan completes so extraction results
     /// can be sent back on the same channel.
@@ -148,14 +189,49 @@ pub struct CarvingState {
     meta_index: Option<Arc<MetadataIndex>>,
     /// `true` while the metadata index is being built in the background.
     meta_index_building: bool,
+    /// Total wall-clock time spent in a paused state during the current scan.
+    paused_elapsed: std::time::Duration,
+    /// Timestamp when the current scan pause started (`None` when not paused).
+    paused_since: Option<std::time::Instant>,
+    /// Scan range LBA strings (empty = beginning / end of device).
+    pub(crate) scan_start_lba_str: String,
+    pub(crate) scan_end_lba_str: String,
+    /// Which scan-range field is currently being edited.
+    scan_range_field: ScanRangeField,
+    /// Checkpoint file path for the current session.
+    checkpoint_path: Option<String>,
+    /// Index of the last hit that was written to the checkpoint file.
+    checkpoint_flushed: usize,
     /// Whether the preview panel is visible.
     pub(crate) show_preview: bool,
     /// Cached preview for the currently selected hit.
     pub(crate) current_preview: Option<preview::HitPreview>,
-    /// Index of the hit that `current_preview` was built for.
+    /// Index of the hit that `current_preview` was built for (or is loading).
     preview_hit_idx: Option<usize>,
+    /// Channel receiver for the background preview loader thread.
+    preview_rx: Option<mpsc::Receiver<Option<preview::HitPreview>>>,
+    /// `true` while a preview is being loaded in a background thread.
+    pub(crate) preview_loading: bool,
     /// Terminal colour capability (detected once at startup).
     pub(crate) color_cap: ColorCap,
+    /// Total hits found during the scan (including those above `DISPLAY_CAP`).
+    pub(crate) total_hits_found: usize,
+    /// Auto-extract mode: extract each hit as it arrives from the scanner.
+    pub(crate) auto_extract: bool,
+    /// Queue of hits pending automatic extraction: (hit_idx, hit, output_path).
+    /// `hit_idx` is the index in `self.hits`, or `usize::MAX` for hits beyond
+    /// `DISPLAY_CAP` that are not shown in the list.
+    pub(crate) auto_extract_queue: std::collections::VecDeque<(usize, CarveHit, String)>,
+    /// Available disk space at (or near) the output directory (bytes).
+    /// Updated periodically in `tick()`.
+    pub(crate) disk_avail_bytes: Option<u64>,
+    /// Tick counter used to throttle the disk-space poll (checked every ~5 s).
+    disk_space_tick: u32,
+    /// `true` when the scan has been automatically paused because the
+    /// auto-extract queue exceeded `AUTO_EXTRACT_HIGH_WATER`.  Cleared when
+    /// the queue drains below `AUTO_EXTRACT_LOW_WATER`, or when the user
+    /// manually presses `p` (which takes over pause ownership).
+    backpressure_paused: bool,
 }
 
 impl Default for CarvingState {
@@ -166,17 +242,19 @@ impl Default for CarvingState {
 
 impl CarvingState {
     pub fn new() -> Self {
-        let sig_list = load_builtin_signatures();
+        let sig_list = helpers::load_builtin_signatures();
         Self {
             device: None,
             sig_list,
             sig_sel: 0,
             hits: Vec::new(),
             hit_sel: 0,
+            hits_page_size: 20,
             focus: CarveFocus::Signatures,
             status: CarveStatus::Idle,
             cancel: Arc::new(AtomicBool::new(false)),
             pause: Arc::new(AtomicBool::new(false)),
+            extract_pause: Arc::new(AtomicBool::new(false)),
             rx: None,
             tx: None,
             scan_progress: None,
@@ -188,10 +266,25 @@ impl CarvingState {
             extract_summary: None,
             meta_index: None,
             meta_index_building: false,
+            paused_elapsed: std::time::Duration::ZERO,
+            paused_since: None,
+            scan_start_lba_str: String::new(),
+            scan_end_lba_str: String::new(),
+            scan_range_field: ScanRangeField::None,
+            checkpoint_path: None,
+            checkpoint_flushed: 0,
             show_preview: false,
             current_preview: None,
             preview_hit_idx: None,
+            preview_rx: None,
+            preview_loading: false,
             color_cap: ColorCap::detect(),
+            total_hits_found: 0,
+            auto_extract: false,
+            auto_extract_queue: std::collections::VecDeque::new(),
+            disk_avail_bytes: None,
+            disk_space_tick: 0,
+            backpressure_paused: false,
         }
     }
 
@@ -200,9 +293,19 @@ impl CarvingState {
         self.hits.len()
     }
 
-    /// Returns `true` while the output_dir field is being edited (so `q` won't quit).
+    /// Returns `true` if there are any carve hits.
+    pub fn has_hits(&self) -> bool {
+        !self.hits.is_empty()
+    }
+
+    /// Returns the checkpoint path if one is set.
+    pub fn checkpoint_path(&self) -> Option<&str> {
+        self.checkpoint_path.as_deref()
+    }
+
+    /// Returns `true` while any text-input field is being edited (so `q` won't quit).
     pub fn is_editing(&self) -> bool {
-        self.editing_dir
+        self.editing_dir || self.scan_range_field != ScanRangeField::None
     }
 
     /// Returns the byte offset of the currently selected hit when focus is on
@@ -237,6 +340,7 @@ impl CarvingState {
         self.status = CarveStatus::Idle;
         self.cancel.store(false, Ordering::Relaxed);
         self.pause.store(false, Ordering::Relaxed);
+        self.extract_pause.store(false, Ordering::Relaxed);
         self.extract_cancel.store(false, Ordering::Relaxed);
         self.extract_progress = None;
         self.extract_summary = None;
@@ -244,755 +348,21 @@ impl CarvingState {
         self.tx = None;
         self.meta_index = None;
         self.meta_index_building = false;
+        self.paused_elapsed = std::time::Duration::ZERO;
+        self.paused_since = None;
+        self.checkpoint_path = None;
+        self.checkpoint_flushed = 0;
         self.show_preview = false;
         self.current_preview = None;
         self.preview_hit_idx = None;
-    }
-
-    /// Drain the background carving channel.
-    pub fn tick(&mut self) {
-        loop {
-            let rx = match &self.rx {
-                Some(r) => r,
-                None => return,
-            };
-            match rx.try_recv() {
-                Ok(CarveMsg::Progress(p)) => {
-                    self.scan_progress = Some(p);
-                }
-                Ok(CarveMsg::Done(hits)) => {
-                    self.hits = hits
-                        .into_iter()
-                        .map(|h| HitEntry {
-                            hit: h,
-                            status: HitStatus::Unextracted,
-                            selected: false,
-                        })
-                        .collect();
-                    self.hit_sel = 0;
-                    // Spawn background thread to build filename index from filesystem metadata.
-                    if let (Some(device), Some(meta_tx)) = (self.device.as_ref(), self.tx.as_ref())
-                    {
-                        self.meta_index_building = true;
-                        let device = Arc::clone(device);
-                        let meta_tx = meta_tx.clone();
-                        std::thread::spawn(move || {
-                            let index = build_metadata_index(device);
-                            let _ = meta_tx.send(CarveMsg::MetadataReady(index));
-                        });
-                    }
-                    self.status = CarveStatus::Done;
-                    // Keep rx alive so extraction results can still arrive.
-                }
-                Ok(CarveMsg::MetadataReady(index)) => {
-                    self.meta_index = Some(Arc::new(index));
-                    self.meta_index_building = false;
-                }
-                Ok(CarveMsg::Extracted {
-                    idx,
-                    bytes,
-                    truncated,
-                }) => {
-                    if let Some(entry) = self.hits.get_mut(idx) {
-                        entry.status = if truncated {
-                            HitStatus::Truncated { bytes }
-                        } else {
-                            HitStatus::Ok { bytes }
-                        };
-                    }
-                }
-                Ok(CarveMsg::ExtractionStarted { idx }) => {
-                    if let Some(entry) = self.hits.get_mut(idx) {
-                        entry.status = HitStatus::Extracting;
-                    }
-                }
-                Ok(CarveMsg::ExtractionProgress {
-                    done,
-                    total,
-                    total_bytes,
-                    last_name,
-                }) => {
-                    if let Some(p) = &mut self.extract_progress {
-                        p.done = done;
-                        p.total = total;
-                        p.total_bytes = total_bytes;
-                        p.last_name = last_name;
-                    }
-                }
-                Ok(CarveMsg::ExtractionDone {
-                    succeeded,
-                    truncated,
-                    failed,
-                    total_bytes,
-                    elapsed_secs,
-                }) => {
-                    self.extract_progress = None;
-                    self.extract_cancel.store(false, Ordering::Relaxed);
-                    // Clear pause flag in case extraction finished while paused.
-                    self.pause.store(false, Ordering::Relaxed);
-                    // Only show summary when at least one file was attempted.
-                    if succeeded + truncated + failed > 0 {
-                        self.extract_summary = Some(ExtractionSummary {
-                            succeeded,
-                            truncated,
-                            failed,
-                            total_bytes,
-                            elapsed_secs,
-                        });
-                    }
-                }
-                Ok(CarveMsg::Error(e)) => {
-                    self.status = CarveStatus::Error(e);
-                    self.rx = None;
-                    self.tx = None;
-                    return;
-                }
-                Err(mpsc::TryRecvError::Empty) => return,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.rx = None;
-                    return;
-                }
-            }
-        }
-    }
-
-    pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        // While editing the output directory, route all keys there.
-        if self.editing_dir {
-            match code {
-                KeyCode::Esc | KeyCode::Enter => self.editing_dir = false,
-                KeyCode::Backspace => {
-                    self.output_dir.pop();
-                }
-                KeyCode::Char(c) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
-                    self.output_dir.push(c);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        match code {
-            // Switch focus between panels with Left / Right
-            KeyCode::Left => self.focus = CarveFocus::Signatures,
-            KeyCode::Right if !self.hits.is_empty() => self.focus = CarveFocus::Hits,
-            KeyCode::Up => {
-                self.move_selection(-1);
-                if self.show_preview && self.focus == CarveFocus::Hits {
-                    self.refresh_preview();
-                }
-            }
-            KeyCode::Down => {
-                self.move_selection(1);
-                if self.show_preview && self.focus == CarveFocus::Hits {
-                    self.refresh_preview();
-                }
-            }
-            KeyCode::Char(' ') if self.focus == CarveFocus::Signatures => {
-                self.toggle_signature();
-            }
-            KeyCode::Char(' ') if self.focus == CarveFocus::Hits => {
-                self.toggle_hit_selected();
-            }
-            KeyCode::Char('a') if self.focus == CarveFocus::Hits => {
-                self.toggle_select_all();
-            }
-            KeyCode::Char('o') => self.editing_dir = true,
-            KeyCode::Char('s') => self.start_scan(),
-            KeyCode::Char('p') => self.toggle_pause(),
-            KeyCode::Char('c') => {
-                if self.extract_progress.is_some() {
-                    self.cancel_extraction();
-                } else {
-                    self.cancel_scan();
-                }
-            }
-            KeyCode::Char('d') => {
-                self.extract_summary = None;
-            }
-            KeyCode::Char('e') => self.extract_selected(),
-            KeyCode::Char('E') => self.extract_all_selected(),
-            KeyCode::Char('v') if self.focus == CarveFocus::Hits => {
-                self.show_preview = !self.show_preview;
-                if self.show_preview {
-                    self.refresh_preview();
-                } else {
-                    self.current_preview = None;
-                    self.preview_hit_idx = None;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn refresh_preview(&mut self) {
-        let hit_idx = self.hit_sel;
-        if self.preview_hit_idx == Some(hit_idx) {
-            return; // already cached
-        }
-        let hit = match self.hits.get(hit_idx) {
-            Some(e) => e.hit.clone(),
-            None => {
-                self.current_preview = None;
-                self.preview_hit_idx = None;
-                return;
-            }
-        };
-        let new_preview = if let Some(device) = &self.device {
-            preview::read_preview(device.as_ref(), &hit)
-        } else {
-            None
-        };
-        self.current_preview = new_preview;
-        self.preview_hit_idx = Some(hit_idx);
-    }
-
-    fn move_selection(&mut self, delta: i32) {
-        match self.focus {
-            CarveFocus::Signatures => {
-                let len = self.sig_list.len();
-                if len == 0 {
-                    return;
-                }
-                if delta < 0 {
-                    self.sig_sel = self.sig_sel.saturating_sub(1);
-                } else {
-                    self.sig_sel = (self.sig_sel + 1).min(len - 1);
-                }
-            }
-            CarveFocus::Hits => {
-                let len = self.hits.len();
-                if len == 0 {
-                    return;
-                }
-                if delta < 0 {
-                    self.hit_sel = self.hit_sel.saturating_sub(1);
-                } else {
-                    self.hit_sel = (self.hit_sel + 1).min(len - 1);
-                }
-            }
-        }
-    }
-
-    fn toggle_signature(&mut self) {
-        if let Some(e) = self.sig_list.get_mut(self.sig_sel) {
-            e.enabled = !e.enabled;
-        }
-    }
-
-    fn start_scan(&mut self) {
-        if self.status == CarveStatus::Running {
-            return;
-        }
-        let device = match &self.device {
-            Some(d) => Arc::clone(d),
-            None => return,
-        };
-        let enabled: Vec<Signature> = self
-            .sig_list
-            .iter()
-            .filter(|e| e.enabled)
-            .map(|e| e.sig.clone())
-            .collect();
-        if enabled.is_empty() {
-            return;
-        }
-        let config = CarvingConfig {
-            signatures: enabled,
-            scan_chunk_size: 1024 * 1024,
-        };
-
-        self.cancel.store(false, Ordering::Relaxed);
-        self.pause.store(false, Ordering::Relaxed);
-        self.hits.clear();
-        self.hit_sel = 0;
-        self.scan_progress = None;
-        self.scan_start = Some(Instant::now());
-        self.status = CarveStatus::Running;
-
-        let (tx, rx) = mpsc::channel::<CarveMsg>();
-        // Keep tx alive so extraction results can be sent back after Done.
-        self.tx = Some(tx.clone());
-        self.rx = Some(rx);
-
-        // Progress messages use a bounded sync channel so the scan thread
-        // never blocks if the TUI is slow to drain.
-        let (prog_tx, prog_rx) = mpsc::sync_channel::<ScanProgress>(32);
-
-        // Forward ScanProgress from the bounded channel into the main CarveMsg channel.
-        let fwd_tx = tx.clone();
-        std::thread::spawn(move || {
-            for p in prog_rx {
-                let _ = fwd_tx.send(CarveMsg::Progress(p));
-            }
-        });
-
-        let cancel_scan = Arc::clone(&self.cancel);
-        let pause_scan = Arc::clone(&self.pause);
-
-        std::thread::spawn(move || {
-            let carver = Carver::new(Arc::clone(&device), config);
-            match carver.scan_with_progress(&prog_tx, &cancel_scan, &pause_scan) {
-                Ok(hits) => {
-                    drop(prog_tx); // signal the forwarder to exit
-                    let deduped = dedup_hits(hits, device.as_ref());
-                    let _ = tx.send(CarveMsg::Done(deduped));
-                }
-                Err(e) => {
-                    drop(prog_tx);
-                    let _ = tx.send(CarveMsg::Error(e.to_string()));
-                }
-            }
-        });
-    }
-
-    fn toggle_pause(&mut self) {
-        // During active extraction the scan is already Done — handle separately.
-        if self.extract_progress.is_some() {
-            let current = self.pause.load(Ordering::Relaxed);
-            self.pause.store(!current, Ordering::Relaxed);
-            return;
-        }
-        match self.status {
-            CarveStatus::Running => {
-                self.pause.store(true, Ordering::Relaxed);
-                self.status = CarveStatus::Paused;
-            }
-            CarveStatus::Paused => {
-                self.pause.store(false, Ordering::Relaxed);
-                self.status = CarveStatus::Running;
-            }
-            _ => {}
-        }
-    }
-
-    fn cancel_scan(&mut self) {
-        // Clear pause first so the scan thread isn't spin-waiting when cancel fires.
-        self.pause.store(false, Ordering::Relaxed);
-        self.cancel.store(true, Ordering::Relaxed);
-        // Leave rx/tx open — the scan thread will return partial hits via Done.
-        // Status stays Running until the Done message arrives.
-    }
-
-    fn cancel_extraction(&mut self) {
-        self.extract_cancel.store(true, Ordering::Relaxed);
-        // extract_progress is cleared when ExtractionDone arrives.
-    }
-
-    /// Build an output path for `hit` inside `dir`.
-    ///
-    /// If the metadata index contains the original filename for this offset,
-    /// uses it.  Otherwise falls back to `ferrite_<ext>_<offset>.<ext>`.
-    fn filename_for_hit(&self, hit: &CarveHit, dir: &str) -> String {
-        if let Some(idx) = &self.meta_index {
-            if let Some(meta) = idx.lookup(hit.byte_offset) {
-                let safe = meta
-                    .name
-                    .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-                if !safe.is_empty() {
-                    return format!("{dir}\\{safe}");
-                }
-            }
-        }
-        format!(
-            "{dir}\\ferrite_{}_{}.{}",
-            hit.signature.extension, hit.byte_offset, hit.signature.extension
-        )
-    }
-
-    fn extract_selected(&mut self) {
-        let entry = match self.hits.get_mut(self.hit_sel) {
-            Some(e) => e,
-            None => return,
-        };
-        let hit = entry.hit.clone();
-        entry.status = HitStatus::Extracting;
-
-        let device = match &self.device {
-            Some(d) => Arc::clone(d),
-            None => return,
-        };
-        let tx = match &self.tx {
-            Some(t) => t.clone(),
-            None => return,
-        };
-        let idx = self.hit_sel;
-
-        let dir = if self.output_dir.is_empty() {
-            "carved".to_string()
-        } else {
-            self.output_dir.clone()
-        };
-        let filename = self.filename_for_hit(&hit, &dir);
-        let config = CarvingConfig {
-            signatures: vec![hit.signature.clone()],
-            scan_chunk_size: 1024 * 1024,
-        };
-        std::thread::spawn(move || {
-            // Ensure output directory exists before writing.
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                tracing::warn!(dir = %dir, error = %e, "failed to create output directory");
-                return;
-            }
-            let carver = Carver::new(device, config);
-            if let Ok(mut f) = std::fs::File::create(&filename) {
-                match carver.extract(&hit, &mut f) {
-                    Ok(bytes) => {
-                        // Determine if truncated: if no footer → always Ok;
-                        // if has footer and bytes < max_size → Ok (footer found);
-                        // else → Truncated (hit max size without footer).
-                        let truncated = if hit.signature.footer.is_empty() {
-                            false
-                        } else {
-                            bytes >= hit.signature.max_size
-                        };
-                        tracing::info!(path = %filename, bytes, "extracted file");
-                        let _ = tx.send(CarveMsg::Extracted {
-                            idx,
-                            bytes,
-                            truncated,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(path = %filename, error = %e, "extraction failed");
-                    }
-                }
-            }
-        });
-    }
-
-    fn toggle_hit_selected(&mut self) {
-        if let Some(e) = self.hits.get_mut(self.hit_sel) {
-            e.selected = !e.selected;
-            // Advance cursor so Space+Down becomes a quick multi-select gesture.
-            let len = self.hits.len();
-            if len > 0 {
-                self.hit_sel = (self.hit_sel + 1).min(len - 1);
-            }
-        }
-    }
-
-    fn toggle_select_all(&mut self) {
-        let all_selected = self.hits.iter().all(|e| e.selected);
-        let new_state = !all_selected;
-        for e in &mut self.hits {
-            e.selected = new_state;
-        }
-    }
-
-    fn extract_all_selected(&mut self) {
-        // Already extracting — don't start a second batch.
-        if self.extract_progress.is_some() {
-            return;
-        }
-        let device = match &self.device {
-            Some(d) => Arc::clone(d),
-            None => return,
-        };
-        let tx = match &self.tx {
-            Some(t) => t.clone(),
-            None => return,
-        };
-        let dir = if self.output_dir.is_empty() {
-            "carved".to_string()
-        } else {
-            self.output_dir.clone()
-        };
-
-        // Collect work items: (global_index, hit, output_path)
-        let work: Vec<(usize, CarveHit, String)> = self
-            .hits
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.selected && matches!(e.status, HitStatus::Unextracted))
-            .map(|(idx, e)| {
-                let path = self.filename_for_hit(&e.hit, &dir);
-                (idx, e.hit.clone(), path)
-            })
-            .collect();
-
-        if work.is_empty() {
-            return;
-        }
-        let total = work.len();
-
-        // Mark all queued hits as Queued so the UI reflects the pending batch.
-        // Individual hits transition to Extracting when a worker picks them up.
-        for (idx, _, _) in &work {
-            if let Some(e) = self.hits.get_mut(*idx) {
-                e.status = HitStatus::Queued;
-            }
-        }
-
-        self.extract_cancel.store(false, Ordering::Relaxed);
-        self.pause.store(false, Ordering::Relaxed);
-        self.extract_summary = None;
-        let cancel = Arc::clone(&self.extract_cancel);
-        let pause = Arc::clone(&self.pause);
-
-        self.extract_progress = Some(ExtractProgress {
-            done: 0,
-            total,
-            total_bytes: 0,
-            last_name: String::new(),
-            start: Instant::now(),
-        });
-
-        // Cap concurrency: enough to saturate an SSD without seek-thrashing an HDD.
-        // Capped at 8 regardless of core count since disk I/O — not CPU — is the
-        // bottleneck, and excessive parallelism degrades HDD performance.
-        let concurrency = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .clamp(2, 8);
-
-        // Shared work queue drained by all workers.
-        let queue: Arc<Mutex<VecDeque<(usize, CarveHit, String)>>> =
-            Arc::new(Mutex::new(work.into()));
-
-        // Coordinator thread: spawns workers, collects per-file results, forwards
-        // progress to the TUI.  Workers communicate back via a private channel so
-        // the coordinator can sequence progress messages without races.
-        std::thread::spawn(move || {
-            let extract_start = Instant::now();
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                tracing::warn!(dir = %dir, error = %e, "failed to create output directory");
-                let _ = tx.send(CarveMsg::ExtractionDone {
-                    succeeded: 0,
-                    truncated: 0,
-                    failed: 0,
-                    total_bytes: 0,
-                    elapsed_secs: extract_start.elapsed().as_secs_f64(),
-                });
-                return;
-            }
-
-            enum WorkerMsg {
-                Started {
-                    idx: usize,
-                },
-                Completed {
-                    idx: usize,
-                    hit: CarveHit,
-                    path: String,
-                    result: Result<u64, String>,
-                },
-            }
-            let (done_tx, done_rx) = mpsc::channel::<WorkerMsg>();
-
-            for _ in 0..concurrency {
-                let queue = Arc::clone(&queue);
-                let device = Arc::clone(&device);
-                let done_tx = done_tx.clone();
-                let cancel = Arc::clone(&cancel);
-                let pause = Arc::clone(&pause);
-
-                std::thread::spawn(move || loop {
-                    // Honour pause between extractions; bail immediately on cancel.
-                    while pause.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let item = queue.lock().unwrap().pop_front();
-                    let (idx, hit, path) = match item {
-                        None => break,
-                        Some(i) => i,
-                    };
-                    let _ = done_tx.send(WorkerMsg::Started { idx });
-                    let config = CarvingConfig {
-                        signatures: vec![hit.signature.clone()],
-                        scan_chunk_size: 1024 * 1024,
-                    };
-                    let carver = Carver::new(Arc::clone(&device), config);
-                    // CancelWriter propagates the cancel flag into every write() call
-                    // so large-file extractions stop at the next chunk boundary rather
-                    // than running to completion before the flag is noticed.
-                    let result = std::fs::File::create(&path)
-                        .map_err(|e| e.to_string())
-                        .and_then(|f| {
-                            let mut writer = CancelWriter {
-                                inner: f,
-                                cancel: Arc::clone(&cancel),
-                            };
-                            carver.extract(&hit, &mut writer).map_err(|e| e.to_string())
-                        });
-                    let _ = done_tx.send(WorkerMsg::Completed {
-                        idx,
-                        hit,
-                        path,
-                        result,
-                    });
-                });
-            }
-            // Drop coordinator's copy so done_rx drains once all workers finish.
-            drop(done_tx);
-
-            let mut completed = 0usize;
-            let mut succeeded = 0usize;
-            let mut truncated_count = 0usize;
-            let mut failed = 0usize;
-            let mut total_bytes = 0u64;
-            let mut last_name = String::new();
-
-            for msg in done_rx {
-                match msg {
-                    WorkerMsg::Started { idx } => {
-                        let _ = tx.send(CarveMsg::ExtractionStarted { idx });
-                    }
-                    WorkerMsg::Completed {
-                        idx,
-                        hit,
-                        path,
-                        result,
-                    } => {
-                        completed += 1;
-                        match result {
-                            Ok(bytes) => {
-                                let truncated = !hit.signature.footer.is_empty()
-                                    && bytes >= hit.signature.max_size;
-                                total_bytes += bytes;
-                                if truncated {
-                                    truncated_count += 1;
-                                } else {
-                                    succeeded += 1;
-                                }
-                                last_name = std::path::Path::new(&path)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or(&path)
-                                    .to_string();
-                                tracing::info!(path = %path, bytes, "extracted file");
-                                let _ = tx.send(CarveMsg::Extracted {
-                                    idx,
-                                    bytes,
-                                    truncated,
-                                });
-                            }
-                            Err(e) => {
-                                // Cancelled mid-write is expected — don't count as failure.
-                                if e.contains("cancelled") {
-                                    tracing::debug!(path = %path, "extraction cancelled");
-                                } else {
-                                    failed += 1;
-                                    tracing::warn!(path = %path, error = %e, "extraction failed");
-                                }
-                            }
-                        }
-                        let _ = tx.send(CarveMsg::ExtractionProgress {
-                            done: completed,
-                            total,
-                            total_bytes,
-                            last_name: last_name.clone(),
-                        });
-                    }
-                }
-            }
-            let _ = tx.send(CarveMsg::ExtractionDone {
-                succeeded,
-                truncated: truncated_count,
-                failed,
-                total_bytes,
-                elapsed_secs: extract_start.elapsed().as_secs_f64(),
-            });
-        });
-    }
-}
-
-// ── CancelWriter ──────────────────────────────────────────────────────────────
-
-/// Wraps any `Write` implementor and checks the `cancel` flag on every `write()`
-/// call.  When the flag is set the write returns `ErrorKind::Interrupted`, which
-/// propagates up through `carver.extract()` so large-file extractions abort at
-/// the next chunk boundary rather than running to completion.
-struct CancelWriter<W: Write> {
-    inner: W,
-    cancel: Arc<AtomicBool>,
-}
-
-impl<W: Write> Write for CancelWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if self.cancel.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "extraction cancelled",
-            ));
-        }
-        self.inner.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-pub(crate) fn fmt_bytes(n: u64) -> String {
-    const GIB: u64 = 1024 * 1024 * 1024;
-    const MIB: u64 = 1024 * 1024;
-    if n >= GIB {
-        format!("{:.1} GiB", n as f64 / GIB as f64)
-    } else if n >= MIB {
-        format!("{:.1} MiB", n as f64 / MIB as f64)
-    } else {
-        format!("{n} B")
-    }
-}
-
-// ── Deduplication ─────────────────────────────────────────────────────────────
-
-/// Hash the first 4096 bytes (or fewer) of a hit using SHA-256.
-fn hash_hit_prefix(device: &dyn BlockDevice, offset: u64) -> [u8; 32] {
-    let dev_size = device.size();
-    if offset >= dev_size {
-        return [0u8; 32];
-    }
-    let ss = device.sector_size() as usize;
-    // Round read_size up to nearest sector boundary.
-    let raw_len = (4096usize).min((dev_size - offset) as usize);
-    let read_size = raw_len.div_ceil(ss) * ss;
-    let read_size = read_size.max(ss);
-
-    let mut buf = AlignedBuffer::new(read_size, ss);
-    let n = device.read_at(offset, &mut buf).unwrap_or(0);
-    if n == 0 {
-        return [0u8; 32];
-    }
-    let data_len = n.min(raw_len);
-    let mut hasher = Sha256::new();
-    hasher.update(&buf.as_slice()[..data_len]);
-    hasher.finalize().into()
-}
-
-/// Remove duplicate hits where the first 4096 bytes hash identically.
-/// The first occurrence of each hash is kept.
-fn dedup_hits(hits: Vec<CarveHit>, device: &dyn BlockDevice) -> Vec<CarveHit> {
-    let mut seen: HashMap<[u8; 32], bool> = HashMap::new();
-    let mut out = Vec::with_capacity(hits.len());
-    for hit in hits {
-        let digest = hash_hit_prefix(device, hit.byte_offset);
-        if seen.insert(digest, true).is_none() {
-            out.push(hit);
-        }
-    }
-    out
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn load_builtin_signatures() -> Vec<SigEntry> {
-    match CarvingConfig::from_toml_str(crate::SIGNATURES_TOML) {
-        Ok(cfg) => cfg
-            .signatures
-            .into_iter()
-            .map(|sig| SigEntry { sig, enabled: true })
-            .collect(),
-        Err(e) => {
-            tracing::error!(?e, "failed to load built-in signatures");
-            Vec::new()
-        }
+        self.preview_rx = None;
+        self.preview_loading = false;
+        self.total_hits_found = 0;
+        self.auto_extract = false;
+        self.auto_extract_queue.clear();
+        self.disk_avail_bytes = None;
+        self.disk_space_tick = 0;
+        self.backpressure_paused = false;
     }
 }
 
@@ -1002,6 +372,7 @@ fn load_builtin_signatures() -> Vec<SigEntry> {
 mod tests {
     use std::sync::Arc;
 
+    use crossterm::event::{KeyCode, KeyModifiers};
     use ferrite_blockdev::{BlockDevice, MockBlockDevice};
 
     use super::*;
@@ -1076,6 +447,7 @@ mod tests {
             footer_last: false,
             max_size: 1024,
             size_hint: None,
+            min_size: 0,
         };
         let hit = CarveHit {
             byte_offset: 0,
@@ -1094,51 +466,5 @@ mod tests {
         // Structural test: HitStatus::Unextracted is the initial state.
         let status = HitStatus::Unextracted;
         assert_eq!(status, HitStatus::Unextracted);
-    }
-
-    #[test]
-    fn dedup_removes_duplicate_hashes() {
-        // Two hits at different offsets but same content → only one should survive.
-        let mut data = vec![0xAAu8; 8192];
-        // Put a JPEG marker at offset 0 and offset 512.
-        data[0] = 0xFF;
-        data[1] = 0xD8;
-        data[2] = 0xFF;
-        data[512] = 0xFF;
-        data[513] = 0xD8;
-        data[514] = 0xFF;
-        let dev: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new(data, 512));
-
-        let sig = Signature {
-            name: "JPEG".to_string(),
-            extension: "jpg".to_string(),
-            header: vec![Some(0xFF), Some(0xD8), Some(0xFF)],
-            footer: vec![0xFF, 0xD9],
-            footer_last: false,
-            max_size: 10 * 1024 * 1024,
-            size_hint: None,
-        };
-        let hits = vec![
-            CarveHit {
-                byte_offset: 0,
-                signature: sig.clone(),
-            },
-            CarveHit {
-                byte_offset: 512,
-                signature: sig,
-            },
-        ];
-
-        // Both hits read from a device whose content from offset 0 and 512
-        // differs (different bytes in that range since we only set 3 bytes
-        // the same way but rest of the 4096 prefix differs by sector position).
-        // Actually for this test we just verify the function runs and returns
-        // at most 2 results (dedup keeps unique hashes).
-        let result = dedup_hits(hits, dev.as_ref());
-        // Both sectors are from same 0xAA-filled device content, but they
-        // start at different offsets → they hash the same (all 0xAA after
-        // the 3-byte header which differs). Actually headers differ so hashes differ.
-        // The key thing is: function does not panic.
-        assert!(!result.is_empty());
     }
 }

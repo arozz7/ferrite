@@ -8,7 +8,7 @@ use crate::error::{CarveError, Result};
 
 /// Hints the extractor on how to derive the actual file size from the file
 /// header, rather than always writing `max_size` bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SizeHint {
     /// Read a fixed-width integer at a known offset and add a constant.
     ///
@@ -98,12 +98,12 @@ impl SizeHint {
     /// Returns a short label used in display/debug contexts.
     pub fn kind_name(&self) -> &'static str {
         match self {
-            SizeHint::Linear { .. }       => "linear",
-            SizeHint::Ole2                => "ole2",
+            SizeHint::Linear { .. } => "linear",
+            SizeHint::Ole2 => "ole2",
             SizeHint::LinearScaled { .. } => "linear_scaled",
-            SizeHint::Sqlite              => "sqlite",
-            SizeHint::SevenZip            => "seven_zip",
-            SizeHint::OggStream           => "ogg_stream",
+            SizeHint::Sqlite => "sqlite",
+            SizeHint::SevenZip => "seven_zip",
+            SizeHint::OggStream => "ogg_stream",
         }
     }
 }
@@ -111,7 +111,7 @@ impl SizeHint {
 /// A single file-type signature: header magic bytes (with optional wildcard
 /// bytes), optional footer, a maximum extraction window, and an optional hint
 /// for reading the true file size from an embedded field.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Signature {
     /// Human-readable label (e.g. `"JPEG Image"`).
     pub name: String,
@@ -135,21 +135,31 @@ pub struct Signature {
     /// If present, the extractor reads the actual file size from this field
     /// and uses `min(parsed + add, max_size)` as the extraction length.
     pub size_hint: Option<SizeHint>,
+    /// Minimum extraction size in bytes (0 = disabled).  Hits where the
+    /// extracted data is known to be smaller than this threshold are skipped.
+    #[serde(default)]
+    pub min_size: u64,
 }
 
 /// Configuration passed to [`crate::Carver`].
 #[derive(Debug, Clone)]
 pub struct CarvingConfig {
     pub signatures: Vec<Signature>,
-    /// How many bytes to read per scan chunk (default: 1 MiB).
+    /// How many bytes to read per scan chunk (default: 4 MiB).
     pub scan_chunk_size: usize,
+    /// First byte to scan from (0 = beginning of device).
+    pub start_byte: u64,
+    /// Last byte to scan up to, exclusive (None = end of device).
+    pub end_byte: Option<u64>,
 }
 
 impl Default for CarvingConfig {
     fn default() -> Self {
         Self {
             signatures: Vec::new(),
-            scan_chunk_size: 1024 * 1024,
+            scan_chunk_size: 4 * 1024 * 1024,
+            start_byte: 0,
+            end_byte: None,
         }
     }
 }
@@ -168,6 +178,8 @@ impl CarvingConfig {
             #[serde(default)]
             footer_last: bool,
             max_size: u64,
+            #[serde(default)]
+            min_size: u64,
             // Optional size-hint fields (Linear / LinearScaled variants).
             size_hint_offset: Option<usize>,
             size_hint_len: Option<u8>,
@@ -202,10 +214,10 @@ impl CarvingConfig {
                     .unwrap_or(true);
 
                 let size_hint = match r.size_hint_kind.as_deref() {
-                    Some(k) if k.eq_ignore_ascii_case("ole2")         => Some(SizeHint::Ole2),
-                    Some(k) if k.eq_ignore_ascii_case("sqlite")       => Some(SizeHint::Sqlite),
-                    Some(k) if k.eq_ignore_ascii_case("seven_zip")    => Some(SizeHint::SevenZip),
-                    Some(k) if k.eq_ignore_ascii_case("ogg_stream")   => Some(SizeHint::OggStream),
+                    Some(k) if k.eq_ignore_ascii_case("ole2") => Some(SizeHint::Ole2),
+                    Some(k) if k.eq_ignore_ascii_case("sqlite") => Some(SizeHint::Sqlite),
+                    Some(k) if k.eq_ignore_ascii_case("seven_zip") => Some(SizeHint::SevenZip),
+                    Some(k) if k.eq_ignore_ascii_case("ogg_stream") => Some(SizeHint::OggStream),
                     Some(k) if k.eq_ignore_ascii_case("linear_scaled") => {
                         match (r.size_hint_offset, r.size_hint_len, r.size_hint_scale) {
                             (Some(offset), Some(len), Some(scale)) => {
@@ -239,6 +251,7 @@ impl CarvingConfig {
                     footer_last: r.footer_last,
                     max_size: r.max_size,
                     size_hint,
+                    min_size: r.min_size,
                 })
             })
             .collect();
@@ -370,7 +383,12 @@ size_hint_add    = 8
         assert_eq!(sig.header[4], None); // wildcard
         assert_eq!(sig.header[8], Some(0x41));
         match sig.size_hint.as_ref().unwrap() {
-            SizeHint::Linear { offset, len, little_endian, add } => {
+            SizeHint::Linear {
+                offset,
+                len,
+                little_endian,
+                add,
+            } => {
                 assert_eq!(*offset, 4);
                 assert_eq!(*len, 4);
                 assert!(little_endian);
@@ -447,7 +465,13 @@ size_hint_add     = 4096
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
         let sig = &cfg.signatures[0];
         match sig.size_hint.as_ref().unwrap() {
-            SizeHint::LinearScaled { offset, len, little_endian, scale, add } => {
+            SizeHint::LinearScaled {
+                offset,
+                len,
+                little_endian,
+                scale,
+                add,
+            } => {
                 assert_eq!(*offset, 42);
                 assert_eq!(*len, 2);
                 assert!(little_endian);
@@ -491,7 +515,10 @@ footer    = "CC DD"
 max_size  = 1000
 "#;
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert!(!cfg.signatures[0].footer_last, "footer_last should default to false");
+        assert!(
+            !cfg.signatures[0].footer_last,
+            "footer_last should default to false"
+        );
     }
 
     #[test]
@@ -506,7 +533,10 @@ footer_last = true
 max_size    = 104857600
 "#;
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert!(cfg.signatures[0].footer_last, "footer_last should be true when set");
+        assert!(
+            cfg.signatures[0].footer_last,
+            "footer_last should be true when set"
+        );
     }
 
     #[test]

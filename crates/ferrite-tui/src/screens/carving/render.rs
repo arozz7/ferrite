@@ -10,13 +10,14 @@ use ratatui::{
 
 use super::{
     fmt_bytes, preview, CarveFocus, CarveStatus, CarvingState, ExtractProgress, ExtractionSummary,
-    HitStatus,
+    HitStatus, ScanRangeField,
 };
 
 impl CarvingState {
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         let status_label = match &self.status {
             CarveStatus::Idle => " idle ",
+            CarveStatus::Running if self.backpressure_paused => " scan paused — queue full ",
             CarveStatus::Running => " scanning… ",
             CarveStatus::Paused => " PAUSED ",
             CarveStatus::Done if self.meta_index_building => " done · building filename index… ",
@@ -40,18 +41,25 @@ impl CarvingState {
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 
-        // Split vertically: output dir bar (1 line) + main panels.
+        // Split vertically: output dir (1) + scan range (1) + disk/auto-extract (1) + main panels.
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
             .split(inner);
 
         self.render_output_dir_bar(frame, rows[0]);
+        self.render_scan_range_bar(frame, rows[1]);
+        self.render_disk_auto_bar(frame, rows[2]);
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(rows[1]);
+            .split(rows[3]);
 
         self.render_sig_panel(frame, cols[0]);
         self.render_hits_panel(frame, cols[1]);
@@ -81,6 +89,52 @@ impl CarvingState {
             Paragraph::new(Line::from(Span::styled(dir_text, dir_style))),
             area,
         );
+    }
+
+    fn render_scan_range_bar(&mut self, frame: &mut Frame, area: Rect) {
+        let start_active = self.scan_range_field == ScanRangeField::Start;
+        let end_active = self.scan_range_field == ScanRangeField::End;
+        let label_style = Style::default().fg(Color::DarkGray);
+        let active_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let inactive_style = Style::default().fg(Color::DarkGray);
+        let start_display = if self.scan_start_lba_str.is_empty() {
+            format!("[{:>10}]", "0")
+        } else if start_active {
+            format!("[{:>10}\u{2588}]", self.scan_start_lba_str)
+        } else {
+            format!("[{:>10}]", self.scan_start_lba_str)
+        };
+        let end_display = if self.scan_end_lba_str.is_empty() {
+            format!("[{:>10}]", "")
+        } else if end_active {
+            format!("[{:>10}\u{2588}]", self.scan_end_lba_str)
+        } else {
+            format!("[{:>10}]", self.scan_end_lba_str)
+        };
+        let spans = vec![
+            Span::styled(" Range  From LBA: ", label_style),
+            Span::styled(
+                start_display,
+                if start_active {
+                    active_style
+                } else {
+                    inactive_style
+                },
+            ),
+            Span::styled("  To LBA: ", label_style),
+            Span::styled(
+                end_display,
+                if end_active {
+                    active_style
+                } else {
+                    inactive_style
+                },
+            ),
+            Span::styled("  (empty = full device)   [: from  ]: to", label_style),
+        ];
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn render_sig_panel(&self, frame: &mut Frame, area: Rect) {
@@ -119,7 +173,7 @@ impl CarvingState {
         frame.render_stateful_widget(list, area, &mut ls);
     }
 
-    fn render_hits_panel(&self, frame: &mut Frame, area: Rect) {
+    fn render_hits_panel(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == CarveFocus::Hits;
         let title_style = if focused {
             Style::default()
@@ -129,26 +183,37 @@ impl CarvingState {
             Style::default()
         };
         let hit_count = self.hits.len();
+        let total_count = self.total_hits_found;
+        let hits_label = if total_count > hit_count {
+            format!("{hit_count} of {total_count} total")
+        } else {
+            format!("{hit_count}")
+        };
         let sel_count = self.hits.iter().filter(|e| e.selected).count();
         let done_count = self
             .hits
             .iter()
             .filter(|e| matches!(e.status, HitStatus::Ok { .. } | HitStatus::Truncated { .. }))
             .count();
+        let auto_str = if self.auto_extract {
+            " [AUTO-EXTRACT]"
+        } else {
+            ""
+        };
         let title_str = if self.extract_progress.is_some() {
-            format!(" Hits ({hit_count})  {done_count} extracted — p: pause  c: cancel ")
+            format!(" Hits ({hits_label}){auto_str}  {done_count} extracted — p: pause  c: cancel ")
         } else if sel_count > 0 {
-            format!(" Hits ({hit_count})  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected ")
+            format!(" Hits ({hits_label}){auto_str}  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected  PgUp/Dn: page  Home/End: jump ")
         } else {
             format!(
-                " Hits ({hit_count}) — Space: select  a: all  e: extract one  E: extract selected "
+                " Hits ({hits_label}){auto_str} — Space: select  a: all  E: extract selected  x: auto-extract  PgUp/Dn: page  Home/End: jump "
             )
         };
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(title_str, title_style));
 
-        // Scanning and no hits yet → show scan progress bar.
+        // Scanning with no hits yet → show full progress bar filling the panel.
         if matches!(self.status, CarveStatus::Running | CarveStatus::Paused) && self.hits.is_empty()
         {
             let inner = block.inner(area);
@@ -167,26 +232,39 @@ impl CarvingState {
             return;
         }
 
-        // Render border, then split inner area for optional extraction progress bar + list.
+        // Render border, then split inner area.
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let list_area = if let Some(ep) = &self.extract_progress {
+        // While scanning WITH hits present, show a compact progress row.
+        let after_scan = if matches!(self.status, CarveStatus::Running | CarveStatus::Paused) {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(inner);
+            self.render_compact_scan_progress(frame, rows[0]);
+            rows[1]
+        } else {
+            inner
+        };
+
+        // Extraction progress / summary bar.
+        let after_extract = if let Some(ep) = &self.extract_progress {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(4), Constraint::Min(0)])
-                .split(inner);
+                .split(after_scan);
             self.render_extract_progress(frame, rows[0], ep);
             rows[1]
         } else if let Some(summary) = &self.extract_summary {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(3), Constraint::Min(0)])
-                .split(inner);
+                .split(after_scan);
             self.render_extraction_summary(frame, rows[0], summary);
             rows[1]
         } else {
-            inner
+            after_scan
         };
 
         // Preview panel split (when enabled and hits present).
@@ -194,12 +272,17 @@ impl CarvingState {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-                .split(list_area);
+                .split(after_extract);
             if let Some(p) = &self.current_preview {
                 preview::render_preview(frame, rows[0], p, self.color_cap);
             } else {
+                let msg = if self.preview_loading {
+                    " Loading preview…"
+                } else {
+                    " No preview available."
+                };
                 frame.render_widget(
-                    Paragraph::new(" Loading preview…")
+                    Paragraph::new(msg)
                         .style(Style::default().fg(Color::DarkGray))
                         .block(Block::default().borders(Borders::ALL).title(" Preview ")),
                     rows[0],
@@ -207,8 +290,11 @@ impl CarvingState {
             }
             rows[1]
         } else {
-            list_area
+            after_extract
         };
+
+        // Update page size so PgUp/PgDn cover exactly the visible rows.
+        self.hits_page_size = (list_area.height as usize).max(1);
 
         let items: Vec<ListItem> = self
             .hits
@@ -283,7 +369,9 @@ impl CarvingState {
         let cancelling = self
             .extract_cancel
             .load(std::sync::atomic::Ordering::Relaxed);
-        let paused = self.pause.load(std::sync::atomic::Ordering::Relaxed);
+        let paused = self
+            .extract_pause
+            .load(std::sync::atomic::Ordering::Relaxed);
         let label = if cancelling {
             format!("Cancelling… {}/{}", ep.done, ep.total)
         } else if paused {
@@ -435,6 +523,108 @@ impl CarvingState {
         );
     }
 
+    fn render_disk_auto_bar(&self, frame: &mut Frame, area: Rect) {
+        let auto_str = if self.auto_extract {
+            Span::styled(
+                "  x: auto-extract [ON] ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                "  x: auto-extract [off] ",
+                Style::default().fg(Color::DarkGray),
+            )
+        };
+
+        let disk_span = match self.disk_avail_bytes {
+            None => Span::styled(" Disk: —", Style::default().fg(Color::DarkGray)),
+            Some(avail) => {
+                const LOW_THRESHOLD: u64 = 10 * 1024 * 1024 * 1024; // 10 GiB
+                if avail < LOW_THRESHOLD {
+                    Span::styled(
+                        format!(" ⚠ Disk free: {} (LOW)", fmt_bytes(avail)),
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::styled(
+                        format!(" Disk free: {}", fmt_bytes(avail)),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                }
+            }
+        };
+
+        frame.render_widget(Paragraph::new(Line::from(vec![disk_span, auto_str])), area);
+    }
+
+    fn render_compact_scan_progress(&self, frame: &mut Frame, area: Rect) {
+        let paused = self.status == CarveStatus::Paused;
+        let (frac, hits_found) = if let Some(p) = &self.scan_progress {
+            let window = p.scan_end.saturating_sub(p.scan_start);
+            let scanned_in_window = p.bytes_scanned.saturating_sub(p.scan_start);
+            let f = if window > 0 {
+                (scanned_in_window as f64 / window as f64).clamp(0.0, 1.0)
+            } else if p.device_size > 0 {
+                (p.bytes_scanned as f64 / p.device_size as f64).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (f, p.hits_found)
+        } else {
+            (0.0, 0)
+        };
+
+        let rate_str = if let (Some(p), Some(start)) = (&self.scan_progress, &self.scan_start) {
+            let wall_elapsed = start.elapsed().as_secs_f64();
+            let paused_secs = self.paused_elapsed.as_secs_f64()
+                + self.paused_since.map_or(0.0, |t| t.elapsed().as_secs_f64());
+            let active_secs = (wall_elapsed - paused_secs).max(0.001);
+            if paused {
+                "paused".to_string()
+            } else {
+                let bps = p.bytes_scanned as f64 / active_secs;
+                if bps > 0.0 {
+                    format!("{:.1} MB/s", bps / (1024.0 * 1024.0))
+                } else {
+                    "—".to_string()
+                }
+            }
+        } else {
+            "—".to_string()
+        };
+
+        let status_pfx = if paused {
+            "⏸ "
+        } else if self.backpressure_paused {
+            "⏳ "
+        } else {
+            ""
+        };
+        let queue_hint = if self.backpressure_paused {
+            format!(
+                "   queue: {} (waiting for extraction)",
+                self.auto_extract_queue.len()
+            )
+        } else {
+            String::new()
+        };
+        let line = format!(
+            " {status_pfx}Scan {:.1}%   {} hits found   {rate_str}{queue_hint}",
+            frac * 100.0,
+            hits_found,
+        );
+        let style = if paused {
+            Style::default().fg(Color::Yellow)
+        } else if self.backpressure_paused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        frame.render_widget(Paragraph::new(line).style(style), area);
+    }
+
     fn render_progress(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -446,21 +636,34 @@ impl CarvingState {
             .split(area);
 
         let (ratio, bar_label) = if let Some(p) = &self.scan_progress {
-            let frac = if p.device_size > 0 {
+            let window = p.scan_end.saturating_sub(p.scan_start);
+            let scanned_in_window = p.bytes_scanned.saturating_sub(p.scan_start);
+            let frac = if window > 0 {
+                (scanned_in_window as f64 / window as f64).clamp(0.0, 1.0)
+            } else if p.device_size > 0 {
                 (p.bytes_scanned as f64 / p.device_size as f64).clamp(0.0, 1.0)
             } else {
                 0.0
             };
+            let window_str = if window > 0 && window != p.device_size {
+                format!(
+                    " (window {} / {})",
+                    fmt_bytes(scanned_in_window),
+                    fmt_bytes(window)
+                )
+            } else {
+                format!(" / {}", fmt_bytes(p.device_size))
+            };
             let label = format!(
-                "{:.1}%  —  {} / {}  —  {} hits",
+                "{:.1}%  —  {}{}  —  {} hits",
                 frac * 100.0,
                 fmt_bytes(p.bytes_scanned),
-                fmt_bytes(p.device_size),
+                window_str,
                 p.hits_found,
             );
             (frac, label)
         } else {
-            (0.0, "Starting…".to_string())
+            (0.0, "Starting\u{2026}".to_string())
         };
 
         let paused = self.status == CarveStatus::Paused;
@@ -479,19 +682,30 @@ impl CarvingState {
 
         // Rate + ETA stats line.
         if let (Some(p), Some(start)) = (&self.scan_progress, &self.scan_start) {
-            let elapsed = start.elapsed().as_secs_f64();
-            let rate_bps = if elapsed > 0.0 {
-                p.bytes_scanned as f64 / elapsed
+            let wall_elapsed = start.elapsed().as_secs_f64();
+            // Subtract cumulative paused time so rate and ETA reflect active scan
+            // time only.  When the scan is currently paused, also include the
+            // duration of the current pause interval.
+            let paused_secs = self.paused_elapsed.as_secs_f64()
+                + self.paused_since.map_or(0.0, |t| t.elapsed().as_secs_f64());
+            let active_secs = (wall_elapsed - paused_secs).max(0.001);
+            let is_paused = self.paused_since.is_some();
+            let rate_bps = if active_secs > 0.0 {
+                p.bytes_scanned as f64 / active_secs
             } else {
                 0.0
             };
-            let rate_str = if rate_bps > 0.0 {
+            let rate_str = if is_paused {
+                "— (paused)".to_string()
+            } else if rate_bps > 0.0 {
                 format!("{:.1} MB/s", rate_bps / (1024.0 * 1024.0))
             } else {
                 "—".to_string()
             };
-            let eta_str = if rate_bps > 0.0 && p.device_size > p.bytes_scanned {
-                let remaining = (p.device_size - p.bytes_scanned) as f64 / rate_bps;
+            let eta_str = if is_paused {
+                String::new()
+            } else if rate_bps > 0.0 && p.scan_end > p.bytes_scanned {
+                let remaining = (p.scan_end.saturating_sub(p.bytes_scanned)) as f64 / rate_bps;
                 let secs = remaining as u64;
                 if secs >= 3600 {
                     format!("ETA {:02}h{:02}m", secs / 3600, (secs % 3600) / 60)
@@ -503,7 +717,7 @@ impl CarvingState {
             } else {
                 String::new()
             };
-            let elapsed_secs = elapsed as u64;
+            let elapsed_secs = active_secs as u64;
             let elapsed_str = format!(
                 "Elapsed {:02}:{:02}:{:02}",
                 elapsed_secs / 3600,
