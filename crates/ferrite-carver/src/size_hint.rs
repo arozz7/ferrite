@@ -208,8 +208,7 @@ pub(crate) fn read_size_hint(
                 let num_segments = hdr[26] as u64;
 
                 // Read segment table to determine data payload length.
-                let seg_table =
-                    read_bytes_clamped(device, pos + 27, num_segments as usize).ok()?;
+                let seg_table = read_bytes_clamped(device, pos + 27, num_segments as usize).ok()?;
                 if seg_table.len() < num_segments as usize {
                     break;
                 }
@@ -326,7 +325,7 @@ mod tests {
             max_size: 1024,
             size_hint: None,
             min_size: 0,
-            pre_validate_zip: false,
+            pre_validate: None,
         }
     }
 
@@ -340,15 +339,19 @@ mod tests {
         // ftyp box
         data[0..4].copy_from_slice(&24u32.to_be_bytes()); // size
         data[4..8].copy_from_slice(b"ftyp"); // type
-        // moov box
+                                             // moov box
         data[24..28].copy_from_slice(&16u32.to_be_bytes()); // size
         data[28..32].copy_from_slice(b"moov"); // type
-        // byte 40 onward: zeroes — non-printable stops the walker
+                                               // byte 40 onward: zeroes — non-printable stops the walker
 
         let dev = device_from(data);
         let _ = dummy_sig(); // just to use the import
         let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Isobmff);
-        assert_eq!(result, Some(40), "expected 40 bytes from two-box ISOBMFF file");
+        assert_eq!(
+            result,
+            Some(40),
+            "expected 40 bytes from two-box ISOBMFF file"
+        );
     }
 
     #[test]

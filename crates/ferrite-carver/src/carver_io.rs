@@ -220,7 +220,7 @@ mod tests {
             max_size,
             size_hint: None,
             min_size: 0,
-            pre_validate_zip: false,
+            pre_validate: None,
         }
     }
 
@@ -321,7 +321,7 @@ mod tests {
             max_size: 1024,
             size_hint: None,
             min_size: 0,
-            pre_validate_zip: false,
+            pre_validate: None,
         };
         let hit = CarveHit {
             byte_offset: 0,
@@ -348,7 +348,7 @@ mod tests {
             max_size: 300,
             size_hint: None,
             min_size: 0,
-            pre_validate_zip: false,
+            pre_validate: None,
         };
         let hit = CarveHit {
             byte_offset: 0,

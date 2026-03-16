@@ -17,10 +17,10 @@ use ferrite_blockdev::BlockDevice;
 use crate::carver_io::{
     read_bytes_clamped, stream_bytes, stream_until_footer, stream_until_last_footer,
 };
-use crate::size_hint::read_size_hint;
 use crate::error::Result;
 use crate::scan_search::find_all;
 use crate::signature::{CarvingConfig, Signature};
+use crate::size_hint::read_size_hint;
 
 // â”€â”€ Public types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -317,7 +317,7 @@ mod tests {
             max_size,
             size_hint: None,
             min_size: 0,
-            pre_validate_zip: false,
+            pre_validate: None,
         }
     }
 
@@ -484,7 +484,7 @@ mod tests {
             max_size: 2_147_483_648,
             size_hint: None,
             min_size: 0,
-            pre_validate_zip: false,
+            pre_validate: None,
         };
         let wav_sig = Signature {
             name: "WAV".into(),
@@ -508,7 +508,7 @@ mod tests {
             max_size: 2_147_483_648,
             size_hint: None,
             min_size: 0,
-            pre_validate_zip: false,
+            pre_validate: None,
         };
         let cfg = CarvingConfig {
             signatures: vec![avi_sig, wav_sig],
@@ -544,7 +544,7 @@ mod tests {
             max_size: 1_000_000,
             size_hint: None,
             min_size: 100,
-            pre_validate_zip: false,
+            pre_validate: None,
         };
         let cfg = CarvingConfig {
             signatures: vec![sig],
@@ -576,7 +576,7 @@ mod tests {
             max_size: 1_000_000,
             size_hint: None,
             min_size: 100,
-            pre_validate_zip: false,
+            pre_validate: None,
         };
         let cfg = CarvingConfig {
             signatures: vec![sig],

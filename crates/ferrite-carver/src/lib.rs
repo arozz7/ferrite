@@ -23,12 +23,14 @@
 
 mod carver_io;
 mod error;
+mod pre_validate;
 mod scan_search;
 mod scanner;
 mod signature;
 mod size_hint;
 
 pub use error::{CarveError, Result};
+pub use pre_validate::PreValidate;
 pub use scanner::{CarveHit, Carver, ScanProgress};
 pub use signature::{parse_hex, CarvingConfig, Signature, SizeHint};
 
@@ -207,9 +209,12 @@ mod tests {
         let mut data = vec![0u8; 4096];
         // JPEG (Exif) at offset 0 — use FF D8 FF E1 to match the 4-byte Exif signature.
         data[0..4].copy_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
+        data[6..10].copy_from_slice(b"Exif"); // pre_validate requires "Exif" @ offset 6
         data[20..22].copy_from_slice(&[0xFF, 0xD9]); // JPEG footer
                                                      // PNG at offset 1024
         data[1024..1032].copy_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        data[1032..1036].copy_from_slice(&13u32.to_be_bytes()); // IHDR length = 13
+        data[1036..1040].copy_from_slice(b"IHDR"); // pre_validate requires IHDR first chunk
 
         let dev: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new(data, 512));
         let carver = Carver::new(Arc::clone(&dev), cfg);

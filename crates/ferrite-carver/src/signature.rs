@@ -3,6 +3,7 @@
 use serde::Deserialize;
 
 use crate::error::{CarveError, Result};
+use crate::pre_validate::PreValidate;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -157,14 +158,14 @@ pub struct Signature {
     /// extracted data is known to be smaller than this threshold are skipped.
     #[serde(default)]
     pub min_size: u64,
-    /// When `true`, apply ZIP local-file-header pre-validation at scan time.
+    /// Optional format-specific structural validator applied at scan time.
     ///
-    /// Filters out hits on directory entries (filename ends with `/`) and
-    /// hits whose header fields look implausible (version > 63, unknown
-    /// compression method, zero-length filename, etc.).  Enabled in
-    /// `signatures.toml` via `pre_validate = "zip"`.
+    /// When set, each candidate hit is passed to `pre_validate::is_valid`
+    /// before being recorded.  Hits that fail are silently discarded, reducing
+    /// false positives without affecting extraction logic.  Configured via
+    /// `pre_validate = "<kind>"` in `signatures.toml`.
     #[serde(default)]
-    pub pre_validate_zip: bool,
+    pub pre_validate: Option<PreValidate>,
 }
 
 /// Configuration passed to [`crate::Carver`].
@@ -246,7 +247,9 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("sqlite") => Some(SizeHint::Sqlite),
                     Some(k) if k.eq_ignore_ascii_case("seven_zip") => Some(SizeHint::SevenZip),
                     Some(k) if k.eq_ignore_ascii_case("ogg_stream") => Some(SizeHint::OggStream),
-                    Some(k) if k.eq_ignore_ascii_case("mp4") || k.eq_ignore_ascii_case("isobmff") => {
+                    Some(k)
+                        if k.eq_ignore_ascii_case("mp4") || k.eq_ignore_ascii_case("isobmff") =>
+                    {
                         Some(SizeHint::Isobmff)
                     }
                     Some(k) if k.eq_ignore_ascii_case("linear_scaled") => {
@@ -274,11 +277,7 @@ impl CarvingConfig {
                     },
                 };
 
-                let pre_validate_zip = r
-                    .pre_validate
-                    .as_deref()
-                    .map(|s| s.eq_ignore_ascii_case("zip"))
-                    .unwrap_or(false);
+                let pre_validate = r.pre_validate.as_deref().and_then(PreValidate::from_kind);
 
                 Ok(Signature {
                     name: r.name,
@@ -289,7 +288,7 @@ impl CarvingConfig {
                     max_size: r.max_size,
                     size_hint,
                     min_size: r.min_size,
-                    pre_validate_zip,
+                    pre_validate,
                 })
             })
             .collect();

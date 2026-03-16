@@ -386,10 +386,7 @@ impl CarvingState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use crossterm::event::{KeyCode, KeyModifiers};
-    use ferrite_blockdev::{BlockDevice, MockBlockDevice};
 
     use super::*;
 
@@ -464,7 +461,7 @@ mod tests {
             max_size: 1024,
             size_hint: None,
             min_size: 0,
-            pre_validate_zip: false,
+            pre_validate: None,
         };
         let hit = CarveHit {
             byte_offset: 0,
