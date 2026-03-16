@@ -47,17 +47,19 @@ footer_last = true
 max_size    = 104_857_600  # 100 MiB
 
 [[signature]]
-name      = "ZIP / Office (DOCX/XLSX/PPTX)"
-extension = "zip"
-header    = "50 4B 03 04"
-footer    = "50 4B 05 06"
-# Note: every local-file-header inside an existing ZIP also matches PK\x03\x04,
-# so a multi-file archive generates multiple hits.  The footer (End of Central
-# Directory record) terminates extraction cleanly when the archive is intact.
-# min_size rejects the stub local headers that appear mid-archive.
-min_size  = 512
-max_size  = 104_857_600  # 100 MiB (reduced from 500 MiB to limit disk waste
-                          # when footer is missing/fragmented)
+name         = "ZIP / Office (DOCX/XLSX/PPTX)"
+extension    = "zip"
+header       = "50 4B 03 04"
+footer       = "50 4B 05 06"
+# pre_validate = "zip": at scan time, validates each PK\x03\x04 hit against the
+# local-file-header fields and discards directory entries (filename ends with
+# '/') and hits with implausible version/compression values.  This eliminates
+# the large number of false hits on internal headers inside multi-file archives
+# (e.g. "patch/" directory entries) that produce empty/corrupt output ZIPs.
+pre_validate = "zip"
+min_size     = 512
+max_size     = 104_857_600  # 100 MiB (reduced from 500 MiB to limit disk waste
+                             # when footer is missing/fragmented)
 
 [[signature]]
 name      = "GIF Image"

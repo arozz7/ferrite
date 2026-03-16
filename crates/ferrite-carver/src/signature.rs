@@ -139,6 +139,14 @@ pub struct Signature {
     /// extracted data is known to be smaller than this threshold are skipped.
     #[serde(default)]
     pub min_size: u64,
+    /// When `true`, apply ZIP local-file-header pre-validation at scan time.
+    ///
+    /// Filters out hits on directory entries (filename ends with `/`) and
+    /// hits whose header fields look implausible (version > 63, unknown
+    /// compression method, zero-length filename, etc.).  Enabled in
+    /// `signatures.toml` via `pre_validate = "zip"`.
+    #[serde(default)]
+    pub pre_validate_zip: bool,
 }
 
 /// Configuration passed to [`crate::Carver`].
@@ -188,6 +196,8 @@ impl CarvingConfig {
             size_hint_scale: Option<u64>,
             // Named variant selector (e.g. "ole2" → SizeHint::Ole2).
             size_hint_kind: Option<String>,
+            // Named pre-validator (e.g. "zip").
+            pre_validate: Option<String>,
         }
 
         #[derive(Deserialize)]
@@ -243,6 +253,12 @@ impl CarvingConfig {
                     },
                 };
 
+                let pre_validate_zip = r
+                    .pre_validate
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("zip"))
+                    .unwrap_or(false);
+
                 Ok(Signature {
                     name: r.name,
                     extension: r.extension,
@@ -252,6 +268,7 @@ impl CarvingConfig {
                     max_size: r.max_size,
                     size_hint,
                     min_size: r.min_size,
+                    pre_validate_zip,
                 })
             })
             .collect();
