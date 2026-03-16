@@ -1,0 +1,16 @@
+[package]
+name              = "ferrite-filesystem"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferrite-core     = { workspace = true }
+ferrite-blockdev = { workspace = true }
+thiserror        = { workspace = true }
+tracing          = { workspace = true }
+
+[dev-dependencies]
+ferrite-blockdev = { workspace = true }

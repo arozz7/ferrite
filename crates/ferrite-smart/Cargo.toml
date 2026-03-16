@@ -1,0 +1,17 @@
+[package]
+name        = "ferrite-smart"
+description = "S.M.A.R.T. diagnostics via smartctl CLI wrapper for Ferrite"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+ferrite-core = { workspace = true }
+thiserror    = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+toml         = { workspace = true }
+which        = { workspace = true }
+tracing      = { workspace = true }

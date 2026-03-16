@@ -1,0 +1,20 @@
+[package]
+name              = "ferrite-carver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferrite-blockdev = { workspace = true }
+thiserror        = { workspace = true }
+tracing          = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+toml             = { workspace = true }
+memchr           = { workspace = true }
+rayon            = { workspace = true }
+
+[dev-dependencies]
+ferrite-blockdev = { workspace = true }

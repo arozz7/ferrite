@@ -1,0 +1,297 @@
+# File carving signature database
+# Each [[signature]] entry defines a file type to search for during carving.
+#
+# Fields:
+#   name       = human-readable label
+#   extension  = output file extension
+#   header     = hex bytes of the file header (magic bytes), space-separated
+#                Use ?? for wildcard bytes.
+#   footer     = hex bytes of the file footer (optional, "" if none)
+#   min_size   = minimum file size in bytes (hits smaller than this are skipped)
+#   max_size   = maximum file size in bytes (caps extraction window)
+
+[[signature]]
+name         = "JPEG Image (JFIF)"
+extension    = "jpg"
+# 4-byte header: FF D8 FF E0 — standard JFIF JPEGs written by cameras/software.
+header       = "FF D8 FF E0"
+footer       = "FF D9"
+max_size     = 10_485_760  # 10 MiB
+# Validates "JFIF\0" identifier at offset 6 to reject FF D8 FF E0 hits
+# that appear inside other binary formats.
+pre_validate = "jpeg_jfif"
+
+[[signature]]
+name         = "JPEG Image (Exif)"
+extension    = "jpg"
+# 4-byte header: FF D8 FF E1 — camera photos with EXIF/APP1 metadata block.
+header       = "FF D8 FF E1"
+footer       = "FF D9"
+max_size     = 10_485_760  # 10 MiB
+# Validates "Exif" identifier at offset 6.
+pre_validate = "jpeg_exif"
+
+[[signature]]
+name         = "PNG Image"
+extension    = "png"
+header       = "89 50 4E 47 0D 0A 1A 0A"
+footer       = "49 45 4E 44 AE 42 60 82"
+max_size     = 52_428_800  # 50 MiB
+# Validates that the first chunk is IHDR with length == 13 (required by spec).
+pre_validate = "png"
+
+[[signature]]
+name         = "PDF Document"
+extension    = "pdf"
+header       = "25 50 44 46"
+footer       = "25 25 45 4F 46"
+# footer_last = true: PDF binary streams can contain %%EOF internally, and
+# incrementally-updated PDFs accumulate multiple %%EOF markers.  Using the
+# last occurrence gives the complete, valid file.
+footer_last  = true
+max_size     = 104_857_600  # 100 MiB
+# Validates PDF version string "-1.x" or "-2.x" at offset 4.
+pre_validate = "pdf"
+
+[[signature]]
+name         = "ZIP / Office (DOCX/XLSX/PPTX)"
+extension    = "zip"
+header       = "50 4B 03 04"
+footer       = "50 4B 05 06"
+# Validates version, compression method, filename plausibility, and rejects
+# directory entries — eliminates false hits on internal ZIP headers.
+pre_validate = "zip"
+min_size     = 512
+max_size     = 104_857_600  # 100 MiB
+
+[[signature]]
+name         = "GIF Image"
+extension    = "gif"
+header       = "47 49 46 38"
+footer       = "00 3B"
+max_size     = 10_485_760  # 10 MiB
+# Validates bytes 4-5 are "7a" or "9a" (GIF87a / GIF89a).
+pre_validate = "gif"
+
+[[signature]]
+name             = "BMP Image"
+extension        = "bmp"
+# 10-byte header: "BM" + 4-byte file size (wildcarded) + reserved 00 00 00 00.
+header           = "42 4D ?? ?? ?? ?? 00 00 00 00"
+footer           = ""
+max_size         = 52_428_800  # 50 MiB hard cap
+size_hint_offset = 2
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 0
+# Validates DIB header size (u32 LE @14) is a known value {12,40,52,56,108,124}.
+pre_validate     = "bmp"
+
+[[signature]]
+name         = "MP3 Audio"
+extension    = "mp3"
+# ID3v2 tag: "ID3" + wildcarded version + 0x00 revision byte.
+header       = "49 44 33 ?? 00"
+footer       = ""
+min_size     = 4096
+max_size     = 52_428_800  # 50 MiB hard cap
+# Validates version in {2,3,4}, flags low nibble zero, syncsafe size bytes.
+pre_validate = "mp3"
+
+[[signature]]
+name            = "MP4 Video"
+extension       = "mp4"
+# Wildcards the 4-byte ftyp box size; anchors on "ftyp".
+header          = "?? ?? ?? ?? 66 74 79 70"
+footer          = ""
+min_size        = 4096
+max_size        = 4_294_967_296  # 4 GiB fallback when box-walk fails
+size_hint_kind  = "mp4"
+# Validates ftyp box size in [12, 512] and brand bytes are printable ASCII.
+pre_validate    = "mp4"
+
+[[signature]]
+name         = "RAR Archive"
+extension    = "rar"
+header       = "52 61 72 21 1A 07"
+footer       = ""
+max_size     = 524_288_000  # 500 MiB
+# Validates type byte (offset 6) is 0x00 (RAR4) or 0x01 (RAR5).
+pre_validate = "rar"
+
+[[signature]]
+name           = "7-Zip Archive"
+extension      = "7z"
+header         = "37 7A BC AF 27 1C"
+footer         = ""
+max_size       = 524_288_000  # 500 MiB hard cap
+size_hint_kind = "seven_zip"
+# Validates major version byte (offset 6) is 0x00.
+pre_validate   = "seven_zip"
+
+[[signature]]
+name           = "SQLite Database"
+extension      = "db"
+header         = "53 51 4C 69 74 65 20 66 6F 72 6D 61 74 20 33 00"
+footer         = ""
+max_size       = 10_737_418_240  # 10 GiB hard cap
+size_hint_kind = "sqlite"
+# Validates page size (u16 BE @16) is a power-of-2 in [512, 65536].
+pre_validate   = "sqlite"
+
+[[signature]]
+name             = "WAV Audio (RIFF)"
+extension        = "wav"
+# RIFF + 4-byte size (wildcard) + "WAVE" subtype discriminator (12 bytes total)
+header           = "52 49 46 46 ?? ?? ?? ?? 57 41 56 45"
+footer           = ""
+max_size         = 2_147_483_648  # 2 GiB hard cap
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 8
+# No pre_validate — the 12-byte RIFF+WAVE header is already highly discriminating.
+
+[[signature]]
+name             = "AVI Video (RIFF)"
+extension        = "avi"
+# RIFF + 4-byte size (wildcard) + "AVI " subtype discriminator (12 bytes total)
+header           = "52 49 46 46 ?? ?? ?? ?? 41 56 49 20"
+footer           = ""
+max_size         = 2_147_483_648  # 2 GiB hard cap
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 8
+# No pre_validate — the 12-byte RIFF+AVI  header is already highly discriminating.
+
+[[signature]]
+name         = "Matroska / MKV Video"
+extension    = "mkv"
+header       = "1A 45 DF A3"
+footer       = ""
+max_size     = 8_589_934_592  # 8 GiB
+# Validates EBML VINT leading byte (offset 4) is non-zero.
+pre_validate = "mkv"
+
+[[signature]]
+name         = "FLAC Audio"
+extension    = "flac"
+header       = "66 4C 61 43"
+footer       = ""
+max_size     = 2_147_483_648  # 2 GiB
+# Validates first metadata block type (lower 7 bits @4) == 0 (STREAMINFO).
+pre_validate = "flac"
+
+[[signature]]
+name         = "Windows PE Executable"
+extension    = "exe"
+# Extended MZ header: 4D 5A 90 00 (standard MSVC DOS stub).
+header       = "4D 5A 90 00"
+footer       = ""
+min_size     = 4096
+max_size     = 104_857_600  # 100 MiB
+# Validates e_lfanew (u32 LE @60) is in [64, 16384].
+pre_validate = "exe"
+
+[[signature]]
+name         = "VMDK Disk Image"
+extension    = "vmdk"
+header       = "4B 44 4D 56"
+footer       = ""
+min_size     = 65536
+max_size     = 10_737_418_240  # 10 GiB
+# Validates version field (u32 LE @4) is in {1, 2, 3}.
+pre_validate = "vmdk"
+
+[[signature]]
+name           = "OGG Media"
+extension      = "ogg"
+header         = "4F 67 67 53"
+footer         = ""
+max_size       = 2_147_483_648  # 2 GiB hard cap
+size_hint_kind = "ogg_stream"
+# Validates stream-structure version == 0 and BOS flag (bit 1) set — ensures
+# we match only the first page of a logical bitstream, not continuation pages.
+pre_validate   = "ogg"
+
+[[signature]]
+name              = "Windows Event Log"
+extension         = "evtx"
+header            = "45 4C 46 49 4C 45 00"
+footer            = ""
+max_size          = 104_857_600   # 100 MiB hard cap
+size_hint_kind    = "linear_scaled"
+size_hint_offset  = 42
+size_hint_len     = 2
+size_hint_endian  = "le"
+size_hint_scale   = 65536
+size_hint_add     = 4096
+# Validates MajorVersion (u16 LE @38) == 3 (Windows Vista+).
+pre_validate      = "evtx"
+
+[[signature]]
+name         = "Outlook PST/OST"
+extension    = "pst"
+header       = "21 42 44 4E"
+footer       = ""
+min_size     = 65536
+max_size     = 21_474_836_480  # 20 GiB
+# Validates wMagicClient bytes @8-9 == [0x4D, 0x53] ("SM").
+pre_validate = "pst"
+
+[[signature]]
+name         = "XML Document"
+extension    = "xml"
+header       = "3C 3F 78 6D 6C"
+footer       = ""
+min_size     = 256
+max_size     = 5_242_880   # 5 MiB
+# Validates that a space follows "<?xml" (byte 5 == 0x20).
+pre_validate = "xml"
+
+[[signature]]
+name         = "HTML Document"
+extension    = "html"
+header       = "3C 21 44 4F 43 54 59 50 45"
+footer       = "3C 2F 68 74 6D 6C 3E"
+max_size     = 10_485_760  # 10 MiB
+# Validates "<!DOCTYPE" is followed by " html" or " HTML".
+pre_validate = "html"
+
+[[signature]]
+name         = "RTF Document"
+extension    = "rtf"
+header       = "7B 5C 72 74 66 31"
+footer       = ""
+max_size     = 52_428_800  # 50 MiB
+# Validates byte 6 is '\', space, CR, or LF.
+pre_validate = "rtf"
+
+[[signature]]
+name         = "vCard Contact"
+extension    = "vcf"
+header       = "42 45 47 49 4E 3A 56 43 41 52 44"
+footer       = "45 4E 44 3A 56 43 41 52 44"
+max_size     = 1_048_576  # 1 MiB
+# Validates CR or LF immediately follows "BEGIN:VCARD".
+pre_validate = "vcard"
+
+[[signature]]
+name         = "iCalendar"
+extension    = "ics"
+header       = "42 45 47 49 4E 3A 56 43 41 4C 45 4E 44 41 52"
+footer       = "45 4E 44 3A 56 43 41 4C 45 4E 44 41 52"
+max_size     = 10_485_760  # 10 MiB
+# Validates CR or LF immediately follows "BEGIN:VCALENDAR".
+pre_validate = "ical"
+
+[[signature]]
+name           = "OLE2 Compound (DOC/XLS/PPT)"
+extension      = "ole"
+header         = "D0 CF 11 E0 A1 B1 1A E1"
+footer         = ""
+max_size       = 2_147_483_648  # 2 GiB hard cap
+size_hint_kind = "ole2"
+# Validates ByteOrder field (u16 LE @28) == 0xFFFE (mandatory in all OLE2 files).
+pre_validate   = "ole2"
