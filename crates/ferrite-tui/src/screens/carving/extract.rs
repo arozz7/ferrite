@@ -129,11 +129,11 @@ impl CarvingState {
             if let Ok(mut f) = std::fs::File::create(&filename) {
                 match carver.extract(&hit, &mut f) {
                     Ok(bytes) => {
-                        let truncated = if hit.signature.footer.is_empty() {
-                            false
-                        } else {
-                            bytes >= hit.signature.max_size
-                        };
+                        // Truncated when we hit the cap regardless of whether the
+                        // format uses a footer.  For footer-less formats with a
+                        // size hint (e.g. MP4), hitting max_size means the box
+                        // walker failed and we fell back to the hard cap.
+                        let truncated = bytes >= hit.signature.max_size;
                         if let Some(ref idx) = meta_index {
                             apply_timestamps(&filename, hit.byte_offset, idx);
                         }
@@ -374,8 +374,7 @@ impl CarvingState {
                         completed += 1;
                         match result {
                             Ok(bytes) => {
-                                let truncated = !hit.signature.footer.is_empty()
-                                    && bytes >= hit.signature.max_size;
+                                let truncated = bytes >= hit.signature.max_size;
                                 total_bytes += bytes;
                                 if truncated {
                                     truncated_count += 1;

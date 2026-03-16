@@ -48,6 +48,7 @@ impl CarvingState {
             hits_file,
             hits_count: self.hits.len(),
             saved_at,
+            auto_extract: self.auto_extract,
         }
     }
 
@@ -70,5 +71,7 @@ impl CarvingState {
         if !session.hits_file.is_empty() {
             self.load_checkpoint(&session.hits_file);
         }
+        self.resume_from_byte = session.last_scanned_byte;
+        self.auto_extract = session.auto_extract;
     }
 }

@@ -15,8 +15,9 @@ use tracing::{trace, warn};
 use ferrite_blockdev::BlockDevice;
 
 use crate::carver_io::{
-    read_bytes_clamped, read_size_hint, stream_bytes, stream_until_footer, stream_until_last_footer,
+    read_bytes_clamped, stream_bytes, stream_until_footer, stream_until_last_footer,
 };
+use crate::size_hint::read_size_hint;
 use crate::error::Result;
 use crate::scan_search::find_all;
 use crate::signature::{CarvingConfig, Signature};

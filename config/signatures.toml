@@ -99,15 +99,18 @@ min_size  = 4096           # reject sub-4 KiB noise hits
 max_size  = 52_428_800     # 50 MiB hard cap (no footer to terminate cleanly)
 
 [[signature]]
-name      = "MP4 Video"
-extension = "mp4"
+name            = "MP4 Video"
+extension       = "mp4"
 # Wildcards the 4-byte ftyp box size (varies: 24/28/32/36 bytes depending on
 # brand list length) and anchors on "ftyp" which is unique to ISO base media
 # files.  Catches MP4, MOV, M4A, M4V, and 3GP in a single signature.
-header    = "?? ?? ?? ?? 66 74 79 70"
-footer    = ""
-min_size  = 4096
-max_size  = 4_294_967_296  # 4 GiB
+header          = "?? ?? ?? ?? 66 74 79 70"
+footer          = ""
+min_size        = 4096
+max_size        = 4_294_967_296  # 4 GiB fallback when box-walk fails
+# Walk the ISOBMFF box tree to determine the true file size rather than always
+# writing max_size bytes.
+size_hint_kind  = "mp4"
 
 [[signature]]
 name      = "RAR Archive"

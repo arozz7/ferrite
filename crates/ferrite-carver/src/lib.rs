@@ -26,6 +26,7 @@ mod error;
 mod scan_search;
 mod scanner;
 mod signature;
+mod size_hint;
 
 pub use error::{CarveError, Result};
 pub use scanner::{CarveHit, Carver, ScanProgress};

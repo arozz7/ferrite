@@ -92,6 +92,23 @@ pub enum SizeHint {
     /// Returns `None` if no EOS page is found within `max_size` bytes (falls
     /// back to writing `max_size` bytes, as before).
     OggStream,
+
+    /// ISO Base Media File Format box walker (MP4, MOV, M4A, M4V, 3GP, …).
+    ///
+    /// ISOBMFF files are a sequence of *boxes* (atoms).  Each box begins with:
+    ///
+    /// ```text
+    /// [0..4]  box_size  — u32 BE; 0 = extends to EOF, 1 = largesize follows
+    /// [4..8]  box_type  — 4 printable-ASCII bytes
+    /// [8..16] largesize — u64 BE (only present when box_size == 1)
+    /// ```
+    ///
+    /// The walker sums sequential top-level box sizes from `file_offset` until
+    /// it encounters a non-printable box type (sync lost), a size-0 box
+    /// (EOF-extending, size unknowable), an invalid size, or a 2 000-box safety
+    /// cap.  Returns `None` when no valid boxes are found (falls back to
+    /// `max_size`).
+    Isobmff,
 }
 
 impl SizeHint {
@@ -104,6 +121,7 @@ impl SizeHint {
             SizeHint::Sqlite => "sqlite",
             SizeHint::SevenZip => "seven_zip",
             SizeHint::OggStream => "ogg_stream",
+            SizeHint::Isobmff => "mp4",
         }
     }
 }
@@ -228,6 +246,9 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("sqlite") => Some(SizeHint::Sqlite),
                     Some(k) if k.eq_ignore_ascii_case("seven_zip") => Some(SizeHint::SevenZip),
                     Some(k) if k.eq_ignore_ascii_case("ogg_stream") => Some(SizeHint::OggStream),
+                    Some(k) if k.eq_ignore_ascii_case("mp4") || k.eq_ignore_ascii_case("isobmff") => {
+                        Some(SizeHint::Isobmff)
+                    }
                     Some(k) if k.eq_ignore_ascii_case("linear_scaled") => {
                         match (r.size_hint_offset, r.size_hint_len, r.size_hint_scale) {
                             (Some(offset), Some(len), Some(scale)) => {

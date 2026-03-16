@@ -144,8 +144,8 @@ impl App {
                         self.imaging.set_device(Arc::clone(&device));
                         self.partition.set_device(Arc::clone(&device));
                         self.file_browser.set_device(Arc::clone(&device));
-                        self.carving.restore_from_session(&session);
                         self.carving.set_device(Arc::clone(&device));
+                        self.carving.restore_from_session(&session);
                         self.hex_viewer.set_device(device);
                         self.screen_idx = 5; // go to carving screen
                         self.on_screen_enter();

@@ -29,6 +29,9 @@ pub struct CarvingSession {
     pub hits_count: usize,
     /// Unix timestamp (seconds since epoch) when this session was saved.
     pub saved_at: u64,
+    /// Whether auto-extract was enabled when the session was saved.
+    #[serde(default)]
+    pub auto_extract: bool,
 }
 
 impl CarvingSession {

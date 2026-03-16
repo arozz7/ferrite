@@ -241,6 +241,10 @@ pub struct CarvingState {
     /// the queue drains below `AUTO_EXTRACT_LOW_WATER`, or when the user
     /// manually presses `p` (which takes over pause ownership).
     backpressure_paused: bool,
+    /// Absolute byte offset to resume a scan from when loading a saved session.
+    /// Set by `restore_from_session`; consumed (and cleared to 0) when the next
+    /// scan starts.  0 means "start from the configured LBA range beginning".
+    pub(crate) resume_from_byte: u64,
 }
 
 impl Default for CarvingState {
@@ -295,6 +299,7 @@ impl CarvingState {
             disk_avail_bytes: None,
             disk_space_tick: 0,
             backpressure_paused: false,
+            resume_from_byte: 0,
         }
     }
 

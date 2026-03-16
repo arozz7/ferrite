@@ -241,12 +241,20 @@ impl CarvingState {
             return;
         }
         let sector_size = device.sector_size() as u64;
-        let start_byte = self
+        let window_start = self
             .scan_start_lba_str
             .trim()
             .parse::<u64>()
             .unwrap_or(0)
             .saturating_mul(sector_size);
+        // If a session resume position is set, pick up from where we left off
+        // (clamped so it never falls before the configured window start).
+        let start_byte = if self.resume_from_byte > window_start {
+            self.resume_from_byte
+        } else {
+            window_start
+        };
+        self.resume_from_byte = 0;
         let end_byte = self
             .scan_end_lba_str
             .trim()
