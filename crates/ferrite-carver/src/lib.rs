@@ -21,7 +21,9 @@
 //! }
 //! ```
 
+mod carver_io;
 mod error;
+mod scan_search;
 mod scanner;
 mod signature;
 

@@ -2,6 +2,41 @@ use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 
 use crate::error::{FilesystemError, Result};
 
+// ── Byte-parsing helpers ───────────────────────────────────────────────────────
+
+/// Read a little-endian `u16` from `buf[offset..offset+2]`.
+///
+/// Returns `Err(InvalidStructure)` if the buffer is too short, allowing callers
+/// to propagate parse errors instead of panicking on corrupt disk data.
+pub fn read_u16_le(buf: &[u8], offset: usize) -> Result<u16> {
+    buf.get(offset..offset + 2)
+        .map(|s| u16::from_le_bytes([s[0], s[1]]))
+        .ok_or_else(|| FilesystemError::InvalidStructure {
+            context: "byte parse",
+            reason: format!("u16 at offset {offset}: buffer is {} bytes", buf.len()),
+        })
+}
+
+/// Read a little-endian `u32` from `buf[offset..offset+4]`.
+pub fn read_u32_le(buf: &[u8], offset: usize) -> Result<u32> {
+    buf.get(offset..offset + 4)
+        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+        .ok_or_else(|| FilesystemError::InvalidStructure {
+            context: "byte parse",
+            reason: format!("u32 at offset {offset}: buffer is {} bytes", buf.len()),
+        })
+}
+
+/// Read a little-endian `u64` from `buf[offset..offset+8]`.
+pub fn read_u64_le(buf: &[u8], offset: usize) -> Result<u64> {
+    buf.get(offset..offset + 8)
+        .map(|s| u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
+        .ok_or_else(|| FilesystemError::InvalidStructure {
+            context: "byte parse",
+            reason: format!("u64 at offset {offset}: buffer is {} bytes", buf.len()),
+        })
+}
+
 /// Read exactly `len` bytes starting at byte `offset` from `device`.
 ///
 /// Internally aligns the I/O request to sector boundaries as required by the

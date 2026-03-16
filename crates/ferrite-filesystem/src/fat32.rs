@@ -11,7 +11,7 @@ use tracing::trace;
 use ferrite_blockdev::BlockDevice;
 
 use crate::error::{FilesystemError, Result};
-use crate::io::read_bytes;
+use crate::io::{read_bytes, read_u16_le, read_u32_le};
 use crate::{FileEntry, FilesystemParser, FilesystemType};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -56,12 +56,12 @@ impl Fat32Parser {
             });
         }
 
-        let bytes_per_sector = u16::from_le_bytes(boot[11..13].try_into().unwrap()) as u64;
+        let bytes_per_sector = read_u16_le(&boot, 11)? as u64;
         let sectors_per_cluster = boot[13] as u64;
-        let reserved_sectors = u16::from_le_bytes(boot[14..16].try_into().unwrap()) as u64;
+        let reserved_sectors = read_u16_le(&boot, 14)? as u64;
         let num_fats = boot[16] as u64;
-        let fat_size = u32::from_le_bytes(boot[36..40].try_into().unwrap()) as u64;
-        let root_cluster = u32::from_le_bytes(boot[44..48].try_into().unwrap());
+        let fat_size = read_u32_le(&boot, 36)? as u64;
+        let root_cluster = read_u32_le(&boot, 44)?;
 
         if bytes_per_sector == 0 || sectors_per_cluster == 0 {
             return Err(FilesystemError::InvalidStructure {
@@ -100,7 +100,8 @@ impl Fat32Parser {
     fn read_fat_entry(&self, cluster: u32) -> Result<u32> {
         let offset = self.fat_offset + cluster as u64 * 4;
         let raw = read_bytes(self.device.as_ref(), offset, 4)?;
-        Ok(u32::from_le_bytes(raw.try_into().unwrap()) & 0x0FFF_FFFF)
+        // Safety: read_bytes(offset, 4)? returns exactly 4 bytes.
+        Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) & 0x0FFF_FFFF)
     }
 
     fn is_eoc(entry: u32) -> bool {
@@ -198,24 +199,30 @@ impl Fat32Parser {
             lfn_parts.clear();
 
             let is_dir = attr & ATTR_DIRECTORY != 0;
-            let cluster_hi = u16::from_le_bytes(entry[20..22].try_into().unwrap()) as u32;
-            let cluster_lo = u16::from_le_bytes(entry[26..28].try_into().unwrap()) as u32;
+            // Safety: entry is [u8; 32], all indices are in bounds.
+            let cluster_hi = u16::from_le_bytes([entry[20], entry[21]]) as u32;
+            let cluster_lo = u16::from_le_bytes([entry[26], entry[27]]) as u32;
             let first_cluster = (cluster_hi << 16) | cluster_lo;
-            let size = u32::from_le_bytes(entry[28..32].try_into().unwrap()) as u64;
+            let size = u32::from_le_bytes([entry[28], entry[29], entry[30], entry[31]]) as u64;
 
             let data_byte_offset = if is_dir || first_cluster < 2 {
                 None
             } else {
                 Some(self.data_offset + (first_cluster as u64 - 2) * self.cluster_size)
             };
+            // Safety: entry is [u8; 32], so all index accesses below are in bounds.
+            let crt_time = u16::from_le_bytes([entry[14], entry[15]]);
+            let crt_date = u16::from_le_bytes([entry[16], entry[17]]);
+            let wrt_time = u16::from_le_bytes([entry[22], entry[23]]);
+            let wrt_date = u16::from_le_bytes([entry[24], entry[25]]);
             result.push(FileEntry {
                 name: name.clone(),
                 path: format!("/{name}"),
                 size,
                 is_dir,
                 is_deleted,
-                created: None,
-                modified: None,
+                created: fat_datetime_to_unix(crt_date, crt_time),
+                modified: fat_datetime_to_unix(wrt_date, wrt_time),
                 first_cluster: Some(first_cluster),
                 mft_record: None,
                 inode_number: None,
@@ -313,6 +320,53 @@ impl FilesystemParser for Fat32Parser {
 }
 
 // ── String helpers ────────────────────────────────────────────────────────────
+
+/// Convert a FAT32 date/time pair to a Unix timestamp (seconds since 1970-01-01 UTC).
+///
+/// FAT date encoding (16-bit big-endian logical):
+///   bits 15-9 = year offset from 1980, bits 8-5 = month (1-12), bits 4-0 = day (1-31)
+///
+/// FAT time encoding (16-bit):
+///   bits 15-11 = hours, bits 10-5 = minutes, bits 4-0 = seconds/2
+///
+/// Returns `None` when `date` is zero (field not set) or any value is out of range.
+fn fat_datetime_to_unix(date: u16, time: u16) -> Option<u64> {
+    if date == 0 {
+        return None;
+    }
+    let year = 1980u32 + (date >> 9) as u32;
+    let month = ((date >> 5) & 0x0F) as u32;
+    let day = (date & 0x1F) as u32;
+    if month == 0 || month > 12 || day == 0 || day > 31 {
+        return None;
+    }
+    let hour = (time >> 11) as u32;
+    let min = ((time >> 5) & 0x3F) as u32;
+    let sec = (time & 0x1F) as u32 * 2;
+    if hour > 23 || min > 59 || sec > 59 {
+        return None;
+    }
+
+    // Days from Unix epoch (1970-01-01) to FAT epoch (1980-01-01) = 3652.
+    const FAT_EPOCH_DAYS: u64 = 3652;
+    const DAYS_IN_MONTH: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let is_leap = |y: u32| (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
+
+    let mut days: u64 = FAT_EPOCH_DAYS;
+    for y in 1980..year {
+        days += if is_leap(y) { 366 } else { 365 };
+    }
+    for m in 1..month {
+        let mut d = DAYS_IN_MONTH[(m - 1) as usize];
+        if m == 2 && is_leap(year) {
+            d += 1;
+        }
+        days += d as u64;
+    }
+    days += (day - 1) as u64;
+
+    Some(days * 86_400 + hour as u64 * 3_600 + min as u64 * 60 + sec as u64)
+}
 
 /// Build a printable 8.3 filename from a directory entry.
 fn build_short_name(entry: &[u8; 32], is_deleted: bool) -> String {
@@ -525,6 +579,52 @@ mod tests {
         assert!(
             result[0].data_byte_offset.is_none(),
             "directory must not have data_byte_offset"
+        );
+    }
+
+    #[test]
+    fn fat_datetime_zero_date_is_none() {
+        assert_eq!(fat_datetime_to_unix(0, 0), None);
+    }
+
+    #[test]
+    fn fat_datetime_known_date() {
+        // 2000-01-01 00:00:00 UTC = Unix timestamp 946_684_800
+        // FAT date: year=2000 → offset=20, month=1, day=1
+        //   = (20 << 9) | (1 << 5) | 1 = 10273
+        let date: u16 = (20 << 9) | (1 << 5) | 1;
+        assert_eq!(fat_datetime_to_unix(date, 0), Some(946_684_800));
+    }
+
+    #[test]
+    fn fat_datetime_time_fields() {
+        // 1980-01-01 01:02:04 UTC = FAT epoch + 3724 s
+        // date = (0 << 9) | (1 << 5) | 1 = 33
+        // time: hours=1, minutes=2, seconds/2=2 → (1<<11)|(2<<5)|2 = 2114
+        let date: u16 = (0 << 9) | (1 << 5) | 1;
+        let time: u16 = (1 << 11) | (2 << 5) | 2;
+        let expected = 3652u64 * 86_400 + 3724; // FAT_EPOCH_DAYS * 86400 + 1h2m4s
+        assert_eq!(fat_datetime_to_unix(date, time), Some(expected));
+    }
+
+    /// Feeding a 10-byte device to Fat32Parser::new must return Err, not panic.
+    #[test]
+    fn truncated_device_returns_err_not_panic() {
+        let dev = Arc::new(MockBlockDevice::new(vec![0u8; 10], 512));
+        let result = Fat32Parser::new(dev);
+        assert!(result.is_err(), "expected Err on 10-byte device, got Ok");
+    }
+
+    /// A valid-size device without the FAT32 boot signature must return Err,
+    /// not panic.
+    #[test]
+    fn invalid_boot_signature_returns_err() {
+        let data = vec![0u8; 512]; // boot sig at [510..512] is 0x00 0x00, not 0x55 0xAA
+        let dev = Arc::new(MockBlockDevice::new(data, 512));
+        let result = Fat32Parser::new(dev);
+        assert!(
+            result.is_err(),
+            "expected Err for invalid FAT32 boot signature"
         );
     }
 }
