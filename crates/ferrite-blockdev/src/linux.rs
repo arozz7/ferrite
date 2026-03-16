@@ -5,7 +5,6 @@
 //! file position).
 
 use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
 
 use ferrite_core::types::DeviceInfo;
 use tracing::instrument;
