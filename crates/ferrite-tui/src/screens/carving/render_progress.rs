@@ -44,7 +44,33 @@ impl CarvingState {
             }
         };
 
-        frame.render_widget(Paragraph::new(Line::from(vec![disk_span, auto_str])), area);
+        // Metadata index availability — tells the user whether original
+        // filenames and folder paths will be used for extracted files.
+        let meta_span = if self.meta_index_building {
+            Span::styled(
+                "  ⌛ building FS index…",
+                Style::default().fg(Color::Yellow),
+            )
+        } else if let Some(idx) = &self.meta_index {
+            if idx.is_empty() {
+                Span::styled(
+                    "  ○ no FS metadata — files named by offset",
+                    Style::default().fg(Color::DarkGray),
+                )
+            } else {
+                Span::styled(
+                    format!("  ✓ FS index: {} paths — names & folders active", idx.len()),
+                    Style::default().fg(Color::Green),
+                )
+            }
+        } else {
+            Span::raw("")
+        };
+
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![disk_span, auto_str, meta_span])),
+            area,
+        );
     }
 
     pub(super) fn render_compact_scan_progress(&self, frame: &mut Frame, area: Rect) {

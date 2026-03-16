@@ -69,11 +69,29 @@ fn apply_timestamps(path: &str, byte_offset: u64, index: &MetadataIndex) {
 impl CarvingState {
     /// Build an output path for `hit` inside `dir`.
     ///
-    /// If the metadata index contains the original filename for this offset,
-    /// uses it.  Otherwise falls back to `ferrite_<ext>_<offset>.<ext>`.
+    /// When the metadata index resolves the byte offset to a filesystem entry,
+    /// the original relative path is preserved: `<dir>/<original/sub/path>`.
+    /// This recreates the original folder structure under the output directory.
+    /// Falls back to `ferrite_<ext>_<offset>.<ext>` when no metadata exists.
     pub(super) fn filename_for_hit(&self, hit: &CarveHit, dir: &str) -> String {
         if let Some(idx) = &self.meta_index {
             if let Some(meta) = idx.lookup(hit.byte_offset) {
+                // Build a safe relative path from the original filesystem path,
+                // stripping leading separators and rejecting `..` traversal.
+                let rel: std::path::PathBuf = meta
+                    .path
+                    .trim_start_matches('/')
+                    .trim_start_matches('\\')
+                    .split(['/', '\\'])
+                    .filter(|s| !s.is_empty() && *s != "..")
+                    .collect();
+                if rel.components().count() > 0 {
+                    return std::path::Path::new(dir)
+                        .join(rel)
+                        .to_string_lossy()
+                        .into_owned();
+                }
+                // Fallback: sanitised bare name when path is unusable.
                 let safe = meta
                     .name
                     .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
@@ -120,8 +138,12 @@ impl CarvingState {
             end_byte: None,
         };
         std::thread::spawn(move || {
-            // Ensure output directory exists before writing.
-            if let Err(e) = std::fs::create_dir_all(&dir) {
+            // Ensure the output directory (and any metadata-derived subdir) exists.
+            let file_parent = std::path::Path::new(&filename)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from(&dir));
+            if let Err(e) = std::fs::create_dir_all(&file_parent) {
                 tracing::warn!(dir = %dir, error = %e, "failed to create output directory");
                 return;
             }
@@ -322,6 +344,10 @@ impl CarvingState {
                         Some(i) => i,
                     };
                     let _ = done_tx.send(WorkerMsg::Started { idx });
+                    // Create metadata-derived subdirectories if needed.
+                    if let Some(parent) = std::path::Path::new(&path).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
                     let config = CarvingConfig {
                         signatures: vec![hit.signature.clone()],
                         scan_chunk_size: 4 * 1024 * 1024,
