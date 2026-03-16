@@ -100,6 +100,7 @@ fn translate_device_path(path: &str) -> String {
 }
 
 /// Convert a zero-based drive index to a letter suffix: 0→"a", 25→"z", 26→"aa", …
+#[cfg(target_os = "windows")]
 fn index_to_drive_letters(mut n: usize) -> String {
     let mut letters = String::new();
     loop {

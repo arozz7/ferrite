@@ -263,7 +263,7 @@ fn build_ogg_page(header_type: u8, seg_sizes: &[u8]) -> Vec<u8> {
     page.push(seg_sizes.len() as u8);
     page.extend_from_slice(seg_sizes);
     let data_len: usize = seg_sizes.iter().map(|&b| b as usize).sum();
-    page.extend(std::iter::repeat(0xBBu8).take(data_len));
+    page.extend(std::iter::repeat_n(0xBBu8, data_len));
     page
 }
 

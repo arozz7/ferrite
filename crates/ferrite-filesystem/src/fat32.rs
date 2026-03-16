@@ -601,7 +601,7 @@ mod tests {
         // 1980-01-01 01:02:04 UTC = FAT epoch + 3724 s
         // date = (0 << 9) | (1 << 5) | 1 = 33
         // time: hours=1, minutes=2, seconds/2=2 → (1<<11)|(2<<5)|2 = 2114
-        let date: u16 = (0 << 9) | (1 << 5) | 1;
+        let date: u16 = (1 << 5) | 1;
         let time: u16 = (1 << 11) | (2 << 5) | 2;
         let expected = 3652u64 * 86_400 + 3724; // FAT_EPOCH_DAYS * 86400 + 1h2m4s
         assert_eq!(fat_datetime_to_unix(date, time), Some(expected));

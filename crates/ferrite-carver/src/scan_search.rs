@@ -70,6 +70,17 @@ pub(crate) fn find_all(
     hits
 }
 
+/// Check whether `header` matches `data` starting at `pos`.
+///
+/// `None` entries in `header` are wildcards and match any byte.
+#[inline]
+pub(crate) fn header_matches(header: &[Option<u8>], data: &[u8], pos: usize) -> bool {
+    header.iter().enumerate().all(|(i, opt)| match opt {
+        None => true,
+        Some(b) => data.get(pos + i) == Some(b),
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -121,15 +132,4 @@ mod tests {
         let hits = find_all(&sig, &data, 0, data.len());
         assert_eq!(hits.len(), 1, "file-entry ZIP header should pass find_all");
     }
-}
-
-/// Check whether `header` matches `data` starting at `pos`.
-///
-/// `None` entries in `header` are wildcards and match any byte.
-#[inline]
-pub(crate) fn header_matches(header: &[Option<u8>], data: &[u8], pos: usize) -> bool {
-    header.iter().enumerate().all(|(i, opt)| match opt {
-        None => true,
-        Some(b) => data.get(pos + i) == Some(b),
-    })
 }

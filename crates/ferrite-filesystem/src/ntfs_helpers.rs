@@ -122,78 +122,6 @@ pub(crate) fn parse_standard_info(raw: &[u8]) -> Option<(Option<u64>, Option<u64
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Build a minimal raw FILE record with a resident $STANDARD_INFORMATION
-    /// attribute whose created and modified FILETIME equal `created_ft` and
-    /// `modified_ft` respectively.
-    fn make_si_record(created_ft: u64, modified_ft: u64) -> Vec<u8> {
-        let mut raw = vec![0u8; 256];
-        raw[0..4].copy_from_slice(b"FILE");
-        // usa_offset = 0x30, usa_count = 1 (no sector fixup needed)
-        raw[4..6].copy_from_slice(&0x30u16.to_le_bytes());
-        raw[6..8].copy_from_slice(&1u16.to_le_bytes());
-        // First attribute starts at 0x38
-        raw[20..22].copy_from_slice(&0x38u16.to_le_bytes());
-
-        // $STANDARD_INFORMATION at offset 0x38
-        //   attr header = 24 bytes, value = 48 bytes  →  total = 72 (0x48)
-        let si = 0x38usize;
-        raw[si..si + 4].copy_from_slice(&ATTR_STD_INFO.to_le_bytes()); // type
-        raw[si + 4..si + 8].copy_from_slice(&0x48u32.to_le_bytes()); // attr_len = 72
-        raw[si + 8] = 0; // resident
-        raw[si + 16..si + 20].copy_from_slice(&48u32.to_le_bytes()); // val_len
-        raw[si + 20..si + 22].copy_from_slice(&24u16.to_le_bytes()); // val_off = 24
-                                                                     // value[0..8]  = created  FILETIME
-                                                                     // value[8..16] = modified FILETIME
-        let v = si + 24;
-        raw[v..v + 8].copy_from_slice(&created_ft.to_le_bytes());
-        raw[v + 8..v + 16].copy_from_slice(&modified_ft.to_le_bytes());
-
-        // ATTR_END marker
-        let end = si + 0x48;
-        raw[end..end + 4].copy_from_slice(&ATTR_END.to_le_bytes());
-        raw
-    }
-
-    #[test]
-    fn parse_standard_info_extracts_timestamps() {
-        // Unix timestamp 946_684_800 = 2000-01-01 00:00:00 UTC
-        // Windows FILETIME = 946_684_800 * 10_000_000 + 116_444_736_000_000_000
-        const UNIX_TS: u64 = 946_684_800;
-        const FT: u64 = UNIX_TS * 10_000_000 + 116_444_736_000_000_000;
-
-        let raw = make_si_record(FT, FT);
-        let result = parse_standard_info(&raw);
-        assert!(result.is_some(), "expected Some");
-        let (created, modified) = result.unwrap();
-        assert_eq!(created, Some(UNIX_TS));
-        assert_eq!(modified, Some(UNIX_TS));
-    }
-
-    #[test]
-    fn parse_standard_info_zero_filetime_yields_none() {
-        // FILETIME of 0 predates Unix epoch — both values must be None.
-        let raw = make_si_record(0, 0);
-        let (created, modified) = parse_standard_info(&raw).unwrap();
-        assert_eq!(created, None);
-        assert_eq!(modified, None);
-    }
-
-    #[test]
-    fn parse_standard_info_missing_returns_none() {
-        // A record with no $STANDARD_INFORMATION attribute (ATTR_END immediately).
-        let mut raw = vec![0u8; 256];
-        raw[0..4].copy_from_slice(b"FILE");
-        raw[4..6].copy_from_slice(&0x30u16.to_le_bytes());
-        raw[6..8].copy_from_slice(&1u16.to_le_bytes());
-        raw[20..22].copy_from_slice(&0x38u16.to_le_bytes());
-        raw[0x38..0x3C].copy_from_slice(&ATTR_END.to_le_bytes());
-        assert_eq!(parse_standard_info(&raw), None);
-    }
-}
 /// Extract `(win32_name, parent_mft_ref, data_size, first_lcn)` from a FILE record.
 ///
 /// Prefers the Win32 namespace (namespace = 1 or 3) for the filename.
@@ -439,4 +367,79 @@ pub(crate) fn mft_record_count(
     }
 
     None
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal raw FILE record with a resident $STANDARD_INFORMATION
+    /// attribute whose created and modified FILETIME equal `created_ft` and
+    /// `modified_ft` respectively.
+    fn make_si_record(created_ft: u64, modified_ft: u64) -> Vec<u8> {
+        let mut raw = vec![0u8; 256];
+        raw[0..4].copy_from_slice(b"FILE");
+        // usa_offset = 0x30, usa_count = 1 (no sector fixup needed)
+        raw[4..6].copy_from_slice(&0x30u16.to_le_bytes());
+        raw[6..8].copy_from_slice(&1u16.to_le_bytes());
+        // First attribute starts at 0x38
+        raw[20..22].copy_from_slice(&0x38u16.to_le_bytes());
+
+        // $STANDARD_INFORMATION at offset 0x38
+        //   attr header = 24 bytes, value = 48 bytes  →  total = 72 (0x48)
+        let si = 0x38usize;
+        raw[si..si + 4].copy_from_slice(&ATTR_STD_INFO.to_le_bytes()); // type
+        raw[si + 4..si + 8].copy_from_slice(&0x48u32.to_le_bytes()); // attr_len = 72
+        raw[si + 8] = 0; // resident
+        raw[si + 16..si + 20].copy_from_slice(&48u32.to_le_bytes()); // val_len
+        raw[si + 20..si + 22].copy_from_slice(&24u16.to_le_bytes()); // val_off = 24
+                                                                     // value[0..8]  = created  FILETIME
+                                                                     // value[8..16] = modified FILETIME
+        let v = si + 24;
+        raw[v..v + 8].copy_from_slice(&created_ft.to_le_bytes());
+        raw[v + 8..v + 16].copy_from_slice(&modified_ft.to_le_bytes());
+
+        // ATTR_END marker
+        let end = si + 0x48;
+        raw[end..end + 4].copy_from_slice(&ATTR_END.to_le_bytes());
+        raw
+    }
+
+    #[test]
+    fn parse_standard_info_extracts_timestamps() {
+        // Unix timestamp 946_684_800 = 2000-01-01 00:00:00 UTC
+        // Windows FILETIME = 946_684_800 * 10_000_000 + 116_444_736_000_000_000
+        const UNIX_TS: u64 = 946_684_800;
+        const FT: u64 = UNIX_TS * 10_000_000 + 116_444_736_000_000_000;
+
+        let raw = make_si_record(FT, FT);
+        let result = parse_standard_info(&raw);
+        assert!(result.is_some(), "expected Some");
+        let (created, modified) = result.unwrap();
+        assert_eq!(created, Some(UNIX_TS));
+        assert_eq!(modified, Some(UNIX_TS));
+    }
+
+    #[test]
+    fn parse_standard_info_zero_filetime_yields_none() {
+        // FILETIME of 0 predates Unix epoch — both values must be None.
+        let raw = make_si_record(0, 0);
+        let (created, modified) = parse_standard_info(&raw).unwrap();
+        assert_eq!(created, None);
+        assert_eq!(modified, None);
+    }
+
+    #[test]
+    fn parse_standard_info_missing_returns_none() {
+        // A record with no $STANDARD_INFORMATION attribute (ATTR_END immediately).
+        let mut raw = vec![0u8; 256];
+        raw[0..4].copy_from_slice(b"FILE");
+        raw[4..6].copy_from_slice(&0x30u16.to_le_bytes());
+        raw[6..8].copy_from_slice(&1u16.to_le_bytes());
+        raw[20..22].copy_from_slice(&0x38u16.to_le_bytes());
+        raw[0x38..0x3C].copy_from_slice(&ATTR_END.to_le_bytes());
+        assert_eq!(parse_standard_info(&raw), None);
+    }
 }
