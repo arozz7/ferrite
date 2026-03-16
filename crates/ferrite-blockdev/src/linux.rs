@@ -145,11 +145,15 @@ fn ioctl_blksszget(fd: libc::c_int) -> Option<u32> {
 ///
 /// Strips the `/dev/` prefix, e.g. `/dev/sda` → `/sys/block/sda/device/`.
 fn read_sysfs_info(dev_path: &str) -> (Option<String>, Option<String>) {
-    let name = std::path::Path::new(dev_path).file_name()?.to_str()?;
-    let base = format!("/sys/block/{name}/device");
-    let model = read_sysfs_string(&format!("{base}/model"));
-    let serial = read_sysfs_string(&format!("{base}/serial"));
-    (model, serial)
+    fn inner(dev_path: &str) -> Option<(Option<String>, Option<String>)> {
+        let name = std::path::Path::new(dev_path).file_name()?.to_str()?;
+        let base = format!("/sys/block/{name}/device");
+        Some((
+            read_sysfs_string(&format!("{base}/model")),
+            read_sysfs_string(&format!("{base}/serial")),
+        ))
+    }
+    inner(dev_path).unwrap_or((None, None))
 }
 
 fn read_sysfs_string(path: &str) -> Option<String> {
