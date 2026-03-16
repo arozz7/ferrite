@@ -17,7 +17,9 @@ mod extract;
 mod helpers;
 mod input;
 mod preview;
+mod preview_more;
 mod render;
+mod render_progress;
 mod session_ops;
 pub(crate) use helpers::fmt_bytes;
 pub(crate) use preview::ColorCap;
@@ -104,6 +106,9 @@ struct ExtractionSummary {
 enum CarveStatus {
     Idle,
     Running,
+    /// Pause has been requested; waiting for the scan thread to finish its
+    /// current chunk and enter the spin-wait.
+    Pausing,
     Paused,
     Done,
     Error(String),
@@ -163,6 +168,10 @@ pub struct CarvingState {
     /// auto-extract is on.  Extraction workers use `extract_pause` instead so
     /// that pausing the scan never inadvertently stalls extraction.
     pause: Arc<AtomicBool>,
+    /// Set by the scan thread when it enters the pause spin-wait.  The TUI
+    /// watches this to transition `Pausing → Paused` once the thread has
+    /// actually stopped advancing.
+    paused_ack: Arc<AtomicBool>,
     /// Pause flag for extraction workers only (user-initiated via `p` key
     /// while extraction is running).  Kept separate from `pause` so that
     /// back-pressure scan gating never blocks the extraction pipeline.
@@ -254,6 +263,7 @@ impl CarvingState {
             status: CarveStatus::Idle,
             cancel: Arc::new(AtomicBool::new(false)),
             pause: Arc::new(AtomicBool::new(false)),
+            paused_ack: Arc::new(AtomicBool::new(false)),
             extract_pause: Arc::new(AtomicBool::new(false)),
             rx: None,
             tx: None,
@@ -340,6 +350,7 @@ impl CarvingState {
         self.status = CarveStatus::Idle;
         self.cancel.store(false, Ordering::Relaxed);
         self.pause.store(false, Ordering::Relaxed);
+        self.paused_ack.store(false, Ordering::Relaxed);
         self.extract_pause.store(false, Ordering::Relaxed);
         self.extract_cancel.store(false, Ordering::Relaxed);
         self.extract_progress = None;
@@ -448,6 +459,7 @@ mod tests {
             max_size: 1024,
             size_hint: None,
             min_size: 0,
+            pre_validate_zip: false,
         };
         let hit = CarveHit {
             byte_offset: 0,

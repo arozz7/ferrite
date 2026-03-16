@@ -299,6 +299,7 @@ impl CarvingState {
 
         let cancel_scan = Arc::clone(&self.cancel);
         let pause_scan = Arc::clone(&self.pause);
+        let paused_ack_scan = Arc::clone(&self.paused_ack);
 
         std::thread::spawn(move || {
             let carver = Carver::new(Arc::clone(&device), config);
@@ -306,7 +307,13 @@ impl CarvingState {
             let mut on_hits = move |batch: Vec<CarveHit>| {
                 let _ = tx_hits.send(CarveMsg::HitBatch(batch));
             };
-            match carver.scan_streaming(&prog_tx, &cancel_scan, &pause_scan, &mut on_hits) {
+            match carver.scan_streaming(
+                &prog_tx,
+                &cancel_scan,
+                &pause_scan,
+                &paused_ack_scan,
+                &mut on_hits,
+            ) {
                 Ok(()) => {
                     drop(prog_tx); // signal the forwarder to exit
                     let _ = tx.send(CarveMsg::Done);
@@ -335,8 +342,15 @@ impl CarvingState {
                 // this pause is now owned manually and won't be auto-lifted.
                 self.backpressure_paused = false;
                 self.pause.store(true, Ordering::Relaxed);
-                self.status = CarveStatus::Paused;
-                self.paused_since = Some(std::time::Instant::now());
+                // Transition to Pausing; events.rs will move to Paused once
+                // the scan thread confirms via paused_ack.
+                self.status = CarveStatus::Pausing;
+            }
+            // Allow cancelling the pause request before the thread acks it.
+            CarveStatus::Pausing => {
+                self.backpressure_paused = false;
+                self.pause.store(false, Ordering::Relaxed);
+                self.status = CarveStatus::Running;
             }
             CarveStatus::Paused => {
                 // Manual resume clears back-pressure so the scan isn't

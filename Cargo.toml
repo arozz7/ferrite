@@ -52,6 +52,7 @@ memchr    = "2"
 rayon     = "1"
 sha2      = "0.10"
 fs2       = "0.4"
+filetime  = "0.2"
 which     = "7"
 
 # Internal crates

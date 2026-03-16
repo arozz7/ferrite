@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use ferrite_carver::{CarveHit, Carver, CarvingConfig};
+use ferrite_filesystem::MetadataIndex;
 
 use super::{
     CarveMsg, CarveStatus, CarvingState, ExtractProgress, HitStatus, AUTO_EXTRACT_LOW_WATER,
@@ -37,6 +38,29 @@ impl<W: Write> Write for CancelWriter<W> {
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
+    }
+}
+
+// ── Timestamp helper ──────────────────────────────────────────────────────────
+
+/// Apply the original file timestamps to `path` using the metadata index.
+///
+/// Looks up `byte_offset` in `index`; if a match with a modification (or
+/// creation) timestamp is found, sets both the access time and the
+/// modification time on the file.  Errors are silently ignored — timestamp
+/// stamping is best-effort on damaged media.
+fn apply_timestamps(path: &str, byte_offset: u64, index: &MetadataIndex) {
+    let meta = match index.lookup(byte_offset) {
+        Some(m) => m,
+        None => return,
+    };
+    let unix_secs = match meta.modified.or(meta.created) {
+        Some(t) => t,
+        None => return,
+    };
+    let ft = filetime::FileTime::from_unix_time(unix_secs as i64, 0);
+    if let Err(e) = filetime::set_file_times(path, ft, ft) {
+        tracing::debug!(path, error = %e, "could not set file timestamps");
     }
 }
 
@@ -88,6 +112,7 @@ impl CarvingState {
             self.output_dir.clone()
         };
         let filename = self.filename_for_hit(&hit, &dir);
+        let meta_index = self.meta_index.clone();
         let config = CarvingConfig {
             signatures: vec![hit.signature.clone()],
             scan_chunk_size: 4 * 1024 * 1024,
@@ -109,6 +134,9 @@ impl CarvingState {
                         } else {
                             bytes >= hit.signature.max_size
                         };
+                        if let Some(ref idx) = meta_index {
+                            apply_timestamps(&filename, hit.byte_offset, idx);
+                        }
                         tracing::info!(path = %filename, bytes, "extracted file");
                         let _ = tx.send(CarveMsg::Extracted {
                             idx,
@@ -222,6 +250,7 @@ impl CarvingState {
         self.extract_summary = None;
         let cancel = Arc::clone(&self.extract_cancel);
         let pause = Arc::clone(&self.extract_pause);
+        let meta_index = self.meta_index.clone();
 
         self.extract_progress = Some(ExtractProgress {
             done: 0,
@@ -278,6 +307,7 @@ impl CarvingState {
                 let done_tx = done_tx.clone();
                 let cancel = Arc::clone(&cancel);
                 let pause = Arc::clone(&pause);
+                let meta_index = meta_index.clone();
 
                 std::thread::spawn(move || loop {
                     while pause.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
@@ -308,6 +338,11 @@ impl CarvingState {
                             };
                             carver.extract(&hit, &mut writer).map_err(|e| e.to_string())
                         });
+                    if result.is_ok() {
+                        if let Some(ref meta_idx) = meta_index {
+                            apply_timestamps(&path, hit.byte_offset, meta_idx);
+                        }
+                    }
                     let _ = done_tx.send(WorkerMsg::Completed {
                         idx,
                         hit: Box::new(hit),

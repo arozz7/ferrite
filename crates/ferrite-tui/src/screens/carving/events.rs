@@ -11,6 +11,8 @@ use super::{
     AUTO_EXTRACT_HIGH_WATER, DISPLAY_CAP,
 };
 
+use std::sync::atomic::Ordering as AtomicOrdering;
+
 impl CarvingState {
     /// Drain the background carving channel and the preview channel.
     pub fn tick(&mut self) {
@@ -18,6 +20,14 @@ impl CarvingState {
         self.disk_space_tick = self.disk_space_tick.wrapping_add(1);
         if self.disk_space_tick.is_multiple_of(50) || self.disk_avail_bytes.is_none() {
             self.poll_disk_space();
+        }
+
+        // When the user has requested a pause, promote to Paused the moment
+        // the scan thread sets paused_ack (it does so just before entering
+        // its spin-wait, so the drive is genuinely no longer advancing).
+        if self.status == CarveStatus::Pausing && self.paused_ack.load(AtomicOrdering::Relaxed) {
+            self.status = CarveStatus::Paused;
+            self.paused_since = Some(std::time::Instant::now());
         }
 
         // Drain the main carving channel.  Each iteration borrows `self.rx`
