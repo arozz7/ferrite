@@ -513,9 +513,17 @@ impl CarvingState {
         let title_style = Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD);
+        // In auto-extract mode the summary accumulates across all batches;
+        // label it accordingly so the running total is not mistaken for a
+        // one-shot result.
+        let title = if self.auto_extract {
+            " Auto-Extract Session Total "
+        } else {
+            " Extraction Complete "
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Extraction Complete ", title_style))
+            .title(Span::styled(title, title_style))
             .border_style(Style::default().fg(Color::Green));
 
         let inner = block.inner(area);

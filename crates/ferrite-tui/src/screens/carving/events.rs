@@ -187,13 +187,33 @@ impl CarvingState {
                     }
                     // Only show summary when at least one file was attempted.
                     if succeeded + truncated + failed > 0 {
-                        self.extract_summary = Some(ExtractionSummary {
-                            succeeded,
-                            truncated,
-                            failed,
-                            total_bytes,
-                            elapsed_secs,
-                        });
+                        if self.auto_extract {
+                            // Accumulate into the running session total so rapid
+                            // per-file completions don't cause visible flicker.
+                            if let Some(existing) = &mut self.extract_summary {
+                                existing.succeeded += succeeded;
+                                existing.truncated += truncated;
+                                existing.failed += failed;
+                                existing.total_bytes += total_bytes;
+                                existing.elapsed_secs += elapsed_secs;
+                            } else {
+                                self.extract_summary = Some(ExtractionSummary {
+                                    succeeded,
+                                    truncated,
+                                    failed,
+                                    total_bytes,
+                                    elapsed_secs,
+                                });
+                            }
+                        } else {
+                            self.extract_summary = Some(ExtractionSummary {
+                                succeeded,
+                                truncated,
+                                failed,
+                                total_bytes,
+                                elapsed_secs,
+                            });
+                        }
                     }
                     // Continue draining the auto-extract queue if enabled.
                     if self.auto_extract {

@@ -269,7 +269,13 @@ impl CarvingState {
 
         self.extract_cancel.store(false, Ordering::Relaxed);
         self.extract_pause.store(false, Ordering::Relaxed);
-        self.extract_summary = None;
+        // In auto-extract mode the summary accumulates across all batches so the
+        // user sees a running total rather than rapid per-file flicker.  For
+        // manual batch extractions we reset each time so the summary reflects
+        // only the files the user explicitly requested.
+        if !self.auto_extract {
+            self.extract_summary = None;
+        }
         let cancel = Arc::clone(&self.extract_cancel);
         let pause = Arc::clone(&self.extract_pause);
         let meta_index = self.meta_index.clone();
