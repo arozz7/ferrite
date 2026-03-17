@@ -73,6 +73,19 @@ pub enum PreValidate {
     Rw2,
     /// Fujifilm RAF: `FUJIFILMCCD-RAW ` + 4-digit version string at offset 16.
     Raf,
+    /// Generic TIFF (little-endian `II\x2A\x00`): plausible IFD offset and entry
+    /// count.  Explicitly rejects Sony ARW ("SONY" marker), Canon CR2 (`CR\x02\x00`
+    /// at offset 8), and Nikon NEF ("NIKON" marker) since those have dedicated
+    /// signatures that produce correctly-named output files.
+    TiffLe,
+    /// Generic TIFF (big-endian `MM\x00\x2A`): plausible IFD offset and entry count.
+    TiffBe,
+    /// Nikon NEF: TIFF LE file that contains the "NIKON" manufacturer string within
+    /// the first 512 bytes of the header.
+    Nef,
+    /// Apple HEIC / HEIF: ISO Base Media File Format with an `heic` or `heix` major
+    /// brand in the `ftyp` box.  Box size must be in [12, 512].
+    Heic,
 }
 
 impl PreValidate {
@@ -108,6 +121,10 @@ impl PreValidate {
             Self::Cr2 => "cr2",
             Self::Rw2 => "rw2",
             Self::Raf => "raf",
+            Self::TiffLe => "tiff_le",
+            Self::TiffBe => "tiff_be",
+            Self::Nef => "nef",
+            Self::Heic => "heic",
         }
     }
 
@@ -143,6 +160,10 @@ impl PreValidate {
             "cr2" => Some(Self::Cr2),
             "rw2" => Some(Self::Rw2),
             "raf" => Some(Self::Raf),
+            "tiff_le" => Some(Self::TiffLe),
+            "tiff_be" => Some(Self::TiffBe),
+            "nef" => Some(Self::Nef),
+            "heic" => Some(Self::Heic),
             _ => None,
         }
     }
@@ -186,6 +207,10 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Cr2 => validate_cr2(data, pos),
         PreValidate::Rw2 => validate_rw2(data, pos),
         PreValidate::Raf => validate_raf(data, pos),
+        PreValidate::TiffLe => validate_tiff_le(data, pos),
+        PreValidate::TiffBe => validate_tiff_be(data, pos),
+        PreValidate::Nef => validate_nef(data, pos),
+        PreValidate::Heic => validate_heic(data, pos),
     }
 }
 
@@ -778,6 +803,108 @@ fn validate_raf(data: &[u8], pos: usize) -> bool {
     data[pos + 15] == b' ' && data[pos + 16..pos + 20].iter().all(|b| b.is_ascii_digit())
 }
 
+fn validate_tiff_le(data: &[u8], pos: usize) -> bool {
+    // Generic little-endian TIFF (II\x2A\x00).
+    // 1. IFD0 offset (u32 LE @ +4) must be in [8, 65536].
+    // 2. Reject Sony ARW ("SONY" in first 512 bytes — use dedicated .arw signature).
+    // 3. Reject Canon CR2 (CR\x02\x00 at offset +8 — use dedicated .cr2 signature).
+    // 4. Reject Nikon NEF ("NIKON" in first 512 bytes — use dedicated .nef signature).
+    // 5. IFD entry count at IFD0 offset must be in [1, 500] (if within chunk).
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_off = u32::from_le_bytes([
+        data[pos + 4],
+        data[pos + 5],
+        data[pos + 6],
+        data[pos + 7],
+    ]) as usize;
+    if !(8..=65536).contains(&ifd_off) {
+        return false;
+    }
+    // Reject CR2 (Canon marker)
+    if data.len() >= pos + 12 && &data[pos + 8..pos + 12] == b"CR\x02\x00" {
+        return false;
+    }
+    let window_end = data.len().min(pos + 512);
+    let window = &data[pos..window_end];
+    // Reject ARW (Sony)
+    if window.windows(4).any(|w| w == b"SONY") {
+        return false;
+    }
+    // Reject NEF (Nikon) — has its own signature
+    if window.windows(5).any(|w| w == b"NIKON") {
+        return false;
+    }
+    // Plausible IFD entry count
+    if data.len() >= pos + ifd_off + 2 {
+        let entry_count =
+            u16::from_le_bytes([data[pos + ifd_off], data[pos + ifd_off + 1]]) as usize;
+        if !(1..=500).contains(&entry_count) {
+            return false;
+        }
+    }
+    true
+}
+
+fn validate_tiff_be(data: &[u8], pos: usize) -> bool {
+    // Generic big-endian TIFF (MM\x00\x2A).
+    // IFD0 offset (u32 BE @ +4) must be in [8, 65536].
+    // IFD entry count at IFD0 must be in [1, 500] (if within chunk).
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_off = u32::from_be_bytes([
+        data[pos + 4],
+        data[pos + 5],
+        data[pos + 6],
+        data[pos + 7],
+    ]) as usize;
+    if !(8..=65536).contains(&ifd_off) {
+        return false;
+    }
+    if data.len() >= pos + ifd_off + 2 {
+        let entry_count =
+            u16::from_be_bytes([data[pos + ifd_off], data[pos + ifd_off + 1]]) as usize;
+        if !(1..=500).contains(&entry_count) {
+            return false;
+        }
+    }
+    true
+}
+
+fn validate_nef(data: &[u8], pos: usize) -> bool {
+    // Nikon NEF: TIFF LE file with "NIKON" manufacturer string in first 512 bytes.
+    // IFD0 offset (u32 LE @ +4) must also be in [8, 4096].
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_off = u32::from_le_bytes([
+        data[pos + 4],
+        data[pos + 5],
+        data[pos + 6],
+        data[pos + 7],
+    ]) as usize;
+    if !(8..=4096).contains(&ifd_off) {
+        return false;
+    }
+    let window_end = data.len().min(pos + 512);
+    data[pos..window_end].windows(5).any(|w| w == b"NIKON")
+}
+
+fn validate_heic(data: &[u8], pos: usize) -> bool {
+    // Apple HEIC / HEIF: ftyp box with heic or heix major brand.
+    // Magic already anchors on "ftyp" + first 3 brand bytes ("hei").
+    // The 12-byte signature covers the full brand; here we just verify
+    // the ftyp box size (u32 BE @ pos) is in [12, 512].
+    // Require 8 bytes so a short chunk gets benefit of doubt.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1362,5 +1489,134 @@ mod tests {
         assert!(validate_cr2(&data, 0));
         assert!(validate_rw2(&data, 0));
         assert!(validate_raf(&data, 0));
+        assert!(validate_tiff_le(&data, 0));
+        assert!(validate_tiff_be(&data, 0));
+        assert!(validate_nef(&data, 0));
+        assert!(validate_heic(&data, 0));
+    }
+
+    // ── TIFF LE ───────────────────────────────────────────────────────────────
+
+    fn make_tiff_le_header(ifd_off: u32, entry_count: u16, maker: Option<&[u8]>) -> Vec<u8> {
+        let mut v = vec![0u8; 512];
+        v[0..4].copy_from_slice(b"II\x2A\x00");
+        v[4..8].copy_from_slice(&ifd_off.to_le_bytes());
+        if ifd_off < 512 {
+            let pos = ifd_off as usize;
+            v[pos..pos + 2].copy_from_slice(&entry_count.to_le_bytes());
+        }
+        if let Some(m) = maker {
+            v[100..100 + m.len()].copy_from_slice(m);
+        }
+        v
+    }
+
+    #[test]
+    fn tiff_le_plain_accepted() {
+        let data = make_tiff_le_header(8, 12, None);
+        assert!(validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_rejects_sony_arw() {
+        let data = make_tiff_le_header(8, 12, Some(b"SONY"));
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_rejects_nikon_nef() {
+        let data = make_tiff_le_header(8, 12, Some(b"NIKON"));
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_rejects_canon_cr2() {
+        let mut data = make_tiff_le_header(16, 12, None);
+        // Place Canon CR2 marker at offset 8
+        data[8..12].copy_from_slice(b"CR\x02\x00");
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_bad_ifd_offset_rejected() {
+        let data = make_tiff_le_header(100_000, 12, None); // IFD offset > 65536
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    // ── TIFF BE ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tiff_be_valid_accepted() {
+        let mut data = vec![0u8; 512];
+        data[0..4].copy_from_slice(b"MM\x00\x2A");
+        data[4..8].copy_from_slice(&8u32.to_be_bytes()); // IFD at 8
+        data[8..10].copy_from_slice(&10u16.to_be_bytes()); // 10 entries
+        assert!(validate_tiff_be(&data, 0));
+    }
+
+    #[test]
+    fn tiff_be_bad_ifd_offset_rejected() {
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(b"MM\x00\x2A");
+        data[4..8].copy_from_slice(&0u32.to_be_bytes()); // IFD at 0 — invalid
+        assert!(!validate_tiff_be(&data, 0));
+    }
+
+    // ── NEF ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn nef_with_nikon_string_accepted() {
+        let data = make_tiff_le_header(8, 20, Some(b"NIKON"));
+        assert!(validate_nef(&data, 0));
+    }
+
+    #[test]
+    fn nef_without_nikon_string_rejected() {
+        let data = make_tiff_le_header(8, 20, None);
+        assert!(!validate_nef(&data, 0));
+    }
+
+    #[test]
+    fn nef_bad_ifd_offset_rejected() {
+        // IFD offset > 4096 — rejected even with NIKON string.
+        let mut data = vec![0u8; 512];
+        data[0..4].copy_from_slice(b"II\x2A\x00");
+        data[4..8].copy_from_slice(&8000u32.to_le_bytes()); // too large
+        data[100..105].copy_from_slice(b"NIKON");
+        assert!(!validate_nef(&data, 0));
+    }
+
+    // ── HEIC ──────────────────────────────────────────────────────────────────
+
+    fn make_heic_ftyp(box_size: u32, brand: &[u8; 4]) -> Vec<u8> {
+        let mut data = vec![0u8; 24];
+        data[0..4].copy_from_slice(&box_size.to_be_bytes());
+        data[4..8].copy_from_slice(b"ftyp");
+        data[8..12].copy_from_slice(brand);
+        data
+    }
+
+    #[test]
+    fn heic_valid_box_size_accepted() {
+        let data = make_heic_ftyp(24, b"heic");
+        assert!(validate_heic(&data, 0));
+    }
+
+    #[test]
+    fn heic_heix_brand_accepted() {
+        let data = make_heic_ftyp(28, b"heix");
+        assert!(validate_heic(&data, 0));
+    }
+
+    #[test]
+    fn heic_too_small_box_rejected() {
+        let data = make_heic_ftyp(8, b"heic"); // box_size < 12
+        assert!(!validate_heic(&data, 0));
+    }
+
+    #[test]
+    fn heic_oversized_box_rejected() {
+        let data = make_heic_ftyp(1024, b"heic"); // box_size > 512
+        assert!(!validate_heic(&data, 0));
     }
 }

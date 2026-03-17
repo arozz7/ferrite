@@ -352,3 +352,74 @@ max_size       = 300_000_000  # 300 MB — covers GFX 100 / GFX 100S (102 MP)
 size_hint_kind = "raf"
 # Validates space at offset 15 and 4-digit ASCII version string at offset 16.
 pre_validate   = "raf"
+
+[[signature]]
+name           = "TIFF Image (Little-Endian)"
+extension      = "tif"
+# Standard TIFF LE magic: "II" byte order + 0x2A TIFF marker.
+# Covers plain TIFF, Adobe DNG (Digital Negative), and any other TIFF-based
+# format not covered by the dedicated ARW / CR2 / RW2 / NEF signatures.
+header         = "49 49 2A 00"
+footer         = ""
+max_size       = 1_073_741_824  # 1 GiB — large scans and multi-layer PSD-style TIFFs
+# TIFF IFD walker derives true size from strip/tile offset+length pairs.
+size_hint_kind = "tiff"
+# Rejects Sony ARW ("SONY" marker), Canon CR2 (CR\x02\x00 at +8), and
+# Nikon NEF ("NIKON" marker) — each has a dedicated signature with the
+# correct extension.
+pre_validate   = "tiff_le"
+
+[[signature]]
+name           = "TIFF Image (Big-Endian)"
+extension      = "tif"
+# Big-endian TIFF: "MM" byte order + 0x2A marker.  Less common than LE but
+# produced by some scanners, older Mac software, and certain cameras.
+header         = "4D 4D 00 2A"
+footer         = ""
+max_size       = 1_073_741_824  # 1 GiB
+# TIFF IFD walker derives true size.
+size_hint_kind = "tiff"
+# Validates IFD offset and entry count are plausible.
+pre_validate   = "tiff_be"
+
+[[signature]]
+name           = "Nikon NEF Raw Photo"
+extension      = "nef"
+# TIFF LE magic — same as standard TIFF.  The pre-validator distinguishes
+# Nikon NEF files by requiring the "NIKON" manufacturer string within the
+# first 512 bytes of the header.
+header         = "49 49 2A 00"
+footer         = ""
+min_size       = 1_000_000    # 1 MB — RAW files are never tiny
+max_size       = 200_000_000  # 200 MB — covers Z9 (45 MP) and future sensors
+# TIFF IFD walker derives true size from SubIFD strip extents.
+size_hint_kind = "tiff"
+# Validates IFD offset in [8,4096] and "NIKON" string in first 512 bytes.
+pre_validate   = "nef"
+
+[[signature]]
+name           = "Apple HEIC Photo (heic)"
+extension      = "heic"
+# ISOBMFF ftyp box with "heic" major brand — standard iPhone HEIC photo.
+# First 4 bytes are the variable box size (wildcarded); bytes 4-7 are "ftyp";
+# bytes 8-11 are the "heic" brand.
+header         = "?? ?? ?? ?? 66 74 79 70 68 65 69 63"
+footer         = ""
+min_size       = 16384         # 16 KiB
+max_size       = 100_000_000   # 100 MB — HEIC is highly compressed
+# ISOBMFF box walker derives true file size.
+size_hint_kind = "mp4"
+# Validates ftyp box size in [12, 512].
+pre_validate   = "heic"
+
+[[signature]]
+name           = "Apple HEIC Photo (heix)"
+extension      = "heic"
+# ISOBMFF ftyp box with "heix" major brand — HEIC with extended feature set,
+# used by newer iPhone models and iOS versions.
+header         = "?? ?? ?? ?? 66 74 79 70 68 65 69 78"
+footer         = ""
+min_size       = 16384
+max_size       = 100_000_000
+size_hint_kind = "mp4"
+pre_validate   = "heic"
