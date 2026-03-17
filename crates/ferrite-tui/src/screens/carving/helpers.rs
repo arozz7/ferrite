@@ -38,14 +38,14 @@ const GROUP_ORDER: &[&str] = &[
 /// Returns the group label for a given file extension.
 fn sig_group_label(ext: &str) -> &'static str {
     match ext {
-        "jpg" | "png" | "gif" | "bmp" | "tif" => "Images",
+        "jpg" | "png" | "gif" | "bmp" | "tif" | "webp" | "psd" => "Images",
         "arw" | "cr2" | "nef" | "rw2" | "raf" | "heic" => "RAW Photos",
         "mp4" | "mov" | "m4v" | "3gp" | "avi" | "mkv" | "webm" | "wmv" | "flv" | "mpg" => "Video",
-        "mp3" | "flac" | "wav" | "ogg" => "Audio",
-        "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" => "Documents",
+        "mp3" | "flac" | "wav" | "ogg" | "m4a" => "Audio",
+        "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" | "eml" => "Documents",
         "zip" | "ole" | "pst" => "Office & Email",
-        "rar" | "7z" => "Archives",
-        "db" | "vmdk" | "evtx" | "exe" => "System",
+        "rar" | "7z" | "gz" => "Archives",
+        "db" | "vmdk" | "evtx" | "exe" | "elf" | "dat" | "vhd" | "vhdx" | "qcow2" => "System",
         _ => "Other",
     }
 }

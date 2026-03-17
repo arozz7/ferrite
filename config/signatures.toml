@@ -514,3 +514,121 @@ min_size     = 4096
 max_size     = 4_294_967_296  # 4 GiB
 # Validates MPEG-2 (0x40–0x7F) or MPEG-1 (0x20–0x2F) pack-byte pattern.
 pre_validate = "mpeg"
+
+[[signature]]
+name         = "WebP Image"
+extension    = "webp"
+# RIFF container with "WEBP" subtype at bytes 8-11.
+# Shares the RIFF 4-byte size field pattern with WAV and AVI.
+header       = "52 49 46 46 ?? ?? ?? ?? 57 45 42 50"
+footer       = ""
+max_size     = 52_428_800  # 50 MiB
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 8
+pre_validate = "webp"
+
+[[signature]]
+name           = "AAC / M4A Audio"
+extension      = "m4a"
+# ISOBMFF ftyp box with "M4A " major brand.
+# Same box walker as MP4; rejects video brands.
+header         = "?? ?? ?? ?? 66 74 79 70 4D 34 41 20"
+footer         = ""
+min_size       = 4096
+max_size       = 524_288_000  # 500 MiB
+size_hint_kind = "mp4"
+pre_validate   = "m4a"
+
+[[signature]]
+name         = "GZip Compressed"
+extension    = "gz"
+# ID1=0x1F ID2=0x8B — universally identifies gzip.  Byte @2 must be
+# compression method 8 (DEFLATE); byte @3 is flags (bit 5 reserved=0).
+header       = "1F 8B"
+footer       = ""
+min_size     = 20
+max_size     = 2_147_483_648  # 2 GiB hard cap
+pre_validate = "gz"
+
+[[signature]]
+name         = "Email Message (EML)"
+extension    = "eml"
+# RFC 2822 mbox/standalone email — starts with "From " followed by sender
+# address or "MIME-Version:" header.  Text-based; size capped conservatively.
+header       = "46 72 6F 6D 20"
+footer       = ""
+min_size     = 64
+max_size     = 52_428_800  # 50 MiB
+pre_validate = "eml"
+
+[[signature]]
+name         = "ELF Executable / Shared Library"
+extension    = "elf"
+# ELF magic: 0x7F "ELF" — Linux/Unix executables and shared objects.
+header       = "7F 45 4C 46"
+footer       = ""
+min_size     = 64
+max_size     = 104_857_600  # 100 MiB
+pre_validate = "elf"
+
+[[signature]]
+name           = "Windows Registry Hive (REGF)"
+extension      = "dat"
+# "regf" magic — NTUSER.DAT, SAM, SYSTEM, SOFTWARE registry files.
+# Size is stored at offset 40 as a u32 LE (hive length in bytes).
+header         = "72 65 67 66"
+footer         = ""
+min_size       = 4096
+max_size       = 524_288_000  # 500 MiB
+size_hint_offset = 40
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 0
+pre_validate   = "regf"
+
+[[signature]]
+name         = "Adobe Photoshop Document (PSD/PSB)"
+extension    = "psd"
+# "8BPS" magic — PSD (version 1, max 30000px) or PSB (version 2, max 300000px).
+header       = "38 42 50 53"
+footer       = ""
+min_size     = 512
+max_size     = 2_147_483_648  # 2 GiB (large multi-layer PSBs can be huge)
+pre_validate = "psd"
+
+[[signature]]
+name         = "VHD Virtual Hard Disk"
+extension    = "vhd"
+# "conectix" creator ID in the VHD footer — present at byte 0 in fixed
+# images and at the last 512 bytes in dynamic/differencing images.
+# Ferrite scans from byte 0 so this catches fixed VHDs; dynamic VHDs
+# are identified by the footer copy at offset 512.
+header       = "63 6F 6E 65 63 74 69 78"
+footer       = ""
+min_size     = 512
+max_size     = 68_719_476_736  # 64 GiB hard cap
+pre_validate = "vhd"
+
+[[signature]]
+name         = "VHDX Virtual Hard Disk"
+extension    = "vhdx"
+# "vhdxfile" file identifier signature — Microsoft Hyper-V VHDX format.
+# Replaces VHD on Windows Server 2012+; supports up to 64 TiB.
+header       = "76 68 64 78 66 69 6C 65"
+footer       = ""
+min_size     = 1_048_576  # 1 MiB minimum for a valid VHDX
+max_size     = 68_719_476_736  # 64 GiB hard cap
+pre_validate = "vhdx"
+
+[[signature]]
+name         = "QCOW2 Virtual Disk (QEMU)"
+extension    = "qcow2"
+# QCOW2 magic: 0x514649FB ("QFI\xFB") — QEMU Copy-On-Write version 2/3.
+# Version u32 BE @4 must be 2 or 3; cluster_bits u32 BE @20 in [9,21].
+header       = "51 46 49 FB"
+footer       = ""
+min_size     = 65536
+max_size     = 68_719_476_736  # 64 GiB hard cap
+pre_validate = "qcow2"

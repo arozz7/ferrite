@@ -105,6 +105,33 @@ pub enum PreValidate {
     /// MPEG-2 / MPEG-1 Program Stream: pack header `00 00 01 BA`; top 2 bits
     /// of byte 4 must be `01` (MPEG-2) or top 4 bits must be `0010` (MPEG-1).
     Mpeg,
+    /// WebP image: RIFF container with "WEBP" subtype at bytes 8–11; RIFF size
+    /// field (u32 LE @4) must be ≥ 4.
+    Webp,
+    /// AAC / M4A audio: ISOBMFF ftyp box with `M4A ` major brand; box size in
+    /// [12, 512].
+    M4a,
+    /// GZip compressed file: compression method (byte @2) must be 8 (DEFLATE);
+    /// reserved flag bit 5 of byte @3 must be 0 per RFC 1952.
+    Gz,
+    /// Email message (EML): `From ` header followed by a printable ASCII character.
+    Eml,
+    /// ELF executable or shared library: EI_CLASS in {1,2}; EI_DATA in {1,2};
+    /// EI_VERSION == 1.
+    Elf,
+    /// Windows Registry Hive (REGF): major version (u32 LE @20) == 1; minor
+    /// version (u32 LE @24) in [2, 6].
+    Regf,
+    /// Adobe Photoshop Document (PSD/PSB): version (u16 BE @4) in {1,2};
+    /// number of channels (u16 BE @6) in [1, 56].
+    Psd,
+    /// VHD Virtual Hard Disk: disk type (u32 BE @60) in {2, 3, 4}.
+    Vhd,
+    /// VHDX Virtual Hard Disk: 8-byte "vhdxfile" magic is globally unique.
+    Vhdx,
+    /// QCOW2 virtual disk: version (u32 BE @4) in {2, 3}; cluster_bits
+    /// (u32 BE @20) in [9, 21].
+    Qcow2,
 }
 
 impl PreValidate {
@@ -151,6 +178,16 @@ impl PreValidate {
             Self::Wmv => "wmv",
             Self::Flv => "flv",
             Self::Mpeg => "mpeg",
+            Self::Webp => "webp",
+            Self::M4a => "m4a",
+            Self::Gz => "gz",
+            Self::Eml => "eml",
+            Self::Elf => "elf",
+            Self::Regf => "regf",
+            Self::Psd => "psd",
+            Self::Vhd => "vhd",
+            Self::Vhdx => "vhdx",
+            Self::Qcow2 => "qcow2",
         }
     }
 
@@ -197,6 +234,16 @@ impl PreValidate {
             "wmv" => Some(Self::Wmv),
             "flv" => Some(Self::Flv),
             "mpeg" => Some(Self::Mpeg),
+            "webp" => Some(Self::Webp),
+            "m4a" => Some(Self::M4a),
+            "gz" => Some(Self::Gz),
+            "eml" => Some(Self::Eml),
+            "elf" => Some(Self::Elf),
+            "regf" => Some(Self::Regf),
+            "psd" => Some(Self::Psd),
+            "vhd" => Some(Self::Vhd),
+            "vhdx" => Some(Self::Vhdx),
+            "qcow2" => Some(Self::Qcow2),
             _ => None,
         }
     }
@@ -251,6 +298,16 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Wmv => validate_wmv(data, pos),
         PreValidate::Flv => validate_flv(data, pos),
         PreValidate::Mpeg => validate_mpeg(data, pos),
+        PreValidate::Webp => validate_webp(data, pos),
+        PreValidate::M4a => validate_m4a(data, pos),
+        PreValidate::Gz => validate_gz(data, pos),
+        PreValidate::Eml => validate_eml(data, pos),
+        PreValidate::Elf => validate_elf(data, pos),
+        PreValidate::Regf => validate_regf(data, pos),
+        PreValidate::Psd => validate_psd(data, pos),
+        PreValidate::Vhd => validate_vhd(data, pos),
+        PreValidate::Vhdx => validate_vhdx(data, pos),
+        PreValidate::Qcow2 => validate_qcow2(data, pos),
     }
 }
 
@@ -1061,6 +1118,145 @@ fn validate_mpeg(data: &[u8], pos: usize) -> bool {
     } else {
         false
     }
+}
+
+fn validate_webp(data: &[u8], pos: usize) -> bool {
+    // RIFF + 4-byte size + "WEBP" subtype (12 bytes total).
+    // Magic already anchors on RIFF[0..4] + WEBP[8..12]; re-check WEBP and
+    // verify the RIFF chunk size (u32 LE @4) is ≥ 4 (minimum: 4 bytes for "WEBP").
+    if need(data, pos, 12) {
+        return true;
+    }
+    if &data[pos + 8..pos + 12] != b"WEBP" {
+        return false;
+    }
+    let riff_size =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    riff_size >= 4
+}
+
+fn validate_m4a(data: &[u8], pos: usize) -> bool {
+    // ISOBMFF ftyp box with "M4A " major brand.
+    // Magic already anchors on ftyp + "M4A "; validate ftyp box size in [12, 512].
+    if need(data, pos, 12) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
+fn validate_gz(data: &[u8], pos: usize) -> bool {
+    // GZip: ID1=0x1F ID2=0x8B CM=8 FLG.
+    // RFC 1952: byte @2 is compression method (must be 8); byte @3 is FLG
+    // where bit 5 (0x20) is a reserved bit that must be zero.
+    if need(data, pos, 10) {
+        return true;
+    }
+    data[pos + 2] == 8 && (data[pos + 3] & 0x20 == 0)
+}
+
+fn validate_eml(data: &[u8], pos: usize) -> bool {
+    // "From " (5 bytes) must be followed by a printable ASCII character
+    // (0x20–0x7E) to distinguish real mbox headers from binary data.
+    if need(data, pos, 6) {
+        return true;
+    }
+    let next = data[pos + 5];
+    (0x20..=0x7E).contains(&next)
+}
+
+fn validate_elf(data: &[u8], pos: usize) -> bool {
+    // ELF e_ident: 7F ELF EI_CLASS EI_DATA EI_VERSION ...
+    // EI_CLASS @4: 1 = 32-bit, 2 = 64-bit.
+    // EI_DATA  @5: 1 = little-endian, 2 = big-endian.
+    // EI_VERSION @6: must be 1.
+    if need(data, pos, 16) {
+        return true;
+    }
+    let ei_class = data[pos + 4];
+    let ei_data = data[pos + 5];
+    let ei_version = data[pos + 6];
+    matches!(ei_class, 1 | 2) && matches!(ei_data, 1 | 2) && ei_version == 1
+}
+
+fn validate_regf(data: &[u8], pos: usize) -> bool {
+    // Windows Registry REGF hive.
+    // Major version (u32 LE @20) must be 1.
+    // Minor version (u32 LE @24) must be in [2, 6].
+    if need(data, pos, 28) {
+        return true;
+    }
+    let major = u32::from_le_bytes([
+        data[pos + 20],
+        data[pos + 21],
+        data[pos + 22],
+        data[pos + 23],
+    ]);
+    let minor = u32::from_le_bytes([
+        data[pos + 24],
+        data[pos + 25],
+        data[pos + 26],
+        data[pos + 27],
+    ]);
+    major == 1 && (2..=6).contains(&minor)
+}
+
+fn validate_psd(data: &[u8], pos: usize) -> bool {
+    // Adobe Photoshop Document: "8BPS" magic + version + reserved + channels.
+    // Version (u16 BE @4): 1 = PSD, 2 = PSB.
+    // Number of channels (u16 BE @6): must be in [1, 56].
+    if need(data, pos, 26) {
+        return true;
+    }
+    let version = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+    if !matches!(version, 1 | 2) {
+        return false;
+    }
+    let channels = u16::from_be_bytes([data[pos + 6], data[pos + 7]]);
+    (1..=56).contains(&channels)
+}
+
+fn validate_vhd(data: &[u8], pos: usize) -> bool {
+    // VHD footer: "conectix" creator string (already matched by magic).
+    // Disk type (u32 BE @60): 2 = fixed, 3 = dynamic, 4 = differencing.
+    if need(data, pos, 68) {
+        return true;
+    }
+    let disk_type = u32::from_be_bytes([
+        data[pos + 60],
+        data[pos + 61],
+        data[pos + 62],
+        data[pos + 63],
+    ]);
+    (2..=4).contains(&disk_type)
+}
+
+fn validate_vhdx(data: &[u8], pos: usize) -> bool {
+    // VHDX: "vhdxfile" (8 bytes) — globally unique, no additional check needed.
+    // Return benefit of doubt when the buffer is short; accept when magic present.
+    if need(data, pos, 8) {
+        return true;
+    }
+    true
+}
+
+fn validate_qcow2(data: &[u8], pos: usize) -> bool {
+    // QCOW2: QFI\xFB magic + version (u32 BE @4) in {2,3} +
+    // cluster_bits (u32 BE @20) in [9, 21].
+    if need(data, pos, 24) {
+        return true;
+    }
+    let version = u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if !matches!(version, 2 | 3) {
+        return false;
+    }
+    let cluster_bits = u32::from_be_bytes([
+        data[pos + 20],
+        data[pos + 21],
+        data[pos + 22],
+        data[pos + 23],
+    ]);
+    (9..=21).contains(&cluster_bits)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1993,5 +2189,283 @@ mod tests {
         data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
         data[4] = 0x00; // neither MPEG-1 nor MPEG-2 pattern
         assert!(!validate_mpeg(&data, 0));
+    }
+
+    // ── WebP ──────────────────────────────────────────────────────────────────
+
+    fn make_webp(riff_size: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"RIFF");
+        data[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        data[8..12].copy_from_slice(b"WEBP");
+        data
+    }
+
+    #[test]
+    fn webp_valid_accepted() {
+        let data = make_webp(1024);
+        assert!(validate_webp(&data, 0));
+    }
+
+    #[test]
+    fn webp_tiny_riff_size_rejected() {
+        let data = make_webp(0); // size < 4
+        assert!(!validate_webp(&data, 0));
+    }
+
+    #[test]
+    fn webp_wrong_subtype_rejected() {
+        let mut data = make_webp(1024);
+        data[8..12].copy_from_slice(b"WAVE"); // not WEBP
+        assert!(!validate_webp(&data, 0));
+    }
+
+    // ── M4A ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn m4a_valid_box_accepted() {
+        let data = make_isobmff_ftyp(20, b"M4A ");
+        assert!(validate_m4a(&data, 0));
+    }
+
+    #[test]
+    fn m4a_oversized_box_rejected() {
+        let data = make_isobmff_ftyp(1024, b"M4A "); // box_size > 512
+        assert!(!validate_m4a(&data, 0));
+    }
+
+    // ── GZip ──────────────────────────────────────────────────────────────────
+
+    fn make_gz(cm: u8, flg: u8) -> Vec<u8> {
+        let mut data = vec![0u8; 10];
+        data[0] = 0x1F;
+        data[1] = 0x8B;
+        data[2] = cm;
+        data[3] = flg;
+        data
+    }
+
+    #[test]
+    fn gz_deflate_method_accepted() {
+        let data = make_gz(8, 0x00);
+        assert!(validate_gz(&data, 0));
+    }
+
+    #[test]
+    fn gz_wrong_cm_rejected() {
+        let data = make_gz(7, 0x00); // CM != 8
+        assert!(!validate_gz(&data, 0));
+    }
+
+    #[test]
+    fn gz_reserved_flag_bit_rejected() {
+        let data = make_gz(8, 0x20); // bit 5 set — reserved
+        assert!(!validate_gz(&data, 0));
+    }
+
+    // ── EML ───────────────────────────────────────────────────────────────────
+
+    fn make_eml(next_char: u8) -> Vec<u8> {
+        let mut data = vec![0u8; 6];
+        data[0..5].copy_from_slice(b"From ");
+        data[5] = next_char;
+        data
+    }
+
+    #[test]
+    fn eml_printable_char_accepted() {
+        let data = make_eml(b'u'); // "From u..."
+        assert!(validate_eml(&data, 0));
+    }
+
+    #[test]
+    fn eml_control_char_rejected() {
+        let data = make_eml(0x01); // non-printable — binary data
+        assert!(!validate_eml(&data, 0));
+    }
+
+    #[test]
+    fn eml_del_char_rejected() {
+        let data = make_eml(0x7F); // DEL — outside printable range
+        assert!(!validate_eml(&data, 0));
+    }
+
+    // ── ELF ───────────────────────────────────────────────────────────────────
+
+    fn make_elf(ei_class: u8, ei_data: u8, ei_version: u8) -> Vec<u8> {
+        let mut data = vec![0u8; 16];
+        data[0..4].copy_from_slice(b"\x7FELF");
+        data[4] = ei_class;
+        data[5] = ei_data;
+        data[6] = ei_version;
+        data
+    }
+
+    #[test]
+    fn elf_64bit_le_accepted() {
+        let data = make_elf(2, 1, 1);
+        assert!(validate_elf(&data, 0));
+    }
+
+    #[test]
+    fn elf_32bit_be_accepted() {
+        let data = make_elf(1, 2, 1);
+        assert!(validate_elf(&data, 0));
+    }
+
+    #[test]
+    fn elf_invalid_class_rejected() {
+        let data = make_elf(3, 1, 1); // EI_CLASS == 3 is invalid
+        assert!(!validate_elf(&data, 0));
+    }
+
+    #[test]
+    fn elf_wrong_version_rejected() {
+        let data = make_elf(2, 1, 2); // EI_VERSION must be 1
+        assert!(!validate_elf(&data, 0));
+    }
+
+    // ── REGF ──────────────────────────────────────────────────────────────────
+
+    fn make_regf(major: u32, minor: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 28];
+        data[0..4].copy_from_slice(b"regf");
+        data[20..24].copy_from_slice(&major.to_le_bytes());
+        data[24..28].copy_from_slice(&minor.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn regf_valid_accepted() {
+        let data = make_regf(1, 3);
+        assert!(validate_regf(&data, 0));
+    }
+
+    #[test]
+    fn regf_wrong_major_rejected() {
+        let data = make_regf(2, 3); // major must be 1
+        assert!(!validate_regf(&data, 0));
+    }
+
+    #[test]
+    fn regf_minor_out_of_range_rejected() {
+        let data = make_regf(1, 7); // minor must be in [2,6]
+        assert!(!validate_regf(&data, 0));
+    }
+
+    // ── PSD ───────────────────────────────────────────────────────────────────
+
+    fn make_psd(version: u16, channels: u16) -> Vec<u8> {
+        let mut data = vec![0u8; 26];
+        data[0..4].copy_from_slice(b"8BPS");
+        data[4..6].copy_from_slice(&version.to_be_bytes());
+        data[6..8].copy_from_slice(&channels.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn psd_version1_accepted() {
+        let data = make_psd(1, 3); // PSD with 3 channels
+        assert!(validate_psd(&data, 0));
+    }
+
+    #[test]
+    fn psd_version2_psb_accepted() {
+        let data = make_psd(2, 4); // PSB with 4 channels
+        assert!(validate_psd(&data, 0));
+    }
+
+    #[test]
+    fn psd_wrong_version_rejected() {
+        let data = make_psd(3, 3); // version 3 is invalid
+        assert!(!validate_psd(&data, 0));
+    }
+
+    #[test]
+    fn psd_zero_channels_rejected() {
+        let data = make_psd(1, 0); // 0 channels is invalid
+        assert!(!validate_psd(&data, 0));
+    }
+
+    // ── VHD ───────────────────────────────────────────────────────────────────
+
+    fn make_vhd(disk_type: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 68];
+        data[0..8].copy_from_slice(b"conectix");
+        data[60..64].copy_from_slice(&disk_type.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn vhd_fixed_disk_accepted() {
+        let data = make_vhd(2); // fixed
+        assert!(validate_vhd(&data, 0));
+    }
+
+    #[test]
+    fn vhd_dynamic_disk_accepted() {
+        let data = make_vhd(3); // dynamic
+        assert!(validate_vhd(&data, 0));
+    }
+
+    #[test]
+    fn vhd_unknown_disk_type_rejected() {
+        let data = make_vhd(5); // unknown type
+        assert!(!validate_vhd(&data, 0));
+    }
+
+    // ── VHDX ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn vhdx_valid_magic_accepted() {
+        let mut data = vec![0u8; 8];
+        data[0..8].copy_from_slice(b"vhdxfile");
+        assert!(validate_vhdx(&data, 0));
+    }
+
+    #[test]
+    fn vhdx_short_buffer_benefit_of_doubt() {
+        let data = vec![b'v', b'h', b'd', b'x']; // only 4 bytes
+        assert!(validate_vhdx(&data, 0));
+    }
+
+    // ── QCOW2 ─────────────────────────────────────────────────────────────────
+
+    fn make_qcow2(version: u32, cluster_bits: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 24];
+        data[0..4].copy_from_slice(b"QFI\xFB");
+        data[4..8].copy_from_slice(&version.to_be_bytes());
+        data[20..24].copy_from_slice(&cluster_bits.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn qcow2_version2_accepted() {
+        let data = make_qcow2(2, 16);
+        assert!(validate_qcow2(&data, 0));
+    }
+
+    #[test]
+    fn qcow2_version3_accepted() {
+        let data = make_qcow2(3, 12);
+        assert!(validate_qcow2(&data, 0));
+    }
+
+    #[test]
+    fn qcow2_wrong_version_rejected() {
+        let data = make_qcow2(1, 16); // version 1 is QCOW, not QCOW2
+        assert!(!validate_qcow2(&data, 0));
+    }
+
+    #[test]
+    fn qcow2_cluster_bits_too_small_rejected() {
+        let data = make_qcow2(2, 8); // cluster_bits < 9
+        assert!(!validate_qcow2(&data, 0));
+    }
+
+    #[test]
+    fn qcow2_cluster_bits_too_large_rejected() {
+        let data = make_qcow2(2, 22); // cluster_bits > 21
+        assert!(!validate_qcow2(&data, 0));
     }
 }
