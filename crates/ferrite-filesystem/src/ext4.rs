@@ -16,7 +16,7 @@ use ferrite_blockdev::BlockDevice;
 use crate::error::{FilesystemError, Result};
 use crate::ext4_dir::parse_dir_block;
 use crate::io::{read_bytes, read_u16_le, read_u32_le};
-use crate::{FileEntry, FilesystemParser, FilesystemType};
+use crate::{FileEntry, FilesystemParser, FilesystemType, RecoveryChance};
 
 // â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -609,7 +609,17 @@ impl FilesystemParser for Ext4Parser {
 
     fn deleted_files(&self) -> Result<Vec<FileEntry>> {
         let all = self.list_inode(2, "/", true)?;
-        Ok(all.into_iter().filter(|e| e.is_deleted).collect())
+        let mut deleted: Vec<FileEntry> = all.into_iter().filter(|e| e.is_deleted).collect();
+        for entry in deleted.iter_mut() {
+            entry.recovery_chance = if entry.data_byte_offset.is_some() && entry.size > 0 {
+                RecoveryChance::High
+            } else if entry.size > 0 {
+                RecoveryChance::Low
+            } else {
+                RecoveryChance::Unknown
+            };
+        }
+        Ok(deleted)
     }
 }
 

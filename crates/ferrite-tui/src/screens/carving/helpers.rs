@@ -40,9 +40,7 @@ fn sig_group_label(ext: &str) -> &'static str {
     match ext {
         "jpg" | "png" | "gif" | "bmp" | "tif" => "Images",
         "arw" | "cr2" | "nef" | "rw2" | "raf" | "heic" => "RAW Photos",
-        "mp4" | "mov" | "m4v" | "3gp" | "avi" | "mkv" | "webm" | "wmv" | "flv" | "mpg" => {
-            "Video"
-        }
+        "mp4" | "mov" | "m4v" | "3gp" | "avi" | "mkv" | "webm" | "wmv" | "flv" | "mpg" => "Video",
         "mp3" | "flac" | "wav" | "ogg" => "Audio",
         "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" => "Documents",
         "zip" | "ole" | "pst" => "Office & Email",

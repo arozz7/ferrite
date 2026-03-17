@@ -44,10 +44,7 @@ impl CarvingState {
             }
         };
 
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![disk_span, auto_str])),
-            area,
-        );
+        frame.render_widget(Paragraph::new(Line::from(vec![disk_span, auto_str])), area);
     }
 
     /// Dedicated row showing whether original filenames and folder paths are
@@ -59,7 +56,9 @@ impl CarvingState {
         let status = if self.meta_index_building {
             Span::styled(
                 "⌛ building filesystem index…",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )
         } else if let Some(idx) = &self.meta_index {
             if idx.is_empty() {
@@ -83,10 +82,7 @@ impl CarvingState {
             )
         };
 
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![label, status])),
-            area,
-        );
+        frame.render_widget(Paragraph::new(Line::from(vec![label, status])), area);
     }
 
     pub(super) fn render_compact_scan_progress(&self, frame: &mut Frame, area: Rect) {
@@ -119,8 +115,7 @@ impl CarvingState {
             } else {
                 // Use bytes scanned in this session (not the absolute offset) so
                 // the rate isn't inflated when resuming from a large offset.
-                let bytes_this_session =
-                    p.bytes_scanned.saturating_sub(p.scan_start) as f64;
+                let bytes_this_session = p.bytes_scanned.saturating_sub(p.scan_start) as f64;
                 let bps = bytes_this_session / active_secs;
                 if bps > 0.0 {
                     format!("{:.1} MB/s", bps / (1024.0 * 1024.0))
@@ -183,11 +178,7 @@ impl CarvingState {
                 0.0
             };
             let window_str = if window > 0 && window != p.device_size {
-                format!(
-                    " (window {} / {})",
-                    fmt_bytes(covered),
-                    fmt_bytes(window)
-                )
+                format!(" (window {} / {})", fmt_bytes(covered), fmt_bytes(window))
             } else {
                 format!(" / {}", fmt_bytes(p.device_size))
             };

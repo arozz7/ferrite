@@ -548,7 +548,10 @@ mod tests {
         let s = CarvingState::new();
         // Total entries across all groups must equal the built-in signature count.
         let total: usize = s.groups.iter().map(|g| g.entries.len()).sum();
-        assert_eq!(total, 43, "expected 43 built-in signatures across all groups");
+        assert_eq!(
+            total, 43,
+            "expected 43 built-in signatures across all groups"
+        );
     }
 
     #[test]

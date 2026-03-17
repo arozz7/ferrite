@@ -149,12 +149,10 @@ impl CarvingState {
         } else {
             Style::default()
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                " Signatures (Space=toggle  Enter=expand) ",
-                title_style,
-            ));
+        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+            " Signatures (Space=toggle  Enter=expand) ",
+            title_style,
+        ));
 
         let items: Vec<ListItem> = self
             .cursor_rows

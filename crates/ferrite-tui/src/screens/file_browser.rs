@@ -619,6 +619,7 @@ mod tests {
             mft_record: None,
             inode_number: None,
             data_byte_offset: None,
+            recovery_chance: ferrite_filesystem::RecoveryChance::Unknown,
         });
         s.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
         assert!(s.extract_status.is_none());

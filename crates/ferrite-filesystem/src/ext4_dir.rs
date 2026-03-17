@@ -1,6 +1,6 @@
 //! ext4 directory-block parser split from `ext4.rs`.
 
-use crate::FileEntry;
+use crate::{FileEntry, RecoveryChance};
 
 /// Parse linear ext4 directory entries from a single block.
 pub(crate) fn parse_dir_block(
@@ -48,6 +48,7 @@ pub(crate) fn parse_dir_block(
                         mft_record: None,
                         inode_number: Some(inode_num),
                         data_byte_offset: None, // enriched by list_inode() afterwards
+                        recovery_chance: RecoveryChance::Unknown,
                     });
                 }
             }

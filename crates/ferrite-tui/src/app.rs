@@ -25,13 +25,14 @@ use crate::{
         hex_viewer::HexViewerState,
         imaging::ImagingState,
         partition::PartitionState,
+        quick_recover::QuickRecoverState,
         report::generate_report,
         session_manager::{SessionManagerState, SessionMsg},
     },
     Result,
 };
 
-const SCREEN_NAMES: [&str; 7] = [
+const SCREEN_NAMES: [&str; 8] = [
     " Drives ",
     " Health ",
     " Imaging ",
@@ -39,6 +40,7 @@ const SCREEN_NAMES: [&str; 7] = [
     " Files ",
     " Carving ",
     " Hex ",
+    " Quick Recover ",
 ];
 
 /// Root application state.
@@ -54,6 +56,7 @@ pub struct App {
     pub file_browser: FileBrowserState,
     pub carving: CarvingState,
     pub hex_viewer: HexViewerState,
+    pub quick_recover: QuickRecoverState,
     /// Saved-session manager overlay.
     pub session_manager: SessionManagerState,
     /// Status message from the last report generation.
@@ -74,6 +77,7 @@ impl App {
             file_browser: FileBrowserState::new(),
             carving: CarvingState::new(),
             hex_viewer: HexViewerState::new(),
+            quick_recover: QuickRecoverState::new(),
             session_manager: SessionManagerState::default(),
             report_status: None,
         };
@@ -146,6 +150,7 @@ impl App {
                         self.file_browser.set_device(Arc::clone(&device));
                         self.carving.set_device(Arc::clone(&device));
                         self.carving.restore_from_session(&session);
+                        self.quick_recover.set_device(Arc::clone(&device));
                         self.hex_viewer.set_device(device);
                         self.screen_idx = 5; // go to carving screen
                         self.on_screen_enter();
@@ -185,6 +190,7 @@ impl App {
                 2 => self.imaging.is_editing(),
                 5 => self.carving.is_editing(),
                 6 => self.hex_viewer.is_editing(),
+                7 => self.quick_recover.is_editing(),
                 _ => false,
             };
             if !in_edit {
@@ -215,6 +221,7 @@ impl App {
                     self.partition.set_device(Arc::clone(&dev));
                     self.file_browser.set_device(Arc::clone(&dev));
                     self.carving.set_device(Arc::clone(&dev));
+                    self.quick_recover.set_device(Arc::clone(&dev));
                     self.hex_viewer.set_device(dev);
                     // Auto-advance to Health so the user sees S.M.A.R.T. results immediately.
                     self.screen_idx = 1;
@@ -237,6 +244,7 @@ impl App {
                 self.carving.handle_key(code, modifiers);
             }
             6 => self.hex_viewer.handle_key(code, modifiers),
+            7 => self.quick_recover.handle_key(code, modifiers),
             _ => {}
         }
     }
@@ -277,6 +285,7 @@ impl App {
         self.partition.tick();
         self.file_browser.tick();
         self.carving.tick();
+        self.quick_recover.tick();
     }
 
     /// Called whenever the active screen changes so screens can react on entry.
@@ -321,6 +330,7 @@ impl App {
             4 => self.file_browser.render(frame, chunks[1]),
             5 => self.carving.render(frame, chunks[1]),
             6 => self.hex_viewer.render(frame, chunks[1]),
+            7 => self.quick_recover.render(frame, chunks[1]),
             _ => {}
         }
 
@@ -365,6 +375,7 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
         4 => " ↑/↓: navigate  Enter: open dir  Backspace: go up  d: toggle deleted  o: open fs  Tab: next  q: quit",
         5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  h: hex  v: preview  Tab: next  q: quit",
         6 => " ↑/↓: sector  PgUp/PgDn: ±16  Home/End  g: jump to LBA  b: jump to offset  Tab: next  q: quit",
+        7 => " ↑/↓: navigate  Space: check  R: recover  /: filter  a: check-high  A: check-all  Esc: clear  Tab: next  q: quit",
         _ => " Tab: next  q: quit",
     }
 }
@@ -398,6 +409,6 @@ mod tests {
 
     #[test]
     fn screen_count_matches_names() {
-        assert_eq!(SCREEN_NAMES.len(), 7);
+        assert_eq!(SCREEN_NAMES.len(), 8);
     }
 }

@@ -17,7 +17,7 @@ use crate::ntfs_helpers::{
     apply_fixup, mft_record_count, parse_file_info, parse_standard_info, read_run_list, ATTR_DATA,
     ATTR_END, FILE_SIG,
 };
-use crate::{FileEntry, FilesystemParser, FilesystemType};
+use crate::{FileEntry, FilesystemParser, FilesystemType, RecoveryChance};
 
 // â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -160,6 +160,7 @@ impl NtfsParser {
                         mft_record: Some(i),
                         inode_number: None,
                         data_byte_offset,
+                        recovery_chance: RecoveryChance::Unknown,
                     });
                 }
             }
@@ -301,7 +302,18 @@ impl FilesystemParser for NtfsParser {
     }
 
     fn deleted_files(&self) -> Result<Vec<FileEntry>> {
-        self.scan(|parent_ref, in_use, _| !in_use && parent_ref == ROOT_MFT_RECORD)
+        let mut entries =
+            self.scan(|parent_ref, in_use, _| !in_use && parent_ref == ROOT_MFT_RECORD)?;
+        for entry in entries.iter_mut() {
+            entry.recovery_chance = if entry.data_byte_offset.is_some() && entry.size > 0 {
+                RecoveryChance::High
+            } else if entry.size > 0 {
+                RecoveryChance::Low
+            } else {
+                RecoveryChance::Unknown
+            };
+        }
+        Ok(entries)
     }
 
     fn enumerate_files(&self) -> Result<Vec<FileEntry>> {

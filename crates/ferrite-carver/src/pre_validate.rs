@@ -465,12 +465,8 @@ fn validate_bmp(data: &[u8], pos: usize) -> bool {
     }
 
     // FileSize must be at least 26 bytes (smallest theoretically valid BMP).
-    let file_size = u32::from_le_bytes([
-        data[pos + 2],
-        data[pos + 3],
-        data[pos + 4],
-        data[pos + 5],
-    ]);
+    let file_size =
+        u32::from_le_bytes([data[pos + 2], data[pos + 3], data[pos + 4], data[pos + 5]]);
     if file_size < 26 {
         return false;
     }
@@ -551,12 +547,8 @@ fn validate_mp4(data: &[u8], pos: usize) -> bool {
     // produce two consecutive valid-looking ISOBMFF boxes.
     let next = pos + box_size as usize;
     if next + 8 <= data.len() {
-        let next_size = u32::from_be_bytes([
-            data[next],
-            data[next + 1],
-            data[next + 2],
-            data[next + 3],
-        ]);
+        let next_size =
+            u32::from_be_bytes([data[next], data[next + 1], data[next + 2], data[next + 3]]);
         // Minimum valid box is 8 bytes (size + type with no payload).
         if next_size < 8 {
             return false;
@@ -811,12 +803,8 @@ fn validate_cr2(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 8) {
         return true;
     }
-    let ifd_offset = u32::from_le_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]) as usize;
+    let ifd_offset =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
     (8..=4096).contains(&ifd_offset)
 }
 
@@ -826,12 +814,8 @@ fn validate_rw2(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 10) {
         return true;
     }
-    let ifd_offset = u32::from_le_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]) as usize;
+    let ifd_offset =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
     if !(8..=4096).contains(&ifd_offset) {
         return false;
     }
@@ -863,12 +847,8 @@ fn validate_tiff_le(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 8) {
         return true;
     }
-    let ifd_off = u32::from_le_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]) as usize;
+    let ifd_off =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
     if !(8..=65536).contains(&ifd_off) {
         return false;
     }
@@ -904,12 +884,8 @@ fn validate_tiff_be(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 8) {
         return true;
     }
-    let ifd_off = u32::from_be_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]) as usize;
+    let ifd_off =
+        u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
     if !(8..=65536).contains(&ifd_off) {
         return false;
     }
@@ -929,12 +905,8 @@ fn validate_nef(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 8) {
         return true;
     }
-    let ifd_off = u32::from_le_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]) as usize;
+    let ifd_off =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
     if !(8..=4096).contains(&ifd_off) {
         return false;
     }
@@ -1236,12 +1208,12 @@ mod tests {
         // Simulate `MZ` appearing inside a binary data region: e_lfanew
         // resolves to a plausible offset but there is no PE signature there.
         let mut data = vec![0xCC_u8; 300]; // filler
-        // Inject fake MZ header at offset 50.
+                                           // Inject fake MZ header at offset 50.
         let pos = 50_usize;
         data[pos] = b'M';
         data[pos + 1] = b'Z';
         data[pos + 60..pos + 64].copy_from_slice(&100u32.to_le_bytes()); // e_lfanew=100
-        // No PE\0\0 at pos+100 (just 0xCC filler).
+                                                                         // No PE\0\0 at pos+100 (just 0xCC filler).
         assert!(!validate_exe(&data, pos));
     }
 
@@ -1499,8 +1471,8 @@ mod tests {
         // Minimal EBML header: ID + unknown-size VINT + sub-elements.
         let mut v = Vec::new();
         v.extend_from_slice(b"\x1A\x45\xDF\xA3"); // EBML ID
-        v.extend_from_slice(b"\x9F");              // VINT: single-byte size = 31
-        // EBMLVersion element (ID 0x4286, value 1).
+        v.extend_from_slice(b"\x9F"); // VINT: single-byte size = 31
+                                      // EBMLVersion element (ID 0x4286, value 1).
         v.extend_from_slice(b"\x42\x86\x81\x01");
         // EBMLReadVersion element (ID 0x42F7, value 1).
         v.extend_from_slice(b"\x42\xF7\x81\x01");
@@ -1551,9 +1523,9 @@ mod tests {
     fn make_arw_header(with_sony: bool) -> Vec<u8> {
         // Minimal TIFF LE header: magic + IFD at 8 + entry count.
         let mut v = vec![0u8; 512];
-        v[0..4].copy_from_slice(b"II\x2A\x00");         // TIFF LE magic
-        v[4..8].copy_from_slice(&8u32.to_le_bytes());    // IFD at offset 8
-        v[8..10].copy_from_slice(&12u16.to_le_bytes());  // 12 IFD entries
+        v[0..4].copy_from_slice(b"II\x2A\x00"); // TIFF LE magic
+        v[4..8].copy_from_slice(&8u32.to_le_bytes()); // IFD at offset 8
+        v[8..10].copy_from_slice(&12u16.to_le_bytes()); // 12 IFD entries
         if with_sony {
             v[100..104].copy_from_slice(b"SONY");
         }
@@ -1902,8 +1874,8 @@ mod tests {
         let mut data = vec![0u8; 32];
         // ASF Header Object GUID
         data[0..16].copy_from_slice(&[
-            0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
-            0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C,
+            0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62,
+            0xCE, 0x6C,
         ]);
         data[16..24].copy_from_slice(&object_size.to_le_bytes());
         data
@@ -1964,13 +1936,13 @@ mod tests {
         // ISO 13818-1 Table 2-33.
         let mut data = vec![0u8; 14];
         data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
-        data[4] = 0x44;  // 01 000 1 00 — top-2=01, marker(bit2)=1
-        // data[5] = 0x00; // SCR bytes — no markers required
-        data[6] = 0x04;  // SCR_b[19:15] 1 SCR_b[14:13] — marker(bit2)=1
-        // data[7] = 0x00; // SCR bytes
-        data[8] = 0x04;  // SCR_b[4:0] 1 SCR_ext[8:7] — marker(bit2)=1
-        data[9] = 0x01;  // SCR_ext[6:0] 1 — marker(bit0)=1
-        // data[10..12] = mux_rate bytes
+        data[4] = 0x44; // 01 000 1 00 — top-2=01, marker(bit2)=1
+                        // data[5] = 0x00; // SCR bytes — no markers required
+        data[6] = 0x04; // SCR_b[19:15] 1 SCR_b[14:13] — marker(bit2)=1
+                        // data[7] = 0x00; // SCR bytes
+        data[8] = 0x04; // SCR_b[4:0] 1 SCR_ext[8:7] — marker(bit2)=1
+        data[9] = 0x01; // SCR_ext[6:0] 1 — marker(bit0)=1
+                        // data[10..12] = mux_rate bytes
         data[12] = 0x03; // mux_rate[5:0] 1 1 — both marker bits set
         data[13] = 0xF8; // 11111 stuffing_length — fixed top-5 bits
         data

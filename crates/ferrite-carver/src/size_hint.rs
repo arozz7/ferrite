@@ -318,10 +318,10 @@ fn tiff_size_hint(device: &dyn BlockDevice, file_offset: u64) -> Option<u64> {
     /// Bytes-per-element for each TIFF type code (1–12; 0 is invalid).
     fn type_bytes(t: u16) -> Option<u64> {
         match t {
-            1 | 2 | 6 | 7 => Some(1),  // BYTE, ASCII, SBYTE, UNDEFINED
-            3 | 8 => Some(2),           // SHORT, SSHORT
-            4 | 9 | 11 => Some(4),      // LONG, SLONG, FLOAT
-            5 | 10 | 12 => Some(8),     // RATIONAL, SRATIONAL, DOUBLE
+            1 | 2 | 6 | 7 => Some(1), // BYTE, ASCII, SBYTE, UNDEFINED
+            3 | 8 => Some(2),         // SHORT, SSHORT
+            4 | 9 | 11 => Some(4),    // LONG, SLONG, FLOAT
+            5 | 10 | 12 => Some(8),   // RATIONAL, SRATIONAL, DOUBLE
             _ => None,
         }
     }
@@ -336,7 +336,11 @@ fn tiff_size_hint(device: &dyn BlockDevice, file_offset: u64) -> Option<u64> {
         _ => return None,
     };
     let ru16 = |b: &[u8]| -> u16 {
-        if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) }
+        if le {
+            u16::from_le_bytes([b[0], b[1]])
+        } else {
+            u16::from_be_bytes([b[0], b[1]])
+        }
     };
     let ru32 = |b: &[u8]| -> u32 {
         if le {
@@ -443,8 +447,7 @@ fn tiff_size_hint(device: &dyn BlockDevice, file_offset: u64) -> Option<u64> {
                     let elem_sz = if type_id == 3 { 2usize } else { 4usize };
                     let vals: Vec<u64> = if is_ext {
                         let abs_ext = file_offset + ext_off_val;
-                        let read_len =
-                            (count as usize).saturating_mul(elem_sz).min(512 * 1024);
+                        let read_len = (count as usize).saturating_mul(elem_sz).min(512 * 1024);
                         match read_bytes_clamped(device, abs_ext, read_len) {
                             Ok(data) => {
                                 let actual = (data.len() / elem_sz).min(count as usize);
@@ -511,7 +514,11 @@ fn tiff_size_hint(device: &dyn BlockDevice, file_offset: u64) -> Option<u64> {
         }
     }
 
-    if max_extent > 8 { Some(max_extent) } else { None }
+    if max_extent > 8 {
+        Some(max_extent)
+    } else {
+        None
+    }
 }
 
 /// Derive the true file size from a Fujifilm RAF header.
@@ -533,8 +540,14 @@ fn raf_size_hint(device: &dyn BlockDevice, file_offset: u64) -> Option<u64> {
     let cfa_off = u32::from_be_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]) as u64;
     let cfa_len = u32::from_be_bytes([hdr[12], hdr[13], hdr[14], hdr[15]]) as u64;
 
-    let max_end = jpeg_off.saturating_add(jpeg_len).max(cfa_off.saturating_add(cfa_len));
-    if max_end == 0 { None } else { Some(max_end) }
+    let max_end = jpeg_off
+        .saturating_add(jpeg_len)
+        .max(cfa_off.saturating_add(cfa_len));
+    if max_end == 0 {
+        None
+    } else {
+        Some(max_end)
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -653,7 +666,7 @@ mod tests {
         data[12..14].copy_from_slice(&4u16.to_le_bytes()); // type LONG
         data[14..18].copy_from_slice(&1u32.to_le_bytes()); // count
         data[18..22].copy_from_slice(&strip_off.to_le_bytes()); // value
-        // Entry 1: StripByteCounts
+                                                                // Entry 1: StripByteCounts
         data[22..24].copy_from_slice(&0x0117u16.to_le_bytes());
         data[24..26].copy_from_slice(&4u16.to_le_bytes());
         data[26..30].copy_from_slice(&1u32.to_le_bytes());
@@ -701,7 +714,7 @@ mod tests {
         data[36..38].copy_from_slice(&4u16.to_le_bytes());
         data[38..42].copy_from_slice(&1u32.to_le_bytes());
         data[42..46].copy_from_slice(&1024u32.to_le_bytes()); // strip at 1024
-        // StripByteCounts
+                                                              // StripByteCounts
         data[46..48].copy_from_slice(&0x0117u16.to_le_bytes());
         data[48..50].copy_from_slice(&4u16.to_le_bytes());
         data[50..54].copy_from_slice(&1u32.to_le_bytes());

@@ -65,6 +65,19 @@ impl std::fmt::Display for FilesystemType {
     }
 }
 
+/// Estimated probability that a deleted file's data is still intact on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecoveryChance {
+    /// Cluster/block pointers are intact and data appears unallocated — very likely recoverable.
+    High,
+    /// Partial information available — recovery may be incomplete.
+    Medium,
+    /// Clusters reallocated or no block info — recovery unlikely.
+    Low,
+    /// Not assessed (live files, directories, or unsupported filesystem).
+    Unknown,
+}
+
 /// A single file or directory entry returned by a [`FilesystemParser`].
 #[derive(Debug, Clone)]
 pub struct FileEntry {
@@ -99,6 +112,10 @@ pub struct FileEntry {
     /// can be compared directly against [`ferrite_carver::CarveHit::byte_offset`]
     /// after adjusting for the partition's position on the raw device.
     pub data_byte_offset: Option<u64>,
+
+    /// Estimated probability that a deleted file's data is still intact.
+    /// Always [`RecoveryChance::Unknown`] for live (non-deleted) files.
+    pub recovery_chance: RecoveryChance,
 }
 
 // ── Core trait ────────────────────────────────────────────────────────────────

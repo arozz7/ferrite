@@ -6,5 +6,6 @@ pub mod health;
 pub mod hex_viewer;
 pub mod imaging;
 pub mod partition;
+pub mod quick_recover;
 pub mod report;
 pub mod session_manager;

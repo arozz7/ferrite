@@ -12,7 +12,7 @@ use ferrite_blockdev::BlockDevice;
 
 use crate::error::{FilesystemError, Result};
 use crate::io::{read_bytes, read_u16_le, read_u32_le};
-use crate::{FileEntry, FilesystemParser, FilesystemType};
+use crate::{FileEntry, FilesystemParser, FilesystemType, RecoveryChance};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -227,6 +227,7 @@ impl Fat32Parser {
                 mft_record: None,
                 inode_number: None,
                 data_byte_offset,
+                recovery_chance: RecoveryChance::Unknown,
             });
         }
         result
@@ -315,7 +316,18 @@ impl FilesystemParser for Fat32Parser {
     fn deleted_files(&self) -> Result<Vec<FileEntry>> {
         let raw = self.raw_dir_entries(self.root_cluster)?;
         let all = self.build_entries(&raw, true);
-        Ok(all.into_iter().filter(|e| e.is_deleted).collect())
+        let mut deleted: Vec<FileEntry> = all.into_iter().filter(|e| e.is_deleted).collect();
+        for entry in deleted.iter_mut() {
+            entry.recovery_chance = if entry.size == 0 {
+                RecoveryChance::Unknown
+            } else if entry.first_cluster.map(|c| c >= 2).unwrap_or(false) {
+                // Start cluster is still recorded in the dirent — partial chain info
+                RecoveryChance::Medium
+            } else {
+                RecoveryChance::Low
+            };
+        }
+        Ok(deleted)
     }
 }
 
