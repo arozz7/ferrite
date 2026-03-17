@@ -263,7 +263,15 @@ fn validate_jpeg_jfif(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 11) {
         return true;
     }
-    &data[pos + 6..pos + 11] == b"JFIF\x00"
+    if &data[pos + 6..pos + 11] != b"JFIF\x00" {
+        return false;
+    }
+    // Reject embedded thumbnails.
+    // A JPEG thumbnail embedded inside an EXIF APP1 segment starts with the
+    // same FF D8 magic.  If a preceding SOI (FF D8) appears in the lookback
+    // buffer with no matching EOI (FF D9) between it and `pos`, this hit is
+    // nested inside an outer JPEG and should be discarded.
+    !jpeg_is_embedded(data, pos)
 }
 
 fn validate_jpeg_exif(data: &[u8], pos: usize) -> bool {
@@ -271,7 +279,64 @@ fn validate_jpeg_exif(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 10) {
         return true;
     }
-    &data[pos + 6..pos + 10] == b"Exif"
+    if &data[pos + 6..pos + 10] != b"Exif" {
+        return false;
+    }
+    !jpeg_is_embedded(data, pos)
+}
+
+/// Returns `true` when `pos` appears to be an embedded JPEG (thumbnail) inside
+/// an outer JPEG that is already present in the lookback buffer.
+///
+/// Strategy: search backward from `pos` for a JPEG SOI marker (`FF D8`).  If
+/// one is found with no intervening EOI (`FF D9`) between it and `pos`, the
+/// current hit is nested — it is a thumbnail, not an independent file.
+///
+/// False negatives (outer SOI straddling a chunk boundary) may still produce
+/// one extra hit per boundary; those are tolerable and rare.
+fn jpeg_is_embedded(data: &[u8], pos: usize) -> bool {
+    if pos < 2 {
+        return false;
+    }
+    let lookback = &data[..pos];
+    // Walk backward looking for FF D8.
+    let mut end = lookback.len();
+    loop {
+        let Some(ff_pos) = memchr::memrchr(0xFF, &lookback[..end]) else {
+            break;
+        };
+        if ff_pos + 1 < lookback.len() && lookback[ff_pos + 1] == 0xD8 {
+            // Found a preceding SOI.  Check for EOI between it and pos.
+            let between = &lookback[ff_pos + 2..];
+            if !jpeg_has_eoi(between) {
+                return true; // no EOI → embedded thumbnail
+            }
+            // EOI found → the outer JPEG ended before us; we are independent.
+            return false;
+        }
+        if ff_pos == 0 {
+            break;
+        }
+        end = ff_pos;
+    }
+    false
+}
+
+/// Returns `true` if `data` contains a JPEG EOI marker (`FF D9`).
+#[inline]
+fn jpeg_has_eoi(data: &[u8]) -> bool {
+    let mut start = 0;
+    while start < data.len() {
+        let Some(rel) = memchr::memchr(0xFF, &data[start..]) else {
+            break;
+        };
+        let abs = start + rel;
+        if abs + 1 < data.len() && data[abs + 1] == 0xD9 {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
 }
 
 fn validate_png(data: &[u8], pos: usize) -> bool {
@@ -305,11 +370,39 @@ fn validate_gif(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_bmp(data: &[u8], pos: usize) -> bool {
-    // DIB header size (u32 LE) at offset 14 must be a known value.
-    // Known sizes: 12 (CORE), 40 (INFO), 52, 56 (INFO v2/v3), 108 (V4), 124 (V5).
+    // BMP file layout (all offsets from pos):
+    //   0-1  "BM"  (magic — already matched by scanner)
+    //   2-5  FileSize (u32 LE)
+    //   10-13 PixelDataOffset (u32 LE)
+    //   14-17 DIB header size (u32 LE)
     if need(data, pos, 18) {
         return true;
     }
+
+    // FileSize must be at least 26 bytes (smallest theoretically valid BMP).
+    let file_size = u32::from_le_bytes([
+        data[pos + 2],
+        data[pos + 3],
+        data[pos + 4],
+        data[pos + 5],
+    ]);
+    if file_size < 26 {
+        return false;
+    }
+
+    // PixelDataOffset must be >= 14 (past the file header) and <= FileSize.
+    let pixel_offset = u32::from_le_bytes([
+        data[pos + 10],
+        data[pos + 11],
+        data[pos + 12],
+        data[pos + 13],
+    ]);
+    if pixel_offset < 14 || pixel_offset > file_size {
+        return false;
+    }
+
+    // DIB header size must be a known value.
+    // Known sizes: 12 (CORE), 40 (INFO), 52, 56 (INFO v2/v3), 108 (V4), 124 (V5).
     let dib_size = u32::from_le_bytes([
         data[pos + 14],
         data[pos + 15],
@@ -339,9 +432,8 @@ fn validate_mp3(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_mp4(data: &[u8], pos: usize) -> bool {
-    // [ftyp box size: u32 BE][ftyp][brand: 4 bytes]
-    // Box size must be in [12, 512] (reasonable for an ftyp box).
-    // Brand bytes must be printable ASCII (0x20-0x7E).
+    // Layout: [box_size: u32 BE][ftyp][major_brand: 4B][minor_ver: 4B][compat…]
+    // `pos` is the start of the ftyp box (the scanner wildcards the 4-byte size).
     if need(data, pos, 12) {
         return true;
     }
@@ -349,9 +441,45 @@ fn validate_mp4(data: &[u8], pos: usize) -> bool {
     if !(12..=512).contains(&box_size) {
         return false;
     }
-    data[pos + 8..pos + 12]
+    // Major brand (bytes 8-11) must be printable ASCII.
+    if !data[pos + 8..pos + 12]
         .iter()
         .all(|b| (0x20..=0x7E).contains(b))
+    {
+        return false;
+    }
+
+    // Look-ahead: verify the box immediately after the ftyp box is also a
+    // plausible ISOBMFF box.  In a real MP4 the next box is always one of
+    // `moov`, `mdat`, `free`, `skip`, `wide`, `moof`, `meta`, `uuid`, etc.
+    // Random H.264/H.265 data inside an mdat region is very unlikely to
+    // produce two consecutive valid-looking ISOBMFF boxes.
+    let next = pos + box_size as usize;
+    if next + 8 <= data.len() {
+        let next_size = u32::from_be_bytes([
+            data[next],
+            data[next + 1],
+            data[next + 2],
+            data[next + 3],
+        ]);
+        // Minimum valid box is 8 bytes (size + type with no payload).
+        if next_size < 8 {
+            return false;
+        }
+        // Next box type must be 4 ASCII letter/digit/space bytes — the full
+        // ISOBMFF type alphabet.  Control characters and high bytes are
+        // rejected; punctuation is also rejected to avoid gibberish from
+        // encoded video data.
+        let next_type = &data[next + 4..next + 8];
+        if !next_type
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b' ')
+        {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn validate_rar(data: &[u8], pos: usize) -> bool {
@@ -401,8 +529,8 @@ fn validate_flac(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_exe(data: &[u8], pos: usize) -> bool {
-    // e_lfanew (u32 LE) at offset 60: byte offset from start of file to PE header.
-    // Must be in [64, 16384] for a plausible PE file.
+    // MZ DOS header: e_lfanew (u32 LE) at offset 60 is the byte offset to the
+    // PE header.  Must be in [64, 16384] for a plausible PE file.
     if need(data, pos, 64) {
         return true;
     }
@@ -411,8 +539,20 @@ fn validate_exe(data: &[u8], pos: usize) -> bool {
         data[pos + 61],
         data[pos + 62],
         data[pos + 63],
-    ]);
-    (64..=16384).contains(&e_lfanew)
+    ]) as usize;
+    if !(64..=16384).contains(&e_lfanew) {
+        return false;
+    }
+    // Look-ahead: verify the PE signature (`PE\0\0`) at the e_lfanew offset.
+    // This is a near-certain discriminator — random data that both (a) passes
+    // the e_lfanew range check AND (b) has `PE\0\0` at that exact variable
+    // offset is essentially impossible.  When the PE header falls outside the
+    // current scan chunk we give benefit of the doubt.
+    let pe_pos = pos + e_lfanew;
+    if pe_pos + 4 <= data.len() {
+        return &data[pe_pos..pe_pos + 4] == b"PE\x00\x00";
+    }
+    true
 }
 
 fn validate_vmdk(data: &[u8], pos: usize) -> bool {
@@ -434,9 +574,23 @@ fn validate_ogg(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_evtx(data: &[u8], pos: usize) -> bool {
-    // ElfFile\0 ... MajorVersion (u16 LE) at offset 38 must be 3.
-    if need(data, pos, 40) {
+    // EVTX file header layout (offsets from pos):
+    //   0-7   "ElfFile\0"  (magic — already matched)
+    //   32-35  HeaderSize (u32 LE) — always 128
+    //   36-37  MinorVersion (u16 LE) — always 1
+    //   38-39  MajorVersion (u16 LE) — always 3
+    if need(data, pos, 42) {
         return true;
+    }
+    // HeaderSize is a fixed constant in all known EVTX files.
+    let header_size = u32::from_le_bytes([
+        data[pos + 32],
+        data[pos + 33],
+        data[pos + 34],
+        data[pos + 35],
+    ]);
+    if header_size != 128 {
+        return false;
     }
     let major = u16::from_le_bytes([data[pos + 38], data[pos + 39]]);
     major == 3
@@ -602,8 +756,25 @@ mod tests {
 
     // ── EXE ───────────────────────────────────────────────────────────────────
 
+    fn make_pe(e_lfanew: u32) -> Vec<u8> {
+        let total = e_lfanew as usize + 4;
+        let mut data = vec![0u8; total];
+        data[0..4].copy_from_slice(b"MZ\x90\x00");
+        data[60..64].copy_from_slice(&e_lfanew.to_le_bytes());
+        data[e_lfanew as usize..e_lfanew as usize + 4].copy_from_slice(b"PE\x00\x00");
+        data
+    }
+
+    #[test]
+    fn exe_valid_pe_signature_accepted() {
+        // e_lfanew = 128, PE\0\0 present at that offset.
+        let data = make_pe(128);
+        assert!(validate_exe(&data, 0));
+    }
+
     #[test]
     fn exe_valid_e_lfanew_accepted() {
+        // Buffer too short for look-ahead — benefit of doubt.
         let mut data = vec![0u8; 64];
         data[0..4].copy_from_slice(b"MZ\x90\x00");
         data[60..64].copy_from_slice(&128u32.to_le_bytes()); // e_lfanew = 128
@@ -616,6 +787,29 @@ mod tests {
         data[0..4].copy_from_slice(b"MZ\x90\x00");
         // e_lfanew = 0 (all zeroes) — invalid
         assert!(!validate_exe(&data, 0));
+    }
+
+    #[test]
+    fn exe_missing_pe_signature_rejected() {
+        // e_lfanew = 128, but no PE\0\0 at that offset (random bytes instead).
+        let mut data = make_pe(128);
+        // Overwrite the PE signature with garbage.
+        data[128..132].copy_from_slice(b"NOPE");
+        assert!(!validate_exe(&data, 0));
+    }
+
+    #[test]
+    fn exe_mz_in_binary_data_rejected() {
+        // Simulate `MZ` appearing inside a binary data region: e_lfanew
+        // resolves to a plausible offset but there is no PE signature there.
+        let mut data = vec![0xCC_u8; 300]; // filler
+        // Inject fake MZ header at offset 50.
+        let pos = 50_usize;
+        data[pos] = b'M';
+        data[pos + 1] = b'Z';
+        data[pos + 60..pos + 64].copy_from_slice(&100u32.to_le_bytes()); // e_lfanew=100
+        // No PE\0\0 at pos+100 (just 0xCC filler).
+        assert!(!validate_exe(&data, pos));
     }
 
     // ── MP4 ───────────────────────────────────────────────────────────────────
@@ -647,6 +841,61 @@ mod tests {
         assert!(!validate_mp4(&data, 0));
     }
 
+    // ── MP4 ───────────────────────────────────────────────────────────────────
+
+    /// Build a 16-byte ftyp box: [size=16][ftyp][brand][minor_version=0].
+    /// The next box appended directly after this will be at offset 16.
+    fn make_mp4_ftyp(brand: &[u8; 4]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&16u32.to_be_bytes()); // box_size = 16
+        v.extend_from_slice(b"ftyp");
+        v.extend_from_slice(brand);
+        v.extend_from_slice(&[0u8; 4]); // minor version
+        v
+    }
+
+    #[test]
+    fn mp4_valid_ftyp_followed_by_moov_accepted() {
+        let mut data = make_mp4_ftyp(b"isom");
+        // Next box: moov, size 100
+        data.extend_from_slice(&100u32.to_be_bytes());
+        data.extend_from_slice(b"moov");
+        assert!(validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_valid_ftyp_followed_by_mdat_accepted() {
+        let mut data = make_mp4_ftyp(b"mp42");
+        data.extend_from_slice(&1000u32.to_be_bytes());
+        data.extend_from_slice(b"mdat");
+        assert!(validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_ftyp_followed_by_garbage_rejected() {
+        let mut data = make_mp4_ftyp(b"isom");
+        // Next "box": size=500 but type has non-alphanumeric bytes (H.264 NAL).
+        data.extend_from_slice(&500u32.to_be_bytes());
+        data.extend_from_slice(&[0x00, 0x01, 0xB3, 0xFF]); // H.262 start codes
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_ftyp_followed_by_tiny_next_box_rejected() {
+        let mut data = make_mp4_ftyp(b"isom");
+        // Next box: size < 8 (impossible for a valid box).
+        data.extend_from_slice(&4u32.to_be_bytes());
+        data.extend_from_slice(b"moov");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_ftyp_no_lookahead_data_accepted() {
+        // ftyp box is at the very end of the scan chunk — no lookahead available.
+        let data = make_mp4_ftyp(b"isom");
+        assert!(validate_mp4(&data, 0));
+    }
+
     // ── OGG ───────────────────────────────────────────────────────────────────
 
     #[test]
@@ -665,6 +914,150 @@ mod tests {
         data[4] = 0x00;
         data[5] = 0x00; // no BOS flag — this is a continuation page, not a file start
         assert!(!validate_ogg(&data, 0));
+    }
+
+    // ── JPEG ──────────────────────────────────────────────────────────────────
+
+    /// Build a minimal JFIF JPEG header at `pos` inside `buf`.
+    fn make_jfif_at(buf: &mut Vec<u8>, pos: usize) {
+        // Ensure buf is long enough.
+        if buf.len() < pos + 11 {
+            buf.resize(pos + 11, 0);
+        }
+        buf[pos] = 0xFF;
+        buf[pos + 1] = 0xD8;
+        buf[pos + 2] = 0xFF;
+        buf[pos + 3] = 0xE0;
+        buf[pos + 4] = 0x00;
+        buf[pos + 5] = 0x10;
+        buf[pos + 6..pos + 11].copy_from_slice(b"JFIF\x00");
+    }
+
+    #[test]
+    fn jpeg_jfif_standalone_accepted() {
+        // First JPEG in the buffer — no preceding SOI, must be accepted.
+        let mut data = vec![0u8; 11];
+        make_jfif_at(&mut data, 0);
+        assert!(validate_jpeg_jfif(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_jfif_embedded_thumbnail_rejected() {
+        // Outer JPEG SOI at offset 0, then an embedded JFIF JPEG at offset 100
+        // with no EOI (FF D9) between them — should be rejected as thumbnail.
+        let mut buf = vec![0u8; 120];
+        // Outer SOI at 0.
+        buf[0] = 0xFF;
+        buf[1] = 0xD8;
+        // Embedded JFIF at 100 — no FF D9 between 0 and 100.
+        make_jfif_at(&mut buf, 100);
+        assert!(!validate_jpeg_jfif(&buf, 100));
+    }
+
+    #[test]
+    fn jpeg_jfif_after_eoi_accepted() {
+        // Outer JPEG: SOI at 0, EOI at 50.  New standalone JFIF at 60 — must
+        // be accepted because the preceding JPEG is closed.
+        let mut buf = vec![0u8; 80];
+        // Outer SOI.
+        buf[0] = 0xFF;
+        buf[1] = 0xD8;
+        // Outer EOI.
+        buf[50] = 0xFF;
+        buf[51] = 0xD9;
+        // Standalone JFIF.
+        make_jfif_at(&mut buf, 60);
+        assert!(validate_jpeg_jfif(&buf, 60));
+    }
+
+    #[test]
+    fn jpeg_exif_embedded_thumbnail_rejected() {
+        // Outer JPEG SOI at 0, Exif JPEG at 200 — no EOI between them.
+        let mut buf = vec![0u8; 210];
+        buf[0] = 0xFF;
+        buf[1] = 0xD8;
+        // Exif header at 200.
+        buf[200] = 0xFF;
+        buf[201] = 0xD8;
+        buf[202] = 0xFF;
+        buf[203] = 0xE1;
+        buf[204] = 0x00;
+        buf[205] = 0x20;
+        buf[206..210].copy_from_slice(b"Exif");
+        assert!(!validate_jpeg_exif(&buf, 200));
+    }
+
+    // ── BMP ───────────────────────────────────────────────────────────────────
+
+    fn make_bmp(file_size: u32, pixel_offset: u32, dib_size: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 18];
+        data[0..2].copy_from_slice(b"BM");
+        data[2..6].copy_from_slice(&file_size.to_le_bytes());
+        data[10..14].copy_from_slice(&pixel_offset.to_le_bytes());
+        data[14..18].copy_from_slice(&dib_size.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn bmp_valid_accepted() {
+        // Typical BMP: 40-byte BITMAPINFOHEADER, pixel data at 54.
+        let data = make_bmp(1078, 54, 40);
+        assert!(validate_bmp(&data, 0));
+    }
+
+    #[test]
+    fn bmp_tiny_file_size_rejected() {
+        let data = make_bmp(10, 54, 40); // file_size < 26
+        assert!(!validate_bmp(&data, 0));
+    }
+
+    #[test]
+    fn bmp_pixel_offset_past_file_size_rejected() {
+        let data = make_bmp(1000, 2000, 40); // pixel_offset > file_size
+        assert!(!validate_bmp(&data, 0));
+    }
+
+    #[test]
+    fn bmp_pixel_offset_before_header_rejected() {
+        let data = make_bmp(1000, 4, 40); // pixel_offset < 14
+        assert!(!validate_bmp(&data, 0));
+    }
+
+    #[test]
+    fn bmp_unknown_dib_size_rejected() {
+        let data = make_bmp(1000, 54, 99); // 99 is not a known DIB size
+        assert!(!validate_bmp(&data, 0));
+    }
+
+    // ── EVTX ──────────────────────────────────────────────────────────────────
+
+    fn make_evtx_header() -> Vec<u8> {
+        let mut data = vec![0u8; 42];
+        data[0..8].copy_from_slice(b"ElfFile\x00");
+        // HeaderSize at offset 32 = 128
+        data[32..36].copy_from_slice(&128u32.to_le_bytes());
+        // MajorVersion at offset 38 = 3
+        data[38..40].copy_from_slice(&3u16.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn evtx_valid_header_accepted() {
+        assert!(validate_evtx(&make_evtx_header(), 0));
+    }
+
+    #[test]
+    fn evtx_wrong_header_size_rejected() {
+        let mut data = make_evtx_header();
+        data[32..36].copy_from_slice(&64u32.to_le_bytes()); // not 128
+        assert!(!validate_evtx(&data, 0));
+    }
+
+    #[test]
+    fn evtx_wrong_major_version_rejected() {
+        let mut data = make_evtx_header();
+        data[38..40].copy_from_slice(&2u16.to_le_bytes()); // not 3
+        assert!(!validate_evtx(&data, 0));
     }
 
     // ── Benefit-of-doubt ──────────────────────────────────────────────────────
