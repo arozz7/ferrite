@@ -576,6 +576,7 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: None,
+            header_offset: 0,
         }
     }
 

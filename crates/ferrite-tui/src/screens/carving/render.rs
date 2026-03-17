@@ -8,6 +8,8 @@ use ratatui::{
     Frame,
 };
 
+use ferrite_carver::CarveQuality;
+
 use super::{
     fmt_bytes, preview, CarveFocus, CarveStatus, CarvingState, CursorRow, ExtractProgress,
     ExtractionSummary, HitStatus, ScanRangeField,
@@ -36,7 +38,7 @@ impl CarvingState {
         };
 
         let title = format!(
-            " Carving [{status_label}] — Space: toggle  s: scan  e: extract  v: preview  ←/→: switch panel "
+            " Carving [{status_label}] — Space: toggle  s: scan  e: extract  v: preview  u: custom sigs  ←/→: switch panel "
         );
         let outer = Block::default().borders(Borders::ALL).title(title);
         let inner = outer.inner(area);
@@ -66,6 +68,14 @@ impl CarvingState {
 
         self.render_sig_panel(frame, cols[0]);
         self.render_hits_panel(frame, cols[1]);
+
+        // Overlay panels (drawn last so they appear on top).
+        if self.show_user_panel {
+            self.render_user_panel(frame, area);
+            if self.user_sig_form.is_some() {
+                self.render_user_form(frame, area);
+            }
+        }
     }
 
     fn render_output_dir_bar(&self, frame: &mut Frame, area: Rect) {
@@ -358,8 +368,23 @@ impl CarvingState {
                     ),
                     HitStatus::Truncated { bytes } => Span::styled(
                         format!(" [TRUNC {}]", fmt_bytes(*bytes)),
-                        Style::default().fg(Color::Red),
+                        Style::default().fg(Color::Yellow),
                     ),
+                    HitStatus::Duplicate => {
+                        Span::styled(" [DUP]", Style::default().fg(Color::DarkGray))
+                    }
+                };
+                let quality_span = match &entry.quality {
+                    Some(CarveQuality::Complete) => {
+                        Span::styled(" ✓", Style::default().fg(Color::Green))
+                    }
+                    Some(CarveQuality::Corrupt) => {
+                        Span::styled(" ✗", Style::default().fg(Color::Red))
+                    }
+                    Some(CarveQuality::Truncated) => {
+                        Span::styled(" ~", Style::default().fg(Color::Yellow))
+                    }
+                    Some(CarveQuality::Unknown) | None => Span::raw(""),
                 };
                 let orig_name = self
                     .meta_index
@@ -372,7 +397,12 @@ impl CarvingState {
                     entry.hit.byte_offset,
                     orig_name.as_deref().unwrap_or("")
                 );
-                ListItem::new(Line::from(vec![check, Span::raw(label), status_span]))
+                ListItem::new(Line::from(vec![
+                    check,
+                    Span::raw(label),
+                    status_span,
+                    quality_span,
+                ]))
             })
             .collect();
 
@@ -533,6 +563,14 @@ impl CarvingState {
             ),
             Style::default().fg(Color::DarkGray),
         );
+        let dup_span = if s.duplicates > 0 {
+            Span::styled(
+                format!("   ⊘ {} skipped", s.duplicates),
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
         let dismiss_span = Span::styled("   (d to dismiss)", Style::default().fg(Color::DarkGray));
 
         let title_style = Style::default()
@@ -558,6 +596,7 @@ impl CarvingState {
                 ok_span,
                 trunc_span,
                 fail_span,
+                dup_span,
                 meta_span,
                 dismiss_span,
             ])),

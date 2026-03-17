@@ -8,8 +8,11 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_blockdev::BlockDevice;
-use ferrite_imaging::{ImagingConfig, ImagingEngine, ProgressReporter, ProgressUpdate, Signal};
-use ferrite_smart;
+use ferrite_imaging::{
+    thermal::{ThermalEvent, ThermalGuard, ThermalGuardConfig},
+    ImagingConfig, ImagingEngine, ProgressReporter, ProgressUpdate, Signal,
+};
+use ferrite_imaging::write_blocker;
 
 mod render;
 
@@ -27,8 +30,6 @@ enum ImagingMsg {
     ThermalPause,
     /// Drive cooled to ≤ 50 °C — imaging resumed.
     ThermalResume,
-    /// Write-blocker check result: `true` = write-blocked (safe), `false` = not blocked.
-    WriteBlockerResult(bool),
 }
 
 #[derive(PartialEq, Clone)]
@@ -137,8 +138,6 @@ pub struct ImagingState {
     pub(crate) status: ImagingStatus,
     pub(crate) latest: Option<ProgressUpdate>,
     cancel: Arc<AtomicBool>,
-    /// Thermal pause flag — shared with the `ChannelReporter` and thermal thread.
-    pause: Arc<AtomicBool>,
     rx: Option<Receiver<ImagingMsg>>,
     /// SHA-256 hex digest of the completed image (set when imaging finishes).
     pub image_sha256: Option<String>,
@@ -146,9 +145,12 @@ pub struct ImagingState {
     pub current_temp: Option<u32>,
     /// `true` while imaging is paused due to high temperature.
     pub thermal_paused: bool,
-    /// Write-blocker status: `None` = not checked, `Some(true)` = blocked (safe),
+    /// Write-blocker status: `None` = not checked yet, `Some(true)` = blocked (safe),
     /// `Some(false)` = WARNING: write access was granted.
     pub write_blocked: Option<bool>,
+    /// Channel carrying the result of the pre-flight write-blocker check spawned
+    /// in `set_device`.  Drained by `tick` into `write_blocked`.
+    wb_rx: Option<Receiver<bool>>,
     /// When `true`, the copy pass reads from end to start.
     pub reverse: bool,
     /// Latest mapfile block snapshot for sector-map rendering.
@@ -180,12 +182,12 @@ impl ImagingState {
             status: ImagingStatus::Idle,
             latest: None,
             cancel: Arc::new(AtomicBool::new(false)),
-            pause: Arc::new(AtomicBool::new(false)),
             rx: None,
             image_sha256: None,
             current_temp: None,
             thermal_paused: false,
             write_blocked: None,
+            wb_rx: None,
             reverse: false,
             sector_map: Vec::new(),
             user_pause: Arc::new(AtomicBool::new(false)),
@@ -195,21 +197,30 @@ impl ImagingState {
     }
 
     pub fn set_device(&mut self, device: Arc<dyn BlockDevice>) {
+        let device_path = device.device_info().path.clone();
         self.device = Some(device);
         self.status = ImagingStatus::Idle;
         self.latest = None;
         self.cancel.store(false, Ordering::Relaxed);
-        self.pause.store(false, Ordering::Relaxed);
         self.rx = None;
         self.current_temp = None;
         self.thermal_paused = false;
         self.write_blocked = None;
+        self.wb_rx = None;
         self.start_lba_str = String::new();
         self.end_lba_str = String::new();
         self.sector_map = Vec::new();
         self.user_pause.store(false, Ordering::Relaxed);
         self.user_paused = false;
         self.imaging_resumed = false;
+
+        // Pre-flight: check write-blocker status in a background thread so the
+        // UI stays responsive.  Result is drained by `tick()`.
+        let (wb_tx, wb_rx) = mpsc::sync_channel::<bool>(1);
+        self.wb_rx = Some(wb_rx);
+        std::thread::spawn(move || {
+            let _ = wb_tx.send(write_blocker::check(&device_path));
+        });
     }
 
     /// Returns `true` while the user is typing into a path field.
@@ -217,8 +228,16 @@ impl ImagingState {
         self.edit_field.is_some()
     }
 
-    /// Drain the background imaging channel.
+    /// Drain the background imaging channel and the write-blocker pre-flight channel.
     pub fn tick(&mut self) {
+        // Drain the pre-flight write-blocker result (available soon after set_device).
+        if let Some(wb_rx) = &self.wb_rx {
+            if let Ok(blocked) = wb_rx.try_recv() {
+                self.write_blocked = Some(blocked);
+                self.wb_rx = None;
+            }
+        }
+
         let rx = match &self.rx {
             Some(r) => r,
             None => return,
@@ -252,9 +271,6 @@ impl ImagingState {
                 }
                 Ok(ImagingMsg::ThermalResume) => {
                     self.thermal_paused = false;
-                }
-                Ok(ImagingMsg::WriteBlockerResult(blocked)) => {
-                    self.write_blocked = Some(blocked);
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -394,12 +410,10 @@ impl ImagingState {
             !self.mapfile_path.is_empty() && std::path::Path::new(&self.mapfile_path).exists();
 
         self.cancel.store(false, Ordering::Relaxed);
-        self.pause.store(false, Ordering::Relaxed);
         self.user_pause.store(false, Ordering::Relaxed);
         self.user_paused = false;
         self.sector_map = Vec::new();
         let cancel = Arc::clone(&self.cancel);
-        let pause = Arc::clone(&self.pause);
         let user_pause_reporter = Arc::clone(&self.user_pause);
         let (tx, rx) = mpsc::sync_channel::<ImagingMsg>(64);
         self.rx = Some(rx);
@@ -407,7 +421,8 @@ impl ImagingState {
         self.latest = None;
         self.current_temp = None;
         self.thermal_paused = false;
-        self.write_blocked = None;
+        // write_blocked is intentionally NOT reset here — the pre-flight result
+        // from set_device() carries forward into the imaging session.
 
         let output_path = PathBuf::from(&self.dest_path);
         let copy_block_size = self
@@ -432,41 +447,7 @@ impl ImagingState {
             ..ImagingConfig::default()
         };
 
-        // ── Thermal guard thread ─────────────────────────────────────────────
-        // Polls S.M.A.R.T. every 60 seconds.  Pauses imaging above 55 °C and
-        // resumes after the drive cools to ≤ 50 °C.
         let device_path_for_smart = device.device_info().path.clone();
-        let device_path = device_path_for_smart.clone();
-        let thermal_tx = tx.clone();
-        let thermal_cancel = Arc::clone(&cancel);
-        let thermal_pause = Arc::clone(&pause);
-        std::thread::spawn(move || {
-            loop {
-                if thermal_cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-                if let Ok(data) = ferrite_smart::query(&device_path, None) {
-                    if let Some(temp) = data.temperature_celsius {
-                        let _ = thermal_tx.try_send(ImagingMsg::Temperature(temp));
-                        if temp >= 55 && !thermal_pause.load(Ordering::Relaxed) {
-                            thermal_pause.store(true, Ordering::Relaxed);
-                            let _ = thermal_tx.try_send(ImagingMsg::ThermalPause);
-                        } else if temp <= 50 && thermal_pause.load(Ordering::Relaxed) {
-                            thermal_pause.store(false, Ordering::Relaxed);
-                            let _ = thermal_tx.try_send(ImagingMsg::ThermalResume);
-                        }
-                    }
-                }
-                // Check cancel every second for 60 seconds between polls.
-                for _ in 0..60 {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                    if thermal_cancel.load(Ordering::Relaxed) {
-                        return;
-                    }
-                }
-            }
-        });
-
         let reporter_tx = tx.clone();
         std::thread::spawn(move || {
             let mut engine = match ImagingEngine::new(device, config) {
@@ -476,16 +457,6 @@ impl ImagingState {
                     return;
                 }
             };
-            // Write-blocker check: attempt to open the source device for writing.
-            // If the open succeeds, write-blocking is NOT active (suspicious).
-            {
-                let write_blocked = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(&device_path_for_smart)
-                    .map(|_| false) // opened for write → not blocked
-                    .unwrap_or(true); // error opening for write → blocked (or denied)
-                let _ = tx.send(ImagingMsg::WriteBlockerResult(write_blocked));
-            }
 
             // Pre-populate known-bad sectors from S.M.A.R.T. error log (best-effort).
             if let Ok(smart_data) = ferrite_smart::query(&device_path_for_smart, None) {
@@ -494,15 +465,44 @@ impl ImagingState {
                     engine.pre_populate_bad_sectors(ss as u64, &smart_data.bad_sector_lbas);
                 }
             }
+
+            // ── Thermal guard ────────────────────────────────────────────────
+            // Polls S.M.A.R.T. every 60 s.  Pauses imaging above 55 °C and
+            // resumes after the drive cools to ≤ 50 °C.  Stopped automatically
+            // when the guard is dropped at the end of this thread.
+            let thermal_tx = tx.clone();
+            let smart_path = device_path_for_smart.clone();
+            let guard = ThermalGuard::start(
+                move || {
+                    ferrite_smart::query(&smart_path, None)
+                        .ok()
+                        .and_then(|d| d.temperature_celsius)
+                },
+                ThermalGuardConfig::default(),
+                move |event| match event {
+                    ThermalEvent::Temperature(t) => {
+                        let _ = thermal_tx.try_send(ImagingMsg::Temperature(t));
+                    }
+                    ThermalEvent::Paused => {
+                        let _ = thermal_tx.try_send(ImagingMsg::ThermalPause);
+                    }
+                    ThermalEvent::Resumed => {
+                        let _ = thermal_tx.try_send(ImagingMsg::ThermalResume);
+                    }
+                },
+            );
+
             let mut reporter = ChannelReporter {
                 tx: reporter_tx,
                 cancel,
-                pause,
+                pause: guard.pause_flag(),
                 user_pause: user_pause_reporter,
             };
             match engine.run(&mut reporter) {
                 Ok(()) => {
-                    let sha256 = compute_sha256(&output_path);
+                    // hash_and_save computes SHA-256 of the output file and writes
+                    // a companion <image>.sha256 sidecar in sha256sum format.
+                    let sha256 = ferrite_imaging::hash::hash_and_save(&output_path);
                     let _ = tx.send(ImagingMsg::Done(sha256));
                 }
                 Err(e) => {
@@ -518,26 +518,6 @@ impl ImagingState {
             self.status = ImagingStatus::Cancelled;
         }
     }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Compute the SHA-256 digest of the file at `path` and return it as a
-/// lowercase hex string.  Returns `None` on any I/O error.
-fn compute_sha256(path: &std::path::Path) -> Option<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 65_536];
-    loop {
-        let n = file.read(&mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Some(format!("{:x}", hasher.finalize()))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -586,12 +566,32 @@ mod tests {
     }
 
     #[test]
-    fn write_blocker_result_message_sets_state() {
-        let (tx, rx) = mpsc::sync_channel::<ImagingMsg>(8);
+    fn preflight_wb_rx_sets_write_blocked() {
+        let (wb_tx, wb_rx) = mpsc::sync_channel::<bool>(1);
         let mut s = ImagingState::new();
-        s.rx = Some(rx);
-        tx.send(ImagingMsg::WriteBlockerResult(true)).unwrap();
+        s.wb_rx = Some(wb_rx);
+        wb_tx.send(true).unwrap();
         s.tick();
         assert_eq!(s.write_blocked, Some(true));
+    }
+
+    #[test]
+    fn preflight_wb_rx_not_blocked_sets_false() {
+        let (wb_tx, wb_rx) = mpsc::sync_channel::<bool>(1);
+        let mut s = ImagingState::new();
+        s.wb_rx = Some(wb_rx);
+        wb_tx.send(false).unwrap();
+        s.tick();
+        assert_eq!(s.write_blocked, Some(false));
+    }
+
+    #[test]
+    fn preflight_wb_rx_cleared_after_drain() {
+        let (wb_tx, wb_rx) = mpsc::sync_channel::<bool>(1);
+        let mut s = ImagingState::new();
+        s.wb_rx = Some(wb_rx);
+        wb_tx.send(true).unwrap();
+        s.tick();
+        assert!(s.wb_rx.is_none(), "wb_rx should be cleared after result received");
     }
 }

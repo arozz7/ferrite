@@ -191,6 +191,16 @@ pub struct Signature {
     /// `pre_validate = "<kind>"` in `signatures.toml`.
     #[serde(default)]
     pub pre_validate: Option<PreValidate>,
+    /// Byte offset within the file where `header` magic appears.
+    ///
+    /// Most formats have their magic at byte 0 (default `0`).  Formats like
+    /// ISO 9660 ("CD001" at 32769), DICOM ("DICM" at 128), and TAR ("ustar"
+    /// at 257) carry their identifying magic at a non-zero position.  When
+    /// `header_offset > 0` the scanner finds the magic at the usual position
+    /// and then shifts the reported `CarveHit.byte_offset` back by this
+    /// amount so extraction begins at the true file start.
+    #[serde(default)]
+    pub header_offset: u64,
 }
 
 /// Configuration passed to [`crate::Carver`].
@@ -242,6 +252,9 @@ impl CarvingConfig {
             size_hint_kind: Option<String>,
             // Named pre-validator (e.g. "zip").
             pre_validate: Option<String>,
+            // Offset of the magic bytes within the file (0 for most formats).
+            #[serde(default)]
+            header_offset: u64,
         }
 
         #[derive(Deserialize)]
@@ -316,6 +329,7 @@ impl CarvingConfig {
                     size_hint,
                     min_size: r.min_size,
                     pre_validate,
+                    header_offset: r.header_offset,
                 })
             })
             .collect();
@@ -617,6 +631,36 @@ size_hint_kind = "ogg_stream"
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
         let sig = &cfg.signatures[0];
         assert_eq!(sig.size_hint, Some(SizeHint::OggStream));
+    }
+
+    #[test]
+    fn load_toml_header_offset() {
+        let toml = r#"
+[[signature]]
+name          = "ISO 9660"
+extension     = "iso"
+header        = "43 44 30 30 31"
+footer        = ""
+max_size      = 9395240960
+header_offset = 32769
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        let sig = &cfg.signatures[0];
+        assert_eq!(sig.header_offset, 32769);
+    }
+
+    #[test]
+    fn load_toml_header_offset_defaults_zero() {
+        let toml = r#"
+[[signature]]
+name      = "JPEG Image"
+extension = "jpg"
+header    = "FF D8 FF"
+footer    = "FF D9"
+max_size  = 10485760
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.signatures[0].header_offset, 0);
     }
 
     #[test]

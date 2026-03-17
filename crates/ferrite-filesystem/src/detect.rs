@@ -34,7 +34,7 @@ pub(crate) fn probe_filesystem(device: &dyn BlockDevice) -> (FilesystemType, u64
 
 /// Detect a filesystem signature at a specific byte offset within `device`.
 pub(crate) fn detect_at(device: &dyn BlockDevice, byte_offset: u64) -> FilesystemType {
-    // Boot sector (NTFS / exFAT / FAT32)
+    // Boot sector (NTFS / exFAT / FAT32 / APFS container)
     if let Ok(boot) = io::read_bytes(device, byte_offset, 512) {
         if boot.len() >= 11 && &boot[3..11] == b"NTFS    " {
             return FilesystemType::Ntfs;
@@ -49,6 +49,13 @@ pub(crate) fn detect_at(device: &dyn BlockDevice, byte_offset: u64) -> Filesyste
             && &boot[82..90] == b"FAT32   "
         {
             return FilesystemType::Fat32;
+        }
+        // APFS container superblock: "NXSB" magic at offset 32.
+        if boot.len() >= 36 {
+            let magic = u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]);
+            if magic == 0x4253_584E {
+                return FilesystemType::Apfs;
+            }
         }
     }
 

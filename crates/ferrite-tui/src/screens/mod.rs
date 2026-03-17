@@ -1,4 +1,6 @@
+pub mod artifacts;
 pub mod carving;
+pub mod text_scan;
 pub mod drive_select;
 pub mod file_browser;
 pub mod fs_recovery;

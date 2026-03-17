@@ -1,40 +1,44 @@
 # Ferrite — Comprehensive Feature Roadmap
-**Reviewed as of Phase 42 (43 signatures) — Status updated 2026-03-17**
+**Reviewed as of Phase 64 (99 signatures) — Status updated 2026-03-17**
 *Senior Data Recovery & Digital Forensics Perspective*
 
 ---
 
 ## Executive Summary
 
-Ferrite is architecturally mature and further along than the original audit indicated.
-After a thorough code review (2026-03-17), all four "Critical Blockers" are resolved and
-several major gap items are already implemented. The remaining work falls into two
-categories:
+Ferrite has completed all planned phases through Phase 64. As of this update:
 
-1. **Signature coverage** — 43 signatures vs. PhotoRec's ~300 families; 12–18 high-value
-   types are completely absent (WebP, EML, ELF, REGF, PSD, etc.).
-2. **Remaining workflow features** — SHA-256 image hash, thermal guard during imaging,
-   write-blocker verification, Quick Deleted-File Recovery mode, custom signatures,
-   forensic artifact scanning.
+- **99 signatures** across 10 format categories (up from 43 at initial audit)
+- **All workflow features delivered:** SHA-256 hash, thermal guard, write-blocker
+  verification, Quick Deleted-File Recovery, custom user signatures, forensic artifact
+  scanning, heuristic text block scanner, non-zero-offset scan infrastructure
+- **10 TUI tabs** — Drives / Health / Imaging / Partitions / Files / Carving / Hex /
+  Quick Recover / Artifacts / Text Scan
+- **658 unit tests**, clippy-clean, `cargo fmt --check` passing
 
-The phases below are ordered by **risk and recovery impact**, not by complexity.
+**All planned phases complete.** Phase 58 (exFAT + APFS MVP) was delivered as:
+- **Phase 58a** — `ExFatParser`: full read-only exFAT `FilesystemParser` (668 tests)
+- **Phase 58b** — `ApfsParser`: APFS container → omap → volume → FS B-tree walk (677 tests)
+
+The phases below are documented for historical reference and are ordered by **risk and
+recovery impact**, not by complexity.
 
 ---
 
 ## Current State Audit
 
-### Signatures Implemented (43 total)
+### Signatures Implemented (99 total — Phase 63)
 
-| Category | Formats |
-|---|---|
-| Images | JPEG JFIF, JPEG Exif, PNG, GIF, BMP, TIFF LE, TIFF BE |
-| RAW Photos | Sony ARW, Canon CR2, Nikon NEF, Panasonic RW2, Fujifilm RAF, Apple HEIC/HEIX |
-| Video | MP4, MOV, M4V, 3GP, MKV, WebM, AVI, WMV, FLV, MPEG-PS |
-| Audio | MP3, WAV, FLAC, OGG |
-| Archives | ZIP (+ OOXML), RAR, 7-Zip |
-| Documents | PDF, RTF, XML, HTML, OLE2 (DOC/XLS/PPT legacy) |
-| Email / PIM | Outlook PST/OST, vCard (VCF), iCalendar (ICS) |
-| System / DB | SQLite, Windows EVTX, PE Executable (.exe), VMDK |
+| Category | Formats | Count |
+|---|---|---|
+| Images | JPEG×2, PNG, GIF, BMP, TIFF×2, WebP, PSD, ICO | 10 |
+| RAW Photos | ARW, CR2, NEF, RW2, RAF, HEIC×2, ORF, PEF, CR3, SR2, DCR, CRW, MRW, X3F | 15 |
+| Video | MP4, MOV, M4V, 3GP, AVI, MKV, WebM, WMV, FLV, MPG, RM, SWF×3, TS, M2TS, WTV | 17 |
+| Audio | MP3, WAV, FLAC, OGG, M4A, MIDI, AIFF, WavPack, APE, AU | 10 |
+| Archives | ZIP, RAR, 7-Zip, GZip, XZ, BZip2, ISO, TAR | 8 |
+| Documents | PDF, XML, HTML, RTF, VCF, ICS, EML, EPUB, ODT, CDR, TTF, WOFF, CHM, Blender, InDesign, PHP, Shebang | 17 |
+| Office & Email | ZIP-Office (OOXML), OLE2 (legacy), PST, MSG | 4 |
+| System / Exec | SQLite, EVTX, EXE, ELF, VMDK, REGF, VHD, VHDX, QCOW2, Mach-O, KDBX, KDB, E01, PCAP×2, DMP, plist, LUKS, DICOM | 18 |
 
 ### Engineering Features Status
 
@@ -59,15 +63,21 @@ The phases below are ordered by **risk and recovery impact**, not by complexity.
 | LBA range selection (`start_lba` / `end_lba`) | ✅ Done — Phase 49 |
 | S.M.A.R.T. bad LBA → mapfile pre-population | ✅ Done — Phase 51 partial |
 | Recovery report export (`generate_report`) | ✅ Done — Phase 54 |
-| Drive temperature guard during imaging | ❌ Missing |
-| SHA256 image integrity hash | ❌ Missing |
-| Low read-rate alert (threshold + TUI warning) | ❌ Missing |
-| Write-blocker verification | ❌ Missing |
-| Quick Deleted-File Recovery mode | ❌ Missing — Phase 45b |
-| Carve hit integrity validation | ❌ Missing |
-| Duplicate hit suppression (content hash) | ❌ Missing |
-| Custom user-defined signatures (TUI) | ❌ Missing |
-| Forensic artifact scanning (email, URLs, CC#) | ❌ Missing |
+| Drive temperature guard during imaging | ✅ Done — Phase 51b (`ThermalGuard`, RAII, configurable thresholds) |
+| SHA256 image integrity hash | ✅ Done — Phase 47b (`.sha256` sidecar, amber TUI warning on resume) |
+| Low read-rate alert (threshold + TUI warning) | ✅ Done — Phase 47c (amber bar + `[⚠ LOW RATE]` when < 5 MB/s) |
+| Write-blocker verification | ✅ Done — Phase 53 (`write_blocker::check()`, pre-flight in `set_device()`) |
+| Quick Deleted-File Recovery mode | ✅ Done — Phase 45b (Tab 7; RecoveryChance scoring; High/Med/Low) |
+| Carve hit integrity validation | ✅ Done — Phase 55 (`CarveQuality` enum; `post_validate::validate_extracted()`) |
+| Duplicate hit suppression (content hash) | ✅ Done — Phase 55 (4 KiB fingerprint `HashSet`; `[DUP]` tag) |
+| Custom user-defined signatures (TUI) | ✅ Done — Phase 56 (`user_sigs.rs`; `u` key overlay; "Custom" group) |
+| Forensic artifact scanning (email, URLs, CC#) | ✅ Done — Phase 57 (`ferrite-artifact`; Tab 8; 6 scanners; CSV export) |
+| Heuristic text block scanner | ✅ Done — Phase 64 (`ferrite-textcarver`; Tab 9; 9 TextKind variants) |
+| Non-zero-offset scan (ISO, DICOM, TAR) | ✅ Done — Phase 62 (`header_offset: u64` on `Signature`; 94 → 97 sigs) |
+| PhotoRec Tier A batch (CR3/SR2/EPUB/ODT/MSG/WavPack/CDR/SWF×3/DCR) | ✅ Done — Phase 59 (62 → 73 sigs) |
+| PhotoRec Tier B batch 1 (CRW/MRW/KDBX/KDB/E01/PCAP×2/DMP/plist/TS/M2TS/LUKS/X3F) | ✅ Done — Phase 60 (73 → 86 sigs) |
+| PhotoRec Tier B batch 2 (APE/AU/TTF/WOFF/CHM/Blender/InDesign/WTV) | ✅ Done — Phase 61 (86 → 94 sigs) |
+| Code file signatures (PHP, shebang) | ✅ Done — Phase 63 (97 → 99 sigs) |
 
 ---
 
@@ -679,6 +689,301 @@ scanner cannot detect these.
 
 ---
 
+### Phase 63 — Code File Signatures (+2 signatures: PHP, Shebang scripts)
+
+**Motivation:** Source code files with unambiguous openers can be recovered reliably
+by carving without filesystem metadata. PHP files always start with `<?php`. Shell,
+Python, Ruby, Perl, and Node.js scripts almost always start with a shebang (`#!/`).
+These two signatures cover a large proportion of real-world code file recovery needs.
+
+| Sig | Ext | Magic | Notes |
+|---|---|---|---|
+| PHP script | `php` | `3C 3F 70 68 70` (`<?php`) | Pre-validate: byte @5 is space/newline/tab; after shebang line content is ≥ 70% printable |
+| Shebang script | `sh`/`py`/`rb`/`pl`/`js` | `23 21 2F` (`#!/`) | Pre-validate: path is ASCII printable; shebang line ≤ 128 bytes; classify by interpreter name |
+
+**Shebang extension classification** (via pre-validator):
+- `python`/`python3` → `.py`
+- `ruby` → `.rb`
+- `perl` → `.pl`
+- `node`/`nodejs` → `.js`
+- all others (bash/sh/zsh/dash) → `.sh`
+
+**Changes:**
+- `config/signatures.toml` — 2 new entries (`php`, shebang)
+- `crates/ferrite-carver/src/pre_validate.rs` — add `Php` and `Shebang` variants + validators
+- `crates/ferrite-carver/src/lib.rs` — update assertion (73 → 75)
+- `crates/ferrite-tui/src/screens/carving/helpers.rs` — route `php`/`sh`/`py`/`rb`/`pl`/`js` → Documents group
+
+**Note:** `.bat`/`.cmd` files (starting with `@echo`) are intentionally excluded — the
+opener is too fragile and occurs frequently in binary data. BAT files are best recovered
+via filesystem metadata (Tab 4/7).
+
+---
+
+### Phase 64 — Heuristic Text Block Scanner
+
+**Motivation:** Plain text files, Markdown, and most source code have no binary magic
+bytes and cannot be recovered by the signature-based carver. When filesystem metadata
+is unavailable, the only option is a heuristic scan: identify contiguous regions of
+valid UTF-8 / ASCII text in the raw device stream, classify them by content, and emit
+each as a candidate file. Results are inherently variable quality — some blocks will be
+partial files or merged fragments — but recovering *something* is better than recovering
+nothing.
+
+This phase adds a new crate `ferrite-textcarver` and a new TUI tab "Text Scan" (Tab 9).
+
+---
+
+#### Architecture
+
+```
+ferrite-textcarver/
+  src/
+    lib.rs          — pub re-exports
+    scanner.rs      — TextBlock, TextKind, TextScanConfig, TextScanMsg, TextScanProgress
+    engine.rs       — run_scan(), sliding window scanner, gap-tolerant UTF-8 accumulation
+    classifier.rs   — classify() → (TextKind, confidence: u8)
+    export.rs       — write_files(output_dir, blocks) → (written, errors)
+  Cargo.toml        — deps: ferrite-blockdev, tracing, thiserror
+
+ferrite-tui/src/screens/text_scan/
+  mod.rs            — TextScanState, ScanStatus, tick(), start_scan(), cancel_scan(), export_files()
+  input.rs          — handle_key(): consent, output dir editing, navigation, s/c/e/o/0-6 filter
+  render.rs         — full render: output bar, progress gauge, block list, status bar, consent overlay
+```
+
+---
+
+#### Core Data Model (`scanner.rs`)
+
+```rust
+/// Classification of a recovered text block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextKind {
+    Php,        // <?php opener
+    Script,     // #!/ shebang (sh/py/rb/pl/js — extension set by classifier)
+    Json,       // { or [ with "key": value structure
+    Yaml,       // --- frontmatter or key: value density
+    Markup,     // <html / <!DOCTYPE / <?xml
+    Sql,        // SELECT/INSERT/CREATE/UPDATE keyword density
+    CSource,    // #include / typedef / struct keyword density
+    Markdown,   // # headings + **bold** / [link]() patterns
+    Generic,    // printable text, no strong classification signal
+}
+
+impl TextKind {
+    pub fn extension(self) -> &'static str { … }  // php/sh/json/yaml/html/sql/c/md/txt
+    pub fn label(self) -> &'static str { … }       // display name for TUI filter
+}
+
+pub struct TextBlock {
+    pub byte_offset:  u64,
+    pub length:       u64,
+    pub kind:         TextKind,
+    pub confidence:   u8,    // 0–100; how confident the classifier is
+    pub quality:      u8,    // 0–100; printable_bytes / total_bytes × 100
+    pub preview:      String, // first ≤ 80 chars, newlines replaced with ↵
+}
+
+pub struct TextScanConfig {
+    pub min_block_bytes:     u64,   // default: 256
+    pub max_block_bytes:     u64,   // default: 1_048_576 (1 MiB)
+    pub gap_tolerance_bytes: usize, // default: 8 — non-printable bytes before block ends
+    pub min_printable_pct:   u8,    // default: 80 — % of bytes that must be "text-like"
+    pub chunk_bytes:         u64,   // default: 1_048_576 (1 MiB read per I/O call)
+    pub overlap_bytes:       usize, // default: 4096 — tail of chunk prepended to next
+}
+
+pub struct TextScanProgress {
+    pub bytes_done:  u64,
+    pub bytes_total: u64,
+    pub blocks_found: usize,
+}
+
+pub enum TextScanMsg {
+    BlockBatch(Vec<TextBlock>),
+    Progress(TextScanProgress),
+    Done { total_blocks: usize },
+    Error(String),
+}
+```
+
+---
+
+#### Scanner Engine (`engine.rs`)
+
+The engine uses a **gap-tolerant sliding window** over the raw device stream:
+
+1. Read aligned 1 MiB chunks from the device. Prepend the 4 KiB overlap tail from the
+   previous chunk to catch blocks that span chunk boundaries.
+
+2. Walk byte-by-byte through the chunk maintaining state:
+   - `in_block: bool` — whether we are accumulating a text block
+   - `block_start: u64` — absolute device offset where current block began
+   - `gap_run: usize` — consecutive non-text bytes seen while in a block
+   - `printable_count: u64` / `total_count: u64` — for quality scoring
+
+3. **"Text-like" definition** (used for both start detection and gap counting):
+   - ASCII printable: 0x09 (tab), 0x0A (LF), 0x0D (CR), 0x20–0x7E
+   - Valid UTF-8 continuation: 0x80–0xBF following a valid lead byte
+   - UTF-8 lead bytes: 0xC2–0xF4 (2–4 byte sequences)
+   - Everything else: non-text
+
+4. **Block start**: Three consecutive text-like bytes → `in_block = true`, record offset.
+
+5. **Block continuation**: Each text-like byte resets `gap_run = 0`. Each non-text byte
+   increments `gap_run`.
+
+6. **Block end triggers**:
+   - `gap_run > gap_tolerance_bytes` → emit block (if length ≥ `min_block_bytes`)
+   - `length == max_block_bytes` → emit block and immediately start new block at next byte
+   - End of device → emit any in-progress block
+
+7. **Quality gate**: After extraction, compute `printable_count / total_count`. If below
+   `min_printable_pct` threshold, discard the block rather than emitting it.
+
+8. **Deduplication**: Maintain a `HashSet<u64>` of xxHash-64 digests of each block's
+   content. Skip blocks whose hash has already been seen (handles sectors read twice
+   due to overlaps or defect-retry logic).
+
+9. Emit `TextScanMsg::BlockBatch` periodically (every 50 blocks or 5 s, whichever
+   first) and `TextScanMsg::Progress` every 1 MiB.
+
+---
+
+#### Classifier (`classifier.rs`)
+
+The classifier examines the first 256 bytes of a block (for openers) and the first
+1 KiB (for keyword density). Returns `(TextKind, confidence: u8)`.
+
+**Priority order (first match wins):**
+
+| Check | Kind | Confidence |
+|---|---|---|
+| Starts with `<?php` | `Php` | 99 |
+| Starts with `#!/` + valid path | `Script` | 97 |
+| Starts with `<?xml` | `Markup` | 99 |
+| Starts with `<!DOCTYPE` or `<html` (case-insensitive) | `Markup` | 95 |
+| Starts with `{` or `[` + `"key":` pattern ≥ 2× | `Json` | 85 |
+| Starts with `---\n` or `---\r\n` | `Yaml` | 90 |
+| SQL keyword density ≥ 3 distinct (`SELECT`/`INSERT`/`CREATE`/`UPDATE`/`DELETE`/`FROM`/`WHERE`) | `Sql` | 70 |
+| C keyword density ≥ 3 (`#include`/`#define`/`typedef`/`struct`/`void`/`int`) | `CSource` | 65 |
+| Markdown pattern density ≥ 2 (`# `/`## `/`**`/`[`+`](`/`- `+`[ ]`) | `Markdown` | 65 |
+| None of the above | `Generic` | 50 |
+
+**Script sub-classification** (sets `TextBlock::extension` via `TextKind::Script`):
+- shebang line contains `python` or `python3` → `py`
+- shebang line contains `ruby` → `rb`
+- shebang line contains `perl` → `pl`
+- shebang line contains `node` → `js`
+- otherwise → `sh`
+
+---
+
+#### Exporter (`export.rs`)
+
+```rust
+pub fn write_files(output_dir: &str, blocks: &[TextBlock]) -> (usize, Vec<String>)
+```
+
+- Creates `output_dir` if it does not exist
+- Names each file: `text_<hex_offset>.<ext>` — e.g. `text_00A4BC00.md`
+- Writes raw bytes (the content is already valid UTF-8 by definition of the scanner)
+- Returns `(written_count, error_messages)`
+
+---
+
+#### TUI State (`mod.rs`)
+
+```rust
+pub struct TextScanState {
+    device:           Option<Arc<dyn BlockDevice>>,
+    status:           ScanStatus,
+    blocks:           Vec<TextBlock>,
+    block_sel:        usize,
+    filtered:         Vec<usize>,          // indices into blocks
+    progress:         Option<TextScanProgress>,
+    scan_start:       Option<Instant>,
+    cancel:           Arc<AtomicBool>,
+    rx:               Option<Receiver<TextScanMsg>>,
+    consent_given:    bool,
+    show_consent:     bool,
+    filter_kind:      Option<TextKind>,    // None = show all
+    output_dir:       String,
+    editing_dir:      bool,
+    export_status:    Option<String>,
+    blocks_page_size: usize,
+    error_msg:        String,
+}
+```
+
+`tick()` drains `rx` using the `self.rx.take()` pattern (same as ArtifactsState).
+
+---
+
+#### TUI Render (`render.rs`)
+
+**Title bar:** ` Text Scan [status] — filter: <kind>  s:scan  c:cancel  e:export  o:output  0-8:filter `
+
+**Layout (4 rows inside outer border):**
+```
+┌─ Text Scan [scanning…] ──────────────────────────────────────────────────────┐
+│ Output dir: ./ferrite_text/  (o to edit)                                     │  ← row 0
+│ ████████████░░░░░░  47 blocks  256/512 MiB  38s                              │  ← row 1 (progress)
+│ 00A4BC00  2.1 KiB  py   95%  #!/usr/bin/python3↵import os↵import sys↵…     │  ← row 2 (block list)
+│ 00A52000  512 B    txt  82%  This is a sample text document with no…        │
+│  …                                                                            │
+│ 0:all  1:php  2:script  3:json  4:yaml  5:markup  6:sql  7:csrc  8:md      │  ← row 3
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Block list columns:** `<hex_offset>  <size>  <kind>  <quality%>  <preview>`
+- `kind` colored by TextKind (same color-per-kind approach as ArtifactsState)
+- `quality%` colored: ≥90 = green, ≥70 = yellow, <70 = red
+
+**Consent dialog:** Similar to Artifacts. Warns that results are variable quality, some
+blocks may be partial files or merged fragments, and no data is written until `e` is pressed.
+
+---
+
+#### Integration (`app.rs`)
+
+- `SCREEN_NAMES`: extend to 10 entries, add `" Text Scan "`
+- `App` struct: add `text_scan: TextScanState`
+- `App::tick()`: call `self.text_scan.tick()`
+- `App::handle_key()`: route screen 9 → `self.text_scan.handle_key()`
+- `App::render()`: route screen 9 → `self.text_scan.render()`
+- `set_device()` propagation: call `self.text_scan.set_device(Arc::clone(&dev))`
+- `is_editing()` check: add screen 9 to the `q`-quit guard
+- Help line: add screen 9 entry
+
+---
+
+#### Known Limitations (documented in UI consent dialog)
+
+1. **No filename recovery** — files are named by device offset only
+2. **Merged fragments** — two adjacent text files with no binary gap will be
+   emitted as one block; this is unavoidable without filesystem metadata
+3. **False positives** — binary files that happen to contain long ASCII strings
+   (e.g. PE executables, SQLite databases) will produce spurious hits; the quality
+   score and min_printable_pct gate reduce but do not eliminate these
+4. **No encoding detection** — only UTF-8 and ASCII are recognised; UTF-16 (common in
+   Windows) requires separate handling (future phase)
+5. **Tab 4 / Tab 7 always preferred** — if filesystem metadata is available, those
+   screens recover text files with original names and zero false positives
+
+---
+
+**Changes:**
+- New crate `crates/ferrite-textcarver/` (4 source files + Cargo.toml)
+- `Cargo.toml` (workspace) — add `ferrite-textcarver` member + workspace dep
+- `crates/ferrite-tui/Cargo.toml` — add `ferrite-textcarver` dep
+- `crates/ferrite-tui/src/screens/mod.rs` — add `pub mod text_scan`
+- `crates/ferrite-tui/src/screens/text_scan/` — 3 files (mod, input, render)
+- `crates/ferrite-tui/src/app.rs` — wire Tab 9 into all routing paths
+
+---
+
 ### Phase 58 — APFS + exFAT Full Parser (Stretch Goal)
 
 **Motivation:** exFAT and APFS are the dominant filesystems on removable media and Apple
@@ -716,21 +1021,23 @@ gets it to "recovers actual files."
 | 54 | Recovery report export | 🟡 Medium | High | ✅ **Done** |
 | 47a | Read-rate tracking (`read_rate_bps`) | 🟠 High | Low | ✅ **Done** |
 | — | — | — | — | — |
-| 45b | Quick Deleted-File Recovery mode | 🔴 Critical | Medium | ⬜ **Next** |
-| 46 | Tier 1 signatures (10 new → 53 total) | 🟠 High | Low | ⬜ Todo |
-| 47b | SHA256 image integrity hash | 🟠 High | Low | ⬜ Todo |
-| 47c | Low read-rate alert + TUI warning | 🟠 High | Low | ⬜ Todo |
-| 51b | SMART thermal guard during imaging | 🟡 Medium | Medium | ⬜ Todo |
-| 52 | Tier 2 signatures (9 new → 62 total) | 🟡 Medium | Low | ⬜ Todo |
-| 53 | Write-blocker verification | 🟡 Medium | Low | ⬜ Todo |
-| 55 | Carve hit validation + dedup | 🟡 Medium | Medium | ⬜ Todo |
-| 56 | Custom user signatures (TUI) | 🟢 Low | Medium | ⬜ Todo |
-| 57 | Forensic artifact scanner | 🟢 Low | High | ⬜ Todo |
-| 59 | PhotoRec Tier A quick wins (9 new sigs) | 🟠 High | Low | ⬜ Todo |
-| 60 | PhotoRec Tier B batch 1 (13 new sigs) | 🟡 Medium | Low | ⬜ Todo |
-| 61 | PhotoRec Tier B batch 2 (8 new sigs) | 🟡 Medium | Low | ⬜ Todo |
-| 62 | Non-zero offset scan (ISO, DICOM, TAR) | 🟡 Medium | Medium | ⬜ Todo |
-| 58 | APFS + exFAT full parser | 🟢 Low | Very High | ⬜ Stretch |
+| 45b | Quick Deleted-File Recovery mode | 🔴 Critical | Medium | ✅ **Done** |
+| 46 | Tier 1 signatures (10 new → 53 total) | 🟠 High | Low | ✅ **Done** |
+| 47b | SHA256 image integrity hash | 🟠 High | Low | ✅ **Done** |
+| 47c | Low read-rate alert + TUI warning | 🟠 High | Low | ✅ **Done** |
+| 51b | SMART thermal guard during imaging | 🟡 Medium | Medium | ✅ **Done** |
+| 52 | Tier 2 signatures (9 new → 62 total) | 🟡 Medium | Low | ✅ **Done** |
+| 53 | Write-blocker verification | 🟡 Medium | Low | ✅ **Done** |
+| 55 | Carve hit validation + dedup | 🟡 Medium | Medium | ✅ **Done** |
+| 56 | Custom user signatures (TUI) | 🟢 Low | Medium | ✅ **Done** |
+| 57 | Forensic artifact scanner | 🟢 Low | High | ✅ **Done** |
+| 59 | PhotoRec Tier A quick wins (9 new sigs) | 🟠 High | Low | ✅ **Done** |
+| 60 | PhotoRec Tier B batch 1 (13 new sigs) | 🟡 Medium | Low | ✅ **Done** |
+| 61 | PhotoRec Tier B batch 2 (8 new sigs) | 🟡 Medium | Low | ✅ **Done** |
+| 62 | Non-zero offset scan (ISO, DICOM, TAR) | 🟡 Medium | Medium | ✅ **Done** |
+| 63 | Code file signatures (PHP, shebang) | 🟡 Medium | Low | ✅ **Done** |
+| 64 | Heuristic text block scanner | 🟡 Medium | High | ✅ **Done** |
+| 58 | APFS + exFAT full parser | 🟢 Low | Very High | ✅ **Done** |
 
 ---
 

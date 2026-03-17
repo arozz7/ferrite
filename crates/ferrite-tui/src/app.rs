@@ -18,6 +18,7 @@ use ferrite_blockdev::BlockDevice;
 use crate::session::Session;
 use crate::{
     screens::{
+        artifacts::ArtifactsState,
         carving::CarvingState,
         drive_select::DriveSelectState,
         file_browser::FileBrowserState,
@@ -28,11 +29,12 @@ use crate::{
         quick_recover::QuickRecoverState,
         report::generate_report,
         session_manager::{SessionManagerState, SessionMsg},
+        text_scan::TextScanState,
     },
     Result,
 };
 
-const SCREEN_NAMES: [&str; 8] = [
+const SCREEN_NAMES: [&str; 10] = [
     " Drives ",
     " Health ",
     " Imaging ",
@@ -41,6 +43,8 @@ const SCREEN_NAMES: [&str; 8] = [
     " Carving ",
     " Hex ",
     " Quick Recover ",
+    " Artifacts ",
+    " Text Scan ",
 ];
 
 /// Root application state.
@@ -57,6 +61,8 @@ pub struct App {
     pub carving: CarvingState,
     pub hex_viewer: HexViewerState,
     pub quick_recover: QuickRecoverState,
+    pub artifacts: ArtifactsState,
+    pub text_scan: TextScanState,
     /// Saved-session manager overlay.
     pub session_manager: SessionManagerState,
     /// Status message from the last report generation.
@@ -78,6 +84,8 @@ impl App {
             carving: CarvingState::new(),
             hex_viewer: HexViewerState::new(),
             quick_recover: QuickRecoverState::new(),
+            artifacts: ArtifactsState::new(),
+            text_scan: TextScanState::new(),
             session_manager: SessionManagerState::default(),
             report_status: None,
         };
@@ -151,6 +159,8 @@ impl App {
                         self.carving.set_device(Arc::clone(&device));
                         self.carving.restore_from_session(&session);
                         self.quick_recover.set_device(Arc::clone(&device));
+                        self.artifacts.set_device(Arc::clone(&device));
+                        self.text_scan.set_device(Arc::clone(&device));
                         self.hex_viewer.set_device(device);
                         self.screen_idx = 5; // go to carving screen
                         self.on_screen_enter();
@@ -191,6 +201,8 @@ impl App {
                 5 => self.carving.is_editing(),
                 6 => self.hex_viewer.is_editing(),
                 7 => self.quick_recover.is_editing(),
+                8 => self.artifacts.is_editing(),
+                9 => self.text_scan.is_editing(),
                 _ => false,
             };
             if !in_edit {
@@ -222,6 +234,8 @@ impl App {
                     self.file_browser.set_device(Arc::clone(&dev));
                     self.carving.set_device(Arc::clone(&dev));
                     self.quick_recover.set_device(Arc::clone(&dev));
+                    self.artifacts.set_device(Arc::clone(&dev));
+                    self.text_scan.set_device(Arc::clone(&dev));
                     self.hex_viewer.set_device(dev);
                     // Auto-advance to Health so the user sees S.M.A.R.T. results immediately.
                     self.screen_idx = 1;
@@ -245,6 +259,8 @@ impl App {
             }
             6 => self.hex_viewer.handle_key(code, modifiers),
             7 => self.quick_recover.handle_key(code, modifiers),
+            8 => self.artifacts.handle_key(code, modifiers),
+            9 => self.text_scan.handle_key(code, modifiers),
             _ => {}
         }
     }
@@ -286,6 +302,8 @@ impl App {
         self.file_browser.tick();
         self.carving.tick();
         self.quick_recover.tick();
+        self.artifacts.tick();
+        self.text_scan.tick();
     }
 
     /// Called whenever the active screen changes so screens can react on entry.
@@ -331,6 +349,8 @@ impl App {
             5 => self.carving.render(frame, chunks[1]),
             6 => self.hex_viewer.render(frame, chunks[1]),
             7 => self.quick_recover.render(frame, chunks[1]),
+            8 => self.artifacts.render(frame, chunks[1]),
+            9 => self.text_scan.render(frame, chunks[1]),
             _ => {}
         }
 
@@ -376,6 +396,8 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
         5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  h: hex  v: preview  Tab: next  q: quit",
         6 => " ↑/↓: sector  PgUp/PgDn: ±16  Home/End  g: jump to LBA  b: jump to offset  Tab: next  q: quit",
         7 => " ↑/↓: navigate  Space: check  R: recover  /: filter  a: check-high  A: check-all  Esc: clear  Tab: next  q: quit",
+        8 => " ↑/↓: navigate  s: scan  c: cancel  e: export CSV  o: output dir  0-6: filter kind  Tab: next  q: quit",
+        9 => " ↑/↓: navigate  s: scan  c: cancel  e: export files  o: output dir  0-8: filter kind  Tab: next  q: quit",
         _ => " Tab: next  q: quit",
     }
 }
@@ -409,6 +431,6 @@ mod tests {
 
     #[test]
     fn screen_count_matches_names() {
-        assert_eq!(SCREEN_NAMES.len(), 8);
+        assert_eq!(SCREEN_NAMES.len(), 10);
     }
 }

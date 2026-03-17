@@ -24,15 +24,17 @@
 mod carver_io;
 mod error;
 mod pre_validate;
+pub mod post_validate;
 mod scan_search;
 mod scanner;
 mod signature;
 mod size_hint;
 
 pub use error::{CarveError, Result};
+pub use post_validate::CarveQuality;
 pub use pre_validate::PreValidate;
 pub use scanner::{CarveHit, Carver, ScanProgress};
-pub use signature::{parse_hex, CarvingConfig, Signature, SizeHint};
+pub use signature::{parse_hex, parse_hex_pattern, CarvingConfig, Signature, SizeHint};
 
 #[cfg(test)]
 mod tests {
@@ -48,7 +50,7 @@ mod tests {
     fn builtin_signatures_parse() {
         let toml = include_str!("../../../config/signatures.toml");
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.signatures.len(), 53, "expected 53 built-in signatures");
+        assert_eq!(cfg.signatures.len(), 99, "expected 99 built-in signatures");
 
         // Both JPEG variants must be present with 4-byte headers.
         let jpeg_jfif = cfg

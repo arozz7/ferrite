@@ -1,0 +1,17 @@
+[package]
+name              = "ferrite-artifact"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferrite-blockdev = { workspace = true }
+regex            = { workspace = true }
+tracing          = { workspace = true }
+thiserror        = { workspace = true }
+
+[dev-dependencies]
+ferrite-blockdev = { workspace = true }
+tempfile         = { workspace = true }

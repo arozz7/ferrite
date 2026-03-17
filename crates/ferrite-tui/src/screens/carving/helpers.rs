@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use ferrite_carver::CarvingConfig;
 
+use super::user_sigs::UserSigDef;
 use super::{SigEntry, SigGroup};
 
 // ── Formatting ────────────────────────────────────────────────────────────────
@@ -23,6 +24,7 @@ pub(crate) fn fmt_bytes(n: u64) -> String {
 // ── Signature grouping ────────────────────────────────────────────────────────
 
 /// Display order for signature groups.
+/// "Custom" is intentionally omitted — it is appended dynamically when present.
 const GROUP_ORDER: &[&str] = &[
     "Images",
     "RAW Photos",
@@ -39,18 +41,49 @@ const GROUP_ORDER: &[&str] = &[
 fn sig_group_label(ext: &str) -> &'static str {
     match ext {
         "jpg" | "png" | "gif" | "bmp" | "tif" | "webp" | "psd" => "Images",
-        "arw" | "cr2" | "nef" | "rw2" | "raf" | "heic" => "RAW Photos",
-        "mp4" | "mov" | "m4v" | "3gp" | "avi" | "mkv" | "webm" | "wmv" | "flv" | "mpg" => "Video",
-        "mp3" | "flac" | "wav" | "ogg" | "m4a" => "Audio",
-        "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" | "eml" => "Documents",
-        "zip" | "ole" | "pst" => "Office & Email",
-        "rar" | "7z" | "gz" => "Archives",
-        "db" | "vmdk" | "evtx" | "exe" | "elf" | "dat" | "vhd" | "vhdx" | "qcow2" => "System",
+        "arw" | "cr2" | "nef" | "rw2" | "raf" | "heic" | "orf" | "pef" | "cr3" | "sr2"
+        | "dcr" | "crw" | "mrw" | "x3f" => "RAW Photos",
+        "mp4" | "mov" | "m4v" | "3gp" | "avi" | "mkv" | "webm" | "wmv" | "flv" | "mpg"
+        | "rm" | "swf" | "ts" | "m2ts" | "wtv" => "Video",
+        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "mid" | "aif" | "wv" | "ape" | "au" => "Audio",
+        "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" | "eml" | "epub" | "odt" | "cdr"
+        | "ttf" | "woff" | "chm" | "blend" | "indd" | "php" | "sh" => "Documents",
+        "zip" | "ole" | "pst" | "msg" => "Office & Email",
+        "rar" | "7z" | "gz" | "xz" | "bz2" | "iso" | "tar" => "Archives",
+        "db" | "vmdk" | "evtx" | "exe" | "elf" | "dat" | "vhd" | "vhdx" | "qcow2" | "macho"
+        | "kdbx" | "kdb" | "e01" | "pcap" | "dmp" | "plist" | "luks" | "dcm" => "System",
+        "ico" => "Images",
         _ => "Other",
     }
 }
 
 // ── Signature loading ─────────────────────────────────────────────────────────
+
+/// Build a "Custom" [`SigGroup`] from `sigs`.  Returns `None` if `sigs` is
+/// empty (so the caller can skip adding it to `groups`).
+///
+/// The group starts **expanded** so users immediately see their signatures.
+/// Only entries whose `to_signature()` call succeeds are included; broken
+/// definitions are silently skipped.
+pub(super) fn build_user_sig_group(sigs: &[UserSigDef]) -> Option<SigGroup> {
+    let entries: Vec<SigEntry> = sigs
+        .iter()
+        .filter_map(|def| {
+            def.to_signature().ok().map(|sig| SigEntry {
+                sig,
+                enabled: true,
+            })
+        })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    Some(SigGroup {
+        label: "Custom",
+        expanded: true,
+        entries,
+    })
+}
 
 /// Load all built-in signatures and return them organised into labelled groups.
 /// Groups are ordered by `GROUP_ORDER`; each group starts collapsed.

@@ -8,6 +8,8 @@ members = [
     "crates/ferrite-partition",
     "crates/ferrite-filesystem",
     "crates/ferrite-carver",
+    "crates/ferrite-artifact",
+    "crates/ferrite-textcarver",
     "crates/ferrite-tui",
 ]
 resolver = "2"
@@ -50,6 +52,7 @@ byteorder = "1"
 crc32fast = "1"
 memchr    = "2"
 rayon     = "1"
+regex     = "1"
 sha2      = "0.10"
 fs2       = "0.4"
 filetime  = "0.2"
@@ -63,6 +66,8 @@ ferrite-smart    = { path = "crates/ferrite-smart" }
 ferrite-partition    = { path = "crates/ferrite-partition" }
 ferrite-filesystem   = { path = "crates/ferrite-filesystem" }
 ferrite-carver       = { path = "crates/ferrite-carver" }
+ferrite-artifact     = { path = "crates/ferrite-artifact" }
+ferrite-textcarver   = { path = "crates/ferrite-textcarver" }
 ferrite-tui          = { path = "crates/ferrite-tui" }
 
 # Dev / test utilities

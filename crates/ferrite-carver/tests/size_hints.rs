@@ -38,6 +38,7 @@ fn extract_size_hint_limits_output() {
         }),
         min_size: 0,
         pre_validate: None,
+        header_offset: 0,
     };
     let hit = CarveHit {
         byte_offset: 0,
@@ -85,6 +86,7 @@ fn extract_ole2_size_hint_limits_output() {
         size_hint: Some(SizeHint::Ole2),
         min_size: 0,
         pre_validate: None,
+        header_offset: 0,
     };
     let hit = CarveHit {
         byte_offset: 0,
@@ -134,6 +136,7 @@ fn extract_linear_scaled_size_hint_limits_output() {
         }),
         min_size: 0,
         pre_validate: None,
+        header_offset: 0,
     };
     let hit = CarveHit {
         byte_offset: 0,
@@ -188,6 +191,7 @@ fn extract_sqlite_size_hint_limits_output() {
         size_hint: Some(SizeHint::Sqlite),
         min_size: 0,
         pre_validate: None,
+        header_offset: 0,
     };
     let hit = CarveHit {
         byte_offset: 0,
@@ -233,6 +237,7 @@ fn extract_seven_zip_size_hint_limits_output() {
         size_hint: Some(SizeHint::SevenZip),
         min_size: 0,
         pre_validate: None,
+        header_offset: 0,
     };
     let hit = CarveHit {
         byte_offset: 0,
@@ -287,6 +292,7 @@ fn extract_ogg_stream_size_hint_stops_at_eos() {
         size_hint: Some(SizeHint::OggStream),
         min_size: 0,
         pre_validate: None,
+        header_offset: 0,
     };
     let hit = CarveHit {
         byte_offset: 0,
@@ -320,6 +326,7 @@ fn extract_ogg_stream_no_eos_falls_back_to_max_size() {
         size_hint: Some(SizeHint::OggStream),
         min_size: 0,
         pre_validate: None,
+        header_offset: 0,
     };
     let hit = CarveHit {
         byte_offset: 0,

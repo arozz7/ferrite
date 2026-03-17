@@ -478,6 +478,24 @@ mod tests {
     }
 
     #[test]
+    fn sha256_matches_source_data() {
+        use sha2::{Digest, Sha256};
+
+        let mut mock = MockBlockDevice::zeroed(SIZE, SECTOR);
+        for i in 0..SECTORS {
+            mock.write_sector(i as u64, &[i as u8; SECTOR as usize]);
+        }
+        let (mut engine, tmp) = make_engine(mock);
+        engine.run(&mut NullReporter).unwrap();
+
+        // Hash computed by the engine helper must match a direct sha2 digest of output.
+        let engine_hex = crate::hash::hash_file(tmp.path()).unwrap();
+        let output = std::fs::read(tmp.path()).unwrap();
+        let expected = format!("{:x}", Sha256::digest(&output));
+        assert_eq!(engine_hex, expected);
+    }
+
+    #[test]
     fn reverse_mode_images_entire_device() {
         let mut mock = MockBlockDevice::zeroed(SIZE, SECTOR);
         // Fill each sector with its sector index.

@@ -59,8 +59,16 @@ pub(crate) fn find_all(
                 .as_ref()
                 .is_none_or(|kind| pre_validate::is_valid(kind, data, pos))
         {
+            let magic_abs = chunk_abs_offset + pos as u64;
+            // For non-zero-offset signatures the magic appears at header_offset
+            // bytes into the file.  Shift back to obtain the true file start.
+            // Skip hits where the file start would precede the device start.
+            if magic_abs < sig.header_offset {
+                search_start = anchor_pos + 1;
+                continue;
+            }
             hits.push(CarveHit {
-                byte_offset: chunk_abs_offset + pos as u64,
+                byte_offset: magic_abs - sig.header_offset,
                 signature: sig.clone(),
             });
         }
@@ -111,6 +119,7 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: Some(PreValidate::Zip),
+            header_offset: 0,
         }
     }
 
@@ -131,5 +140,58 @@ mod tests {
         let data = make_zip_lfh("document.pdf", 20, 8);
         let hits = find_all(&sig, &data, 0, data.len());
         assert_eq!(hits.len(), 1, "file-entry ZIP header should pass find_all");
+    }
+
+    // ── header_offset infrastructure ──────────────────────────────────────────
+
+    /// A simple signature whose magic appears at byte 10 within the file
+    /// (like DICOM's "DICM" at offset 128, but much smaller for testing).
+    fn offset_sig(magic: Vec<Option<u8>>, offset: u64) -> Signature {
+        Signature {
+            name: "OffsetTest".into(),
+            extension: "tst".into(),
+            header: magic,
+            footer: vec![],
+            footer_last: false,
+            max_size: 1_000_000,
+            size_hint: None,
+            min_size: 0,
+            pre_validate: None,
+            header_offset: offset,
+        }
+    }
+
+    #[test]
+    fn header_offset_shifts_byte_offset_back() {
+        // Magic 0xAB at position 10 in data; file starts at position 10 - 5 = 5.
+        let sig = offset_sig(vec![Some(0xAB)], 5);
+        let mut data = vec![0u8; 20];
+        data[10] = 0xAB;
+        let hits = find_all(&sig, &data, 100, data.len());
+        assert_eq!(hits.len(), 1);
+        // byte_offset = chunk_abs_offset(100) + pos(10) - header_offset(5) = 105
+        assert_eq!(hits[0].byte_offset, 105);
+    }
+
+    #[test]
+    fn header_offset_skips_hit_before_device_start() {
+        // Magic at position 3 in data; header_offset = 5.
+        // File start would be at chunk_abs_offset(0) + 3 - 5 = negative → skip.
+        let sig = offset_sig(vec![Some(0xAB)], 5);
+        let mut data = vec![0u8; 20];
+        data[3] = 0xAB;
+        let hits = find_all(&sig, &data, 0, data.len());
+        assert!(hits.is_empty(), "hit before device start should be skipped");
+    }
+
+    #[test]
+    fn header_offset_zero_behaves_normally() {
+        // Offset 0 should work identically to existing behaviour.
+        let sig = offset_sig(vec![Some(0xCD)], 0);
+        let mut data = vec![0u8; 10];
+        data[4] = 0xCD;
+        let hits = find_all(&sig, &data, 200, data.len());
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].byte_offset, 204); // 200 + 4 - 0
     }
 }

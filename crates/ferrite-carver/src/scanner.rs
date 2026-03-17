@@ -318,6 +318,7 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: None,
+            header_offset: 0,
         }
     }
 
@@ -485,6 +486,7 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: None,
+            header_offset: 0,
         };
         let wav_sig = Signature {
             name: "WAV".into(),
@@ -509,6 +511,7 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: None,
+            header_offset: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![avi_sig, wav_sig],
@@ -545,6 +548,7 @@ mod tests {
             size_hint: None,
             min_size: 100,
             pre_validate: None,
+            header_offset: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![sig],
@@ -577,6 +581,7 @@ mod tests {
             size_hint: None,
             min_size: 100,
             pre_validate: None,
+            header_offset: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![sig],

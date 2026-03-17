@@ -6,10 +6,125 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
 
-use super::{preview, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow, ScanRangeField};
+use super::{
+    preview, user_sig_panel, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow,
+    FormMode, ScanRangeField, UserSigForm,
+};
 
 impl CarvingState {
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // ── User-signature import path input ──────────────────────────────────
+        if self.editing_import {
+            match code {
+                KeyCode::Esc => {
+                    self.user_import_path.clear();
+                    self.editing_import = false;
+                }
+                KeyCode::Enter => self.do_import(),
+                KeyCode::Backspace => {
+                    self.user_import_path.pop();
+                }
+                KeyCode::Char(c)
+                    if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
+                {
+                    self.user_import_path.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── User-signature form ───────────────────────────────────────────────
+        if self.show_user_panel {
+            if let Some(mut form) = self.user_sig_form.take() {
+                let action =
+                    user_sig_panel::handle_form_key(&mut form, code, modifiers);
+                match action {
+                    user_sig_panel::FormAction::None => {
+                        self.user_sig_form = Some(form);
+                    }
+                    user_sig_panel::FormAction::Submit => {
+                        self.submit_user_form(form);
+                    }
+                    user_sig_panel::FormAction::Cancel => {
+                        // form dropped; error state discarded
+                    }
+                }
+                return;
+            }
+
+            // ── User-signature panel list ─────────────────────────────────────
+            if self.user_confirm_delete {
+                match code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        if self.user_panel_sel < self.user_sigs.len() {
+                            self.user_sigs.remove(self.user_panel_sel);
+                            let max = self.user_sigs.len().saturating_sub(1);
+                            self.user_panel_sel = self.user_panel_sel.min(max);
+                            let _ = super::user_sigs::save_user_sigs(
+                                &self.user_sig_path,
+                                &self.user_sigs,
+                            );
+                            self.refresh_custom_group();
+                        }
+                        self.user_confirm_delete = false;
+                    }
+                    _ => {
+                        self.user_confirm_delete = false;
+                    }
+                }
+                return;
+            }
+
+            match code {
+                KeyCode::Esc => {
+                    self.show_user_panel = false;
+                }
+                KeyCode::Up => {
+                    self.user_panel_sel = self.user_panel_sel.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if !self.user_sigs.is_empty() {
+                        let max = self.user_sigs.len() - 1;
+                        self.user_panel_sel = (self.user_panel_sel + 1).min(max);
+                    }
+                }
+                KeyCode::Char('a') => {
+                    self.user_sig_form = Some(UserSigForm {
+                        mode: FormMode::Add,
+                        field: 0,
+                        name: String::new(),
+                        extension: String::new(),
+                        header: String::new(),
+                        footer: String::new(),
+                        max_size_str: String::new(),
+                        error: None,
+                    });
+                }
+                KeyCode::Char('e') if !self.user_sigs.is_empty() => {
+                    let def = &self.user_sigs[self.user_panel_sel];
+                    self.user_sig_form = Some(UserSigForm {
+                        mode: FormMode::Edit(self.user_panel_sel),
+                        field: 0,
+                        name: def.name.clone(),
+                        extension: def.extension.clone(),
+                        header: def.header.clone(),
+                        footer: def.footer.clone(),
+                        max_size_str: def.max_size.to_string(),
+                        error: None,
+                    });
+                }
+                KeyCode::Char('d') if !self.user_sigs.is_empty() => {
+                    self.user_confirm_delete = true;
+                }
+                KeyCode::Char('i') => {
+                    self.editing_import = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // While editing the output directory, route all keys there.
         if self.editing_dir {
             match code {
@@ -135,6 +250,9 @@ impl CarvingState {
             KeyCode::Char('E') => self.extract_all_selected(),
             KeyCode::Char('x') => {
                 self.auto_extract = !self.auto_extract;
+            }
+            KeyCode::Char('u') => {
+                self.show_user_panel = true;
             }
             KeyCode::Char('v') if self.focus == CarveFocus::Hits => {
                 self.show_preview = !self.show_preview;
@@ -316,6 +434,8 @@ impl CarvingState {
         self.paused_elapsed = std::time::Duration::ZERO;
         self.paused_since = None;
         self.status = CarveStatus::Running;
+        self.seen_fingerprints.lock().unwrap().clear();
+        self.duplicates_suppressed = 0;
 
         let (tx, rx) = mpsc::channel::<CarveMsg>();
         // Keep tx alive so extraction results can be sent back after Done.
