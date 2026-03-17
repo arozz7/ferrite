@@ -44,31 +44,47 @@ impl CarvingState {
             }
         };
 
-        // Metadata index availability — tells the user whether original
-        // filenames and folder paths will be used for extracted files.
-        let meta_span = if self.meta_index_building {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![disk_span, auto_str])),
+            area,
+        );
+    }
+
+    /// Dedicated row showing whether original filenames and folder paths are
+    /// available for carved files.  Lives on its own line so it is never
+    /// obscured by the disk / auto-extract status.
+    pub(super) fn render_fs_index_bar(&self, frame: &mut Frame, area: Rect) {
+        let label = Span::styled(" Folder structure: ", Style::default().fg(Color::DarkGray));
+
+        let status = if self.meta_index_building {
             Span::styled(
-                "  ⌛ building FS index…",
-                Style::default().fg(Color::Yellow),
+                "⌛ building filesystem index…",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             )
         } else if let Some(idx) = &self.meta_index {
             if idx.is_empty() {
                 Span::styled(
-                    "  ○ no FS metadata — files named by offset",
+                    "✗ No filesystem metadata found — files will be named by byte offset",
                     Style::default().fg(Color::DarkGray),
                 )
             } else {
                 Span::styled(
-                    format!("  ✓ FS index: {} paths — names & folders active", idx.len()),
-                    Style::default().fg(Color::Green),
+                    format!(
+                        "✓ {} paths indexed — extracted files will use original names & folder structure",
+                        idx.len()
+                    ),
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                 )
             }
         } else {
-            Span::raw("")
+            Span::styled(
+                "○ Not scanned yet — original folder structure unavailable",
+                Style::default().fg(Color::DarkGray),
+            )
         };
 
         frame.render_widget(
-            Paragraph::new(Line::from(vec![disk_span, auto_str, meta_span])),
+            Paragraph::new(Line::from(vec![label, status])),
             area,
         );
     }

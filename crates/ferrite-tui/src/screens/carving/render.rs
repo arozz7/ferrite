@@ -42,10 +42,11 @@ impl CarvingState {
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 
-        // Split vertically: output dir (1) + scan range (1) + disk/auto-extract (1) + main panels.
+        // Split vertically: output dir + scan range + disk/auto-extract + FS index + main panels.
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -56,11 +57,12 @@ impl CarvingState {
         self.render_output_dir_bar(frame, rows[0]);
         self.render_scan_range_bar(frame, rows[1]);
         self.render_disk_auto_bar(frame, rows[2]);
+        self.render_fs_index_bar(frame, rows[3]);
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(rows[3]);
+            .split(rows[4]);
 
         self.render_sig_panel(frame, cols[0]);
         self.render_hits_panel(frame, cols[1]);
