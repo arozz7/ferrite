@@ -110,6 +110,29 @@ pub enum SizeHint {
     /// cap.  Returns `None` when no valid boxes are found (falls back to
     /// `max_size`).
     Isobmff,
+
+    /// TIFF IFD chain walker (Sony ARW, Canon CR2, Panasonic RW2, standard TIFF).
+    ///
+    /// Determines true file size by walking the IFD chain and finding the
+    /// maximum byte extent referenced by any external data pointer, strip/tile
+    /// offset+bytecount pair, or SubIFD (tag `0x014A`) link.  Supports both
+    /// little-endian (`II`) and big-endian (`MM`) byte orders, and the
+    /// Panasonic RW2 variant magic (`0x55` instead of `0x2A`).
+    Tiff,
+
+    /// Fujifilm RAF size hint.
+    ///
+    /// The RAF header encodes two data extents at fixed big-endian u32 offsets:
+    ///
+    /// ```text
+    /// offset  84: JPEG preview offset
+    /// offset  88: JPEG preview length
+    /// offset  92: CFA raw sensor data offset
+    /// offset  96: CFA raw sensor data length
+    /// ```
+    ///
+    /// Returns `max(jpeg_offset + jpeg_length, cfa_offset + cfa_length)`.
+    Raf,
 }
 
 impl SizeHint {
@@ -123,6 +146,8 @@ impl SizeHint {
             SizeHint::SevenZip => "seven_zip",
             SizeHint::OggStream => "ogg_stream",
             SizeHint::Isobmff => "mp4",
+            SizeHint::Tiff => "tiff",
+            SizeHint::Raf => "raf",
         }
     }
 }
@@ -252,6 +277,8 @@ impl CarvingConfig {
                     {
                         Some(SizeHint::Isobmff)
                     }
+                    Some(k) if k.eq_ignore_ascii_case("tiff") => Some(SizeHint::Tiff),
+                    Some(k) if k.eq_ignore_ascii_case("raf") => Some(SizeHint::Raf),
                     Some(k) if k.eq_ignore_ascii_case("linear_scaled") => {
                         match (r.size_hint_offset, r.size_hint_len, r.size_hint_scale) {
                             (Some(offset), Some(len), Some(scale)) => {
