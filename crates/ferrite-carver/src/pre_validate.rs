@@ -202,7 +202,60 @@ fn validate_zip(data: &[u8], pos: usize) -> bool {
     if pos + 30 + fname_len <= data.len() && data[pos + 30 + fname_len - 1] == b'/' {
         return false;
     }
+
+    // Reject internal ZIP entries.
+    //
+    // A ZIP archive's Local File Headers (PK\x03\x04) appear at the start of
+    // each entry.  Only the FIRST entry is the true archive start; all others
+    // are internal.  When a scan chunk contains multiple LFH hits from the same
+    // archive, look backward for a preceding LFH with no EOCD (PK\x05\x06)
+    // between it and the current position.  If found, this hit is an internal
+    // entry — discard it.  (Hits that straddle a chunk boundary may still slip
+    // through; those are handled by deduplication at extraction time.)
+    if pos >= 4 {
+        let lookback = &data[..pos];
+        if let Some(prev_lfh) = pk_find_last(lookback, b'\x03', b'\x04') {
+            // No EOCD between the previous LFH and us → same archive, internal entry.
+            if pk_find_first(&lookback[prev_lfh + 4..], b'\x05', b'\x06').is_none() {
+                return false;
+            }
+        }
+    }
+
     true
+}
+
+/// Find the rightmost `PK<b1><b2>` in `data`, returning its byte index.
+fn pk_find_last(data: &[u8], b1: u8, b2: u8) -> Option<usize> {
+    let mut end = data.len();
+    loop {
+        let p = memchr::memrchr(b'P', &data[..end])?;
+        if p + 3 < data.len() && data[p + 1] == b'K' && data[p + 2] == b1 && data[p + 3] == b2 {
+            return Some(p);
+        }
+        if p == 0 {
+            return None;
+        }
+        end = p;
+    }
+}
+
+/// Find the first `PK<b1><b2>` in `data`, returning its byte index.
+fn pk_find_first(data: &[u8], b1: u8, b2: u8) -> Option<usize> {
+    let mut start = 0;
+    while start < data.len() {
+        let rel = memchr::memchr(b'P', &data[start..])?;
+        let abs = start + rel;
+        if abs + 3 < data.len()
+            && data[abs + 1] == b'K'
+            && data[abs + 2] == b1
+            && data[abs + 3] == b2
+        {
+            return Some(abs);
+        }
+        start = abs + 1;
+    }
+    None
 }
 
 fn validate_jpeg_jfif(data: &[u8], pos: usize) -> bool {
@@ -488,6 +541,43 @@ mod tests {
     #[test]
     fn zip_unknown_compression_rejected() {
         assert!(!validate_zip(&make_zip_lfh("file.bin", 20, 255), 0));
+    }
+
+    #[test]
+    fn zip_first_entry_in_chunk_accepted() {
+        // First LFH in a buffer with no preceding PK\x03\x04 — must pass.
+        let lfh = make_zip_lfh("file.txt", 20, 8);
+        assert!(validate_zip(&lfh, 0));
+    }
+
+    #[test]
+    fn zip_internal_entry_rejected() {
+        // Buffer: [LFH for "a.txt"][some data][LFH for "b.txt"]
+        // The second LFH at pos=64 should be rejected as an internal entry.
+        let first = make_zip_lfh("a.txt", 20, 8);
+        let mut buf = vec![0u8; 64]; // fake compressed data gap
+        buf[..first.len()].copy_from_slice(&first);
+        let second = make_zip_lfh("b.txt", 20, 8);
+        buf.extend_from_slice(&second);
+        let pos = 64;
+        assert!(!validate_zip(&buf, pos), "internal LFH should be rejected");
+    }
+
+    #[test]
+    fn zip_new_archive_after_eocd_accepted() {
+        // Buffer: [LFH][EOCD][LFH] — second LFH starts a new archive after an EOCD.
+        let first = make_zip_lfh("a.txt", 20, 8);
+        let eocd =
+            b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        let second = make_zip_lfh("b.txt", 20, 8);
+        let mut buf = first.clone();
+        buf.extend_from_slice(eocd);
+        let pos = buf.len();
+        buf.extend_from_slice(&second);
+        assert!(
+            validate_zip(&buf, pos),
+            "LFH after EOCD should be accepted as new archive"
+        );
     }
 
     // ── PNG ───────────────────────────────────────────────────────────────────
