@@ -127,6 +127,26 @@ pub struct SigEntry {
     pub enabled: bool,
 }
 
+/// A named group of related signatures shown as a collapsible tree node.
+pub struct SigGroup {
+    /// Display label for the group header row.
+    pub label: &'static str,
+    /// Whether the group's entries are visible in the list.
+    pub expanded: bool,
+    pub entries: Vec<SigEntry>,
+}
+
+/// One visible row in the signature panel's flat navigation list.
+///
+/// Rebuilt from `groups` whenever a group is expanded or collapsed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CursorRow {
+    /// A group header row.  Index is into `CarvingState::groups`.
+    Group(usize),
+    /// An individual signature row.  Indices are (group, entry-within-group).
+    Sig(usize, usize),
+}
+
 /// Per-hit extraction status.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum HitStatus {
@@ -155,7 +175,10 @@ pub struct HitEntry {
 
 pub struct CarvingState {
     device: Option<Arc<dyn BlockDevice>>,
-    pub sig_list: Vec<SigEntry>,
+    /// Signature groups shown in the left panel as a collapsible tree.
+    pub(crate) groups: Vec<SigGroup>,
+    /// Flat list of visible rows derived from `groups` (rebuilt on expand/collapse).
+    pub(crate) cursor_rows: Vec<CursorRow>,
     sig_sel: usize,
     hits: Vec<HitEntry>,
     hit_sel: usize,
@@ -245,6 +268,10 @@ pub struct CarvingState {
     /// Set by `restore_from_session`; consumed (and cleared to 0) when the next
     /// scan starts.  0 means "start from the configured LBA range beginning".
     pub(crate) resume_from_byte: u64,
+    /// Absolute byte offset of the *configured* scan window start (from the
+    /// start-LBA field, not the resume point).  Set in `start_scan` so the
+    /// progress bar can show overall completion even on a resumed scan.
+    pub(crate) scan_window_start: u64,
 }
 
 impl Default for CarvingState {
@@ -255,10 +282,11 @@ impl Default for CarvingState {
 
 impl CarvingState {
     pub fn new() -> Self {
-        let sig_list = helpers::load_builtin_signatures();
-        Self {
+        let groups = helpers::load_builtin_sig_groups();
+        let mut s = Self {
             device: None,
-            sig_list,
+            groups,
+            cursor_rows: Vec::new(),
             sig_sel: 0,
             hits: Vec::new(),
             hit_sel: 0,
@@ -300,7 +328,27 @@ impl CarvingState {
             disk_space_tick: 0,
             backpressure_paused: false,
             resume_from_byte: 0,
+            scan_window_start: 0,
+        };
+        s.rebuild_cursor_rows();
+        s
+    }
+
+    /// Rebuild the flat `cursor_rows` navigation list from the current group
+    /// state.  Must be called after any expand/collapse operation.
+    pub(crate) fn rebuild_cursor_rows(&mut self) {
+        self.cursor_rows.clear();
+        for (gi, group) in self.groups.iter().enumerate() {
+            self.cursor_rows.push(CursorRow::Group(gi));
+            if group.expanded {
+                for si in 0..group.entries.len() {
+                    self.cursor_rows.push(CursorRow::Sig(gi, si));
+                }
+            }
         }
+        // Keep sig_sel in bounds after a collapse may have removed rows.
+        let max = self.cursor_rows.len().saturating_sub(1);
+        self.sig_sel = self.sig_sel.min(max);
     }
 
     /// Returns the current number of carve hits.
@@ -390,11 +438,19 @@ mod tests {
 
     use super::*;
 
+    fn all_entries(s: &CarvingState) -> impl Iterator<Item = &SigEntry> {
+        s.groups.iter().flat_map(|g| g.entries.iter())
+    }
+
     #[test]
     fn builtin_signatures_load() {
         let s = CarvingState::new();
         assert!(
-            !s.sig_list.is_empty(),
+            !s.groups.is_empty(),
+            "expected at least one built-in signature group"
+        );
+        assert!(
+            s.groups.iter().any(|g| !g.entries.is_empty()),
             "expected at least one built-in signature"
         );
     }
@@ -402,17 +458,55 @@ mod tests {
     #[test]
     fn all_signatures_enabled_by_default() {
         let s = CarvingState::new();
-        assert!(s.sig_list.iter().all(|e| e.enabled));
+        assert!(all_entries(&s).all(|e| e.enabled));
     }
 
     #[test]
-    fn space_toggles_signature() {
+    fn space_on_group_header_toggles_all_in_group() {
         let mut s = CarvingState::new();
-        assert!(s.sig_list[0].enabled);
+        // sig_sel == 0 → CursorRow::Group(0): the first group header.
+        assert!(matches!(s.cursor_rows[0], CursorRow::Group(0)));
+        let group_len = s.groups[0].entries.len();
+        assert!(group_len > 0);
+        // All enabled initially.
+        assert!(s.groups[0].entries.iter().all(|e| e.enabled));
+        // Space on group header disables all entries in that group.
         s.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert!(!s.sig_list[0].enabled);
+        assert!(s.groups[0].entries.iter().all(|e| !e.enabled));
+        // Space again re-enables all.
         s.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert!(s.sig_list[0].enabled);
+        assert!(s.groups[0].entries.iter().all(|e| e.enabled));
+    }
+
+    #[test]
+    fn enter_expands_and_collapses_group() {
+        let mut s = CarvingState::new();
+        // All groups start collapsed → cursor_rows has one row per group.
+        let group_count = s.groups.len();
+        assert_eq!(s.cursor_rows.len(), group_count);
+        // Enter on group 0 expands it.
+        s.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(s.groups[0].expanded);
+        let expanded_rows = s.cursor_rows.len();
+        assert!(expanded_rows > group_count);
+        // Enter again collapses it.
+        s.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!s.groups[0].expanded);
+        assert_eq!(s.cursor_rows.len(), group_count);
+    }
+
+    #[test]
+    fn space_on_sig_row_toggles_individual() {
+        let mut s = CarvingState::new();
+        // Expand the first group so sig rows are visible.
+        s.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        // Move down to the first sig row (index 1).
+        s.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(s.sig_sel, 1);
+        assert!(matches!(s.cursor_rows[1], CursorRow::Sig(0, 0)));
+        let was_enabled = s.groups[0].entries[0].enabled;
+        s.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_ne!(s.groups[0].entries[0].enabled, was_enabled);
     }
 
     #[test]
@@ -426,7 +520,7 @@ mod tests {
     fn signatures_include_sqlite() {
         let s = CarvingState::new();
         assert!(
-            s.sig_list.iter().any(|e| e.sig.extension == "db"),
+            all_entries(&s).any(|e| e.sig.extension == "db"),
             "expected SQLite signature (extension 'db') in built-in list"
         );
     }
@@ -435,7 +529,7 @@ mod tests {
     fn signatures_include_flac() {
         let s = CarvingState::new();
         assert!(
-            s.sig_list.iter().any(|e| e.sig.extension == "flac"),
+            all_entries(&s).any(|e| e.sig.extension == "flac"),
             "expected FLAC signature in built-in list"
         );
     }
@@ -444,9 +538,25 @@ mod tests {
     fn signatures_include_mkv() {
         let s = CarvingState::new();
         assert!(
-            s.sig_list.iter().any(|e| e.sig.extension == "mkv"),
+            all_entries(&s).any(|e| e.sig.extension == "mkv"),
             "expected MKV/Matroska signature in built-in list"
         );
+    }
+
+    #[test]
+    fn groups_cover_all_signatures() {
+        let s = CarvingState::new();
+        // Total entries across all groups must equal the built-in signature count.
+        let total: usize = s.groups.iter().map(|g| g.entries.len()).sum();
+        assert_eq!(total, 43, "expected 43 built-in signatures across all groups");
+    }
+
+    #[test]
+    fn video_group_contains_mov_and_webm() {
+        let s = CarvingState::new();
+        let video = s.groups.iter().find(|g| g.label == "Video").unwrap();
+        assert!(video.entries.iter().any(|e| e.sig.extension == "mov"));
+        assert!(video.entries.iter().any(|e| e.sig.extension == "webm"));
     }
 
     #[test]

@@ -92,10 +92,13 @@ impl CarvingState {
     pub(super) fn render_compact_scan_progress(&self, frame: &mut Frame, area: Rect) {
         let paused = self.status == CarveStatus::Paused;
         let (frac, hits_found) = if let Some(p) = &self.scan_progress {
-            let window = p.scan_end.saturating_sub(p.scan_start);
-            let scanned_in_window = p.bytes_scanned.saturating_sub(p.scan_start);
+            // Show progress relative to the full configured window (not just the
+            // remaining portion after a resume), so a resumed scan starts at the
+            // percentage already covered rather than jumping back to 0%.
+            let window = p.scan_end.saturating_sub(self.scan_window_start);
+            let covered = p.bytes_scanned.saturating_sub(self.scan_window_start);
             let f = if window > 0 {
-                (scanned_in_window as f64 / window as f64).clamp(0.0, 1.0)
+                (covered as f64 / window as f64).clamp(0.0, 1.0)
             } else if p.device_size > 0 {
                 (p.bytes_scanned as f64 / p.device_size as f64).clamp(0.0, 1.0)
             } else {
@@ -114,7 +117,11 @@ impl CarvingState {
             if paused {
                 "paused".to_string()
             } else {
-                let bps = p.bytes_scanned as f64 / active_secs;
+                // Use bytes scanned in this session (not the absolute offset) so
+                // the rate isn't inflated when resuming from a large offset.
+                let bytes_this_session =
+                    p.bytes_scanned.saturating_sub(p.scan_start) as f64;
+                let bps = bytes_this_session / active_secs;
                 if bps > 0.0 {
                     format!("{:.1} MB/s", bps / (1024.0 * 1024.0))
                 } else {
@@ -166,10 +173,10 @@ impl CarvingState {
             .split(area);
 
         let (ratio, bar_label) = if let Some(p) = &self.scan_progress {
-            let window = p.scan_end.saturating_sub(p.scan_start);
-            let scanned_in_window = p.bytes_scanned.saturating_sub(p.scan_start);
+            let window = p.scan_end.saturating_sub(self.scan_window_start);
+            let covered = p.bytes_scanned.saturating_sub(self.scan_window_start);
             let frac = if window > 0 {
-                (scanned_in_window as f64 / window as f64).clamp(0.0, 1.0)
+                (covered as f64 / window as f64).clamp(0.0, 1.0)
             } else if p.device_size > 0 {
                 (p.bytes_scanned as f64 / p.device_size as f64).clamp(0.0, 1.0)
             } else {
@@ -178,7 +185,7 @@ impl CarvingState {
             let window_str = if window > 0 && window != p.device_size {
                 format!(
                     " (window {} / {})",
-                    fmt_bytes(scanned_in_window),
+                    fmt_bytes(covered),
                     fmt_bytes(window)
                 )
             } else {
@@ -220,8 +227,11 @@ impl CarvingState {
                 + self.paused_since.map_or(0.0, |t| t.elapsed().as_secs_f64());
             let active_secs = (wall_elapsed - paused_secs).max(0.001);
             let is_paused = self.paused_since.is_some();
+            // Use bytes scanned in this session so the rate isn't inflated
+            // when resuming from a large byte offset.
+            let bytes_this_session = p.bytes_scanned.saturating_sub(p.scan_start) as f64;
             let rate_bps = if active_secs > 0.0 {
-                p.bytes_scanned as f64 / active_secs
+                bytes_this_session / active_secs
             } else {
                 0.0
             };

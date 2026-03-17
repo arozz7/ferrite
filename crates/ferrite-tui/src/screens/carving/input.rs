@@ -6,7 +6,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
 
-use super::{preview, CarveFocus, CarveMsg, CarveStatus, CarvingState, ScanRangeField};
+use super::{preview, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow, ScanRangeField};
 
 impl CarvingState {
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
@@ -103,6 +103,9 @@ impl CarvingState {
             KeyCode::Char(' ') if self.focus == CarveFocus::Signatures => {
                 self.toggle_signature();
             }
+            KeyCode::Enter if self.focus == CarveFocus::Signatures => {
+                self.toggle_group_expand();
+            }
             KeyCode::Char(' ') if self.focus == CarveFocus::Hits => {
                 self.toggle_hit_selected();
             }
@@ -190,7 +193,7 @@ impl CarvingState {
     pub(super) fn move_selection(&mut self, delta: i32) {
         match self.focus {
             CarveFocus::Signatures => {
-                let len = self.sig_list.len();
+                let len = self.cursor_rows.len();
                 if len == 0 {
                     return;
                 }
@@ -215,8 +218,29 @@ impl CarvingState {
     }
 
     pub(super) fn toggle_signature(&mut self) {
-        if let Some(e) = self.sig_list.get_mut(self.sig_sel) {
-            e.enabled = !e.enabled;
+        match self.cursor_rows.get(self.sig_sel).copied() {
+            Some(CursorRow::Group(gi)) => {
+                // Toggle all entries in the group: if all are on, turn them off;
+                // otherwise turn them all on.
+                let all_on = self.groups[gi].entries.iter().all(|e| e.enabled);
+                let new_state = !all_on;
+                for e in &mut self.groups[gi].entries {
+                    e.enabled = new_state;
+                }
+            }
+            Some(CursorRow::Sig(gi, si)) => {
+                if let Some(e) = self.groups[gi].entries.get_mut(si) {
+                    e.enabled = !e.enabled;
+                }
+            }
+            None => {}
+        }
+    }
+
+    pub(super) fn toggle_group_expand(&mut self) {
+        if let Some(CursorRow::Group(gi)) = self.cursor_rows.get(self.sig_sel).copied() {
+            self.groups[gi].expanded = !self.groups[gi].expanded;
+            self.rebuild_cursor_rows();
         }
     }
 
@@ -232,8 +256,9 @@ impl CarvingState {
             None => return,
         };
         let enabled: Vec<Signature> = self
-            .sig_list
+            .groups
             .iter()
+            .flat_map(|g| g.entries.iter())
             .filter(|e| e.enabled)
             .map(|e| e.sig.clone())
             .collect();
@@ -247,6 +272,10 @@ impl CarvingState {
             .parse::<u64>()
             .unwrap_or(0)
             .saturating_mul(sector_size);
+        // Record the configured window start for progress display (so a resumed
+        // scan shows overall completion rather than always starting at 0%).
+        self.scan_window_start = window_start;
+
         // If a session resume position is set, pick up from where we left off
         // (clamped so it never falls before the configured window start).
         let start_byte = if self.resume_from_byte > window_start {

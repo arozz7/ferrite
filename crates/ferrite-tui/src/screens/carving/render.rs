@@ -9,8 +9,8 @@ use ratatui::{
 };
 
 use super::{
-    fmt_bytes, preview, CarveFocus, CarveStatus, CarvingState, ExtractProgress, ExtractionSummary,
-    HitStatus, ScanRangeField,
+    fmt_bytes, preview, CarveFocus, CarveStatus, CarvingState, CursorRow, ExtractProgress,
+    ExtractionSummary, HitStatus, ScanRangeField,
 };
 
 impl CarvingState {
@@ -151,19 +151,46 @@ impl CarvingState {
         };
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Signatures (Space=toggle) ", title_style));
+            .title(Span::styled(
+                " Signatures (Space=toggle  Enter=expand) ",
+                title_style,
+            ));
 
         let items: Vec<ListItem> = self
-            .sig_list
+            .cursor_rows
             .iter()
-            .map(|e| {
-                let check = if e.enabled { "[✓]" } else { "[ ]" };
-                let style = if e.enabled {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                ListItem::new(format!("{check} {}", e.sig.name)).style(style)
+            .map(|row| match row {
+                CursorRow::Group(gi) => {
+                    let group = &self.groups[*gi];
+                    let enabled = group.entries.iter().filter(|e| e.enabled).count();
+                    let total = group.entries.len();
+                    let arrow = if group.expanded { "▼" } else { "▶" };
+                    let text = format!("{arrow} {} ({enabled}/{total})", group.label);
+                    let style = if enabled == total {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else if enabled == 0 {
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    ListItem::new(text).style(style)
+                }
+                CursorRow::Sig(gi, si) => {
+                    let entry = &self.groups[*gi].entries[*si];
+                    let check = if entry.enabled { "[✓]" } else { "[ ]" };
+                    let style = if entry.enabled {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    ListItem::new(format!("  {check} {}", entry.sig.name)).style(style)
+                }
             })
             .collect();
 

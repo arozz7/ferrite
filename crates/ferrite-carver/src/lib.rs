@@ -48,7 +48,7 @@ mod tests {
     fn builtin_signatures_parse() {
         let toml = include_str!("../../../config/signatures.toml");
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.signatures.len(), 36, "expected 36 built-in signatures");
+        assert_eq!(cfg.signatures.len(), 43, "expected 43 built-in signatures");
 
         // Both JPEG variants must be present with 4-byte headers.
         let jpeg_jfif = cfg

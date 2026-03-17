@@ -86,6 +86,25 @@ pub enum PreValidate {
     /// Apple HEIC / HEIF: ISO Base Media File Format with an `heic` or `heix` major
     /// brand in the `ftyp` box.  Box size must be in [12, 512].
     Heic,
+    /// QuickTime MOV: ISOBMFF ftyp box with `qt  ` major brand.
+    Mov,
+    /// iTunes M4V video: ISOBMFF ftyp box with `M4V ` major brand.
+    M4v,
+    /// 3GPP / 3GPP2 mobile video: ISOBMFF ftyp box whose major brand starts
+    /// with `3gp` or `3g2`.
+    ThreeGp,
+    /// WebM video: EBML file whose DocType element equals `"webm"` (not
+    /// `"matroska"`).
+    Webm,
+    /// Windows Media Video / ASF: ASF Header Object GUID at offset 0; object
+    /// size (u64 LE @16) must be ≥ 30.
+    Wmv,
+    /// Flash Video: `FLV\x01` header; type-flags reserved bits must be zero;
+    /// DataOffset (u32 BE @5) must equal 9.
+    Flv,
+    /// MPEG-2 / MPEG-1 Program Stream: pack header `00 00 01 BA`; top 2 bits
+    /// of byte 4 must be `01` (MPEG-2) or top 4 bits must be `0010` (MPEG-1).
+    Mpeg,
 }
 
 impl PreValidate {
@@ -125,6 +144,13 @@ impl PreValidate {
             Self::TiffBe => "tiff_be",
             Self::Nef => "nef",
             Self::Heic => "heic",
+            Self::Mov => "mov",
+            Self::M4v => "m4v",
+            Self::ThreeGp => "3gp",
+            Self::Webm => "webm",
+            Self::Wmv => "wmv",
+            Self::Flv => "flv",
+            Self::Mpeg => "mpeg",
         }
     }
 
@@ -164,6 +190,13 @@ impl PreValidate {
             "tiff_be" => Some(Self::TiffBe),
             "nef" => Some(Self::Nef),
             "heic" => Some(Self::Heic),
+            "mov" => Some(Self::Mov),
+            "m4v" => Some(Self::M4v),
+            "3gp" => Some(Self::ThreeGp),
+            "webm" => Some(Self::Webm),
+            "wmv" => Some(Self::Wmv),
+            "flv" => Some(Self::Flv),
+            "mpeg" => Some(Self::Mpeg),
             _ => None,
         }
     }
@@ -211,6 +244,13 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::TiffBe => validate_tiff_be(data, pos),
         PreValidate::Nef => validate_nef(data, pos),
         PreValidate::Heic => validate_heic(data, pos),
+        PreValidate::Mov => validate_mov(data, pos),
+        PreValidate::M4v => validate_m4v(data, pos),
+        PreValidate::ThreeGp => validate_3gp(data, pos),
+        PreValidate::Webm => validate_webm(data, pos),
+        PreValidate::Wmv => validate_wmv(data, pos),
+        PreValidate::Flv => validate_flv(data, pos),
+        PreValidate::Mpeg => validate_mpeg(data, pos),
     }
 }
 
@@ -494,6 +534,16 @@ fn validate_mp4(data: &[u8], pos: usize) -> bool {
         return false;
     }
 
+    // Reject brands handled by dedicated signatures to avoid duplicate output.
+    let brand = &data[pos + 8..pos + 12];
+    if brand == b"qt  "
+        || brand == b"M4V "
+        || brand.starts_with(b"3gp")
+        || brand.starts_with(b"3g2")
+    {
+        return false;
+    }
+
     // Look-ahead: verify the box immediately after the ftyp box is also a
     // plausible ISOBMFF box.  In a real MP4 the next box is always one of
     // `moov`, `mdat`, `free`, `skip`, `wide`, `moof`, `meta`, `uuid`, etc.
@@ -589,7 +639,7 @@ fn validate_mkv(data: &[u8], pos: usize) -> bool {
                 let doc_start = i + 3;
                 if doc_start + doc_len <= window.len() {
                     let doc = &window[doc_start..doc_start + doc_len];
-                    return doc == b"matroska" || doc == b"webm";
+                    return doc == b"matroska";
                 }
             }
             return true; // DocType found but value straddles boundary
@@ -903,6 +953,142 @@ fn validate_heic(data: &[u8], pos: usize) -> bool {
     }
     let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
     (12..=512).contains(&box_size)
+}
+
+fn validate_mov(data: &[u8], pos: usize) -> bool {
+    // QuickTime MOV: magic anchors on ftyp + "qt  " brand (12 bytes).
+    // Validate that the ftyp box size (u32 BE @pos) is in [12, 512].
+    if need(data, pos, 12) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
+fn validate_m4v(data: &[u8], pos: usize) -> bool {
+    // iTunes M4V: magic anchors on ftyp + "M4V " brand (12 bytes).
+    // Validate that the ftyp box size (u32 BE @pos) is in [12, 512].
+    if need(data, pos, 12) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
+fn validate_3gp(data: &[u8], pos: usize) -> bool {
+    // 3GPP / 3GPP2: magic anchors on ftyp + "3g" (10 bytes).
+    // Full brand (bytes 8-11) must start with "3gp" or "3g2".
+    // Box size (u32 BE @pos) must be in [12, 512].
+    if need(data, pos, 12) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    if !(12..=512).contains(&box_size) {
+        return false;
+    }
+    let brand = &data[pos + 8..pos + 12];
+    brand.starts_with(b"3gp") || brand.starts_with(b"3g2")
+}
+
+fn validate_webm(data: &[u8], pos: usize) -> bool {
+    // WebM: EBML file with DocType element == "webm" (not "matroska").
+    // Identical structure to MKV; only the expected DocType string differs.
+    if need(data, pos, 5) {
+        return true;
+    }
+    if data[pos + 4] == 0x00 {
+        return false;
+    }
+    const WINDOW: usize = 80;
+    let search_end = data.len().min(pos + WINDOW);
+    let have_full_window = search_end == pos + WINDOW;
+    let window = &data[pos + 5..search_end];
+    let mut i = 0;
+    while i + 1 < window.len() {
+        if window[i] == 0x42 && window[i + 1] == 0x82 {
+            if i + 2 >= window.len() {
+                return true;
+            }
+            let vint = window[i + 2];
+            if vint & 0x80 != 0 {
+                let doc_len = (vint & 0x7F) as usize;
+                let doc_start = i + 3;
+                if doc_start + doc_len <= window.len() {
+                    let doc = &window[doc_start..doc_start + doc_len];
+                    return doc == b"webm";
+                }
+            }
+            return true;
+        }
+        i += 1;
+    }
+    !have_full_window
+}
+
+fn validate_wmv(data: &[u8], pos: usize) -> bool {
+    // ASF Header Object: 16-byte GUID at pos, then u64 LE object size @16.
+    // Object size must be ≥ 30 (minimum valid ASF header body).
+    if need(data, pos, 24) {
+        return true;
+    }
+    let size_bytes: [u8; 8] = data[pos + 16..pos + 24].try_into().unwrap();
+    u64::from_le_bytes(size_bytes) >= 30
+}
+
+fn validate_flv(data: &[u8], pos: usize) -> bool {
+    // FLV file header (9 bytes): "FLV" + version(0x01) + type_flags + data_offset(u32 BE).
+    // Reserved bits in type_flags (offset 4) must be zero: bits 7-3 and bit 1.
+    // DataOffset (u32 BE @5) must be 9 for version 1.
+    if need(data, pos, 9) {
+        return true;
+    }
+    if data[pos + 4] & 0b1111_1010 != 0 {
+        return false;
+    }
+    let offset = u32::from_be_bytes([data[pos + 5], data[pos + 6], data[pos + 7], data[pos + 8]]);
+    offset == 9
+}
+
+fn validate_mpeg(data: &[u8], pos: usize) -> bool {
+    // MPEG Program Stream pack header: 00 00 01 BA + 9 bytes of SCR/mux_rate fields.
+    //
+    // The ISO 13818-1 standard mandates several fixed "marker_bit = 1" positions
+    // within the pack header.  Checking all of them simultaneously reduces the
+    // false-positive rate to ~1-in-256 on random data and near-zero on H.264/H.265
+    // Annex-B NAL streams (which also contain `00 00 01 BA` bytes in video payload).
+    //
+    // MPEG-2 pack header layout (offsets relative to `pos`):
+    //   +4 : 01 SCR_b[32:30] M SCR_b[29:28]   — bit 2 must be 1 (marker)
+    //   +5 : SCR_b[27:20]
+    //   +6 : SCR_b[19:15] M SCR_b[14:13]      — bit 2 must be 1 (marker)
+    //   +7 : SCR_b[12:5]
+    //   +8 : SCR_b[4:0]  M  SCR_ext[8:7]      — bit 2 must be 1 (marker)
+    //   +9 : SCR_ext[6:0] M                   — bit 0 must be 1 (marker)
+    //  +10 : mux_rate[21:14]
+    //  +11 : mux_rate[13:6]
+    //  +12 : mux_rate[5:0] M M                — bits 1:0 must be 11 (two markers)
+    //  +13 : 1 1 1 1 1 stuffing_length[2:0]   — top 5 bits must be 11111
+    if need(data, pos, 5) {
+        return true;
+    }
+    let b4 = data[pos + 4];
+    if (b4 & 0xC0) == 0x40 {
+        // MPEG-2: verify all mandatory marker bits in the 14-byte pack header.
+        if need(data, pos, 14) {
+            return true; // short buffer — benefit of doubt
+        }
+        (b4 & 0x04 != 0)                     // byte  4, bit 2: marker
+            && (data[pos + 6] & 0x04 != 0)   // byte  6, bit 2: marker
+            && (data[pos + 8] & 0x04 != 0)   // byte  8, bit 2: marker
+            && (data[pos + 9] & 0x01 != 0)   // byte  9, bit 0: marker
+            && (data[pos + 12] & 0x03 == 0x03) // byte 12, bits 1:0: two markers
+            && (data[pos + 13] & 0xF8 == 0xF8) // byte 13, top 5: stuffing fixed bits
+    } else if (b4 & 0xF0) == 0x20 {
+        // MPEG-1: bit 0 of byte 4 is a marker bit in the SCR field.
+        b4 & 0x01 != 0
+    } else {
+        false
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1333,9 +1519,10 @@ mod tests {
     }
 
     #[test]
-    fn mkv_webm_doctype_accepted() {
+    fn mkv_webm_doctype_rejected() {
+        // WebM now has its own signature; the MKV validator rejects "webm".
         let data = make_mkv_header(b"webm");
-        assert!(validate_mkv(&data, 0));
+        assert!(!validate_mkv(&data, 0));
     }
 
     #[test]
@@ -1493,6 +1680,13 @@ mod tests {
         assert!(validate_tiff_be(&data, 0));
         assert!(validate_nef(&data, 0));
         assert!(validate_heic(&data, 0));
+        assert!(validate_mov(&data, 0));
+        assert!(validate_m4v(&data, 0));
+        assert!(validate_3gp(&data, 0));
+        assert!(validate_webm(&data, 0));
+        assert!(validate_wmv(&data, 0));
+        assert!(validate_flv(&data, 0));
+        assert!(validate_mpeg(&data, 0));
     }
 
     // ── TIFF LE ───────────────────────────────────────────────────────────────
@@ -1618,5 +1812,214 @@ mod tests {
     fn heic_oversized_box_rejected() {
         let data = make_heic_ftyp(1024, b"heic"); // box_size > 512
         assert!(!validate_heic(&data, 0));
+    }
+
+    // ── MOV ───────────────────────────────────────────────────────────────────
+
+    fn make_isobmff_ftyp(box_size: u32, brand: &[u8; 4]) -> Vec<u8> {
+        let mut data = vec![0u8; box_size.max(32) as usize];
+        data[0..4].copy_from_slice(&box_size.to_be_bytes());
+        data[4..8].copy_from_slice(b"ftyp");
+        data[8..12].copy_from_slice(brand);
+        data
+    }
+
+    #[test]
+    fn mov_valid_box_accepted() {
+        let data = make_isobmff_ftyp(20, b"qt  ");
+        assert!(validate_mov(&data, 0));
+    }
+
+    #[test]
+    fn mov_oversized_box_rejected() {
+        let data = make_isobmff_ftyp(1024, b"qt  "); // box_size > 512
+        assert!(!validate_mov(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_qt_brand() {
+        let data = make_isobmff_ftyp(20, b"qt  ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    // ── M4V ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn m4v_valid_box_accepted() {
+        let data = make_isobmff_ftyp(20, b"M4V ");
+        assert!(validate_m4v(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_m4v_brand() {
+        let data = make_isobmff_ftyp(20, b"M4V ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    // ── 3GP ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn three_gp_brand_accepted() {
+        let data = make_isobmff_ftyp(20, b"3gp5");
+        assert!(validate_3gp(&data, 0));
+    }
+
+    #[test]
+    fn three_g2_brand_accepted() {
+        let data = make_isobmff_ftyp(20, b"3g2a");
+        assert!(validate_3gp(&data, 0));
+    }
+
+    #[test]
+    fn three_gp_wrong_brand_rejected() {
+        let data = make_isobmff_ftyp(20, b"isom");
+        assert!(!validate_3gp(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_3gp_brand() {
+        let data = make_isobmff_ftyp(20, b"3gp5");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    // ── WebM ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn webm_doctype_accepted() {
+        let data = make_mkv_header(b"webm");
+        assert!(validate_webm(&data, 0));
+    }
+
+    #[test]
+    fn webm_rejects_matroska_doctype() {
+        let data = make_mkv_header(b"matroska");
+        assert!(!validate_webm(&data, 0));
+    }
+
+    // ── WMV ───────────────────────────────────────────────────────────────────
+
+    fn make_asf_header(object_size: u64) -> Vec<u8> {
+        let mut data = vec![0u8; 32];
+        // ASF Header Object GUID
+        data[0..16].copy_from_slice(&[
+            0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+            0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C,
+        ]);
+        data[16..24].copy_from_slice(&object_size.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn wmv_valid_size_accepted() {
+        let data = make_asf_header(1024);
+        assert!(validate_wmv(&data, 0));
+    }
+
+    #[test]
+    fn wmv_tiny_size_rejected() {
+        let data = make_asf_header(10); // size < 30
+        assert!(!validate_wmv(&data, 0));
+    }
+
+    // ── FLV ───────────────────────────────────────────────────────────────────
+
+    fn make_flv_header(flags: u8, data_offset: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 9];
+        data[0..4].copy_from_slice(b"FLV\x01");
+        data[4] = flags;
+        data[5..9].copy_from_slice(&data_offset.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn flv_video_only_accepted() {
+        // TypeFlagsVideo bit (bit 0) set, all reserved bits zero, offset 9.
+        let data = make_flv_header(0x01, 9);
+        assert!(validate_flv(&data, 0));
+    }
+
+    #[test]
+    fn flv_audio_video_accepted() {
+        // TypeFlagsAudio (bit 2) + TypeFlagsVideo (bit 0), offset 9.
+        let data = make_flv_header(0x05, 9);
+        assert!(validate_flv(&data, 0));
+    }
+
+    #[test]
+    fn flv_bad_reserved_bits_rejected() {
+        let data = make_flv_header(0b0000_0010, 9); // reserved bit 1 set
+        assert!(!validate_flv(&data, 0));
+    }
+
+    #[test]
+    fn flv_wrong_offset_rejected() {
+        let data = make_flv_header(0x01, 5); // DataOffset != 9
+        assert!(!validate_flv(&data, 0));
+    }
+
+    // ── MPEG-PS ───────────────────────────────────────────────────────────────
+
+    fn make_mpeg2_pack() -> Vec<u8> {
+        // Minimal valid MPEG-2 PS pack header with all marker bits set.
+        // ISO 13818-1 Table 2-33.
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x44;  // 01 000 1 00 — top-2=01, marker(bit2)=1
+        // data[5] = 0x00; // SCR bytes — no markers required
+        data[6] = 0x04;  // SCR_b[19:15] 1 SCR_b[14:13] — marker(bit2)=1
+        // data[7] = 0x00; // SCR bytes
+        data[8] = 0x04;  // SCR_b[4:0] 1 SCR_ext[8:7] — marker(bit2)=1
+        data[9] = 0x01;  // SCR_ext[6:0] 1 — marker(bit0)=1
+        // data[10..12] = mux_rate bytes
+        data[12] = 0x03; // mux_rate[5:0] 1 1 — both marker bits set
+        data[13] = 0xF8; // 11111 stuffing_length — fixed top-5 bits
+        data
+    }
+
+    #[test]
+    fn mpeg2_pack_header_accepted() {
+        assert!(validate_mpeg(&make_mpeg2_pack(), 0));
+    }
+
+    #[test]
+    fn mpeg2_missing_marker_bit_rejected() {
+        // Clear one of the mandatory marker bits — should be rejected.
+        let mut data = make_mpeg2_pack();
+        data[12] = 0x01; // only one marker bit instead of two
+        assert!(!validate_mpeg(&data, 0));
+    }
+
+    #[test]
+    fn mpeg2_h264_annex_b_false_positive_rejected() {
+        // Simulate H.264 Annex-B data that happens to contain 00 00 01 BA.
+        // The bytes following the start code are typical NAL payload — no marker bits.
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x65; // top-2 bits == 01 but marker bit (bit2) == 0  → reject
+        assert!(!validate_mpeg(&data, 0));
+    }
+
+    #[test]
+    fn mpeg1_pack_header_accepted() {
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x21; // 0010_0001 — top-4=0010, marker(bit0)=1
+        assert!(validate_mpeg(&data, 0));
+    }
+
+    #[test]
+    fn mpeg1_missing_marker_bit_rejected() {
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x20; // 0010_0000 — top-4=0010 but marker(bit0)=0
+        assert!(!validate_mpeg(&data, 0));
+    }
+
+    #[test]
+    fn mpeg_unknown_version_rejected() {
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x00; // neither MPEG-1 nor MPEG-2 pattern
+        assert!(!validate_mpeg(&data, 0));
     }
 }

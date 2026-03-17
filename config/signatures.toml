@@ -108,6 +108,8 @@ min_size        = 4096
 max_size        = 4_294_967_296  # 4 GiB fallback when box-walk fails
 size_hint_kind  = "mp4"
 # Validates ftyp box size in [12, 512] and brand bytes are printable ASCII.
+# Rejects "qt  " (→ .mov), "M4V " (→ .m4v), and "3gp*"/"3g2*" (→ .3gp)
+# brands which have their own dedicated signatures.
 pre_validate    = "mp4"
 
 [[signature]]
@@ -423,3 +425,92 @@ min_size       = 16384
 max_size       = 100_000_000
 size_hint_kind = "mp4"
 pre_validate   = "heic"
+
+[[signature]]
+name           = "QuickTime MOV Video"
+extension      = "mov"
+# ISOBMFF ftyp box with "qt  " (QuickTime) major brand — used by macOS/iPhone
+# recorded videos and Final Cut Pro exports.
+# First 4 bytes are the variable box size (wildcarded); bytes 4-7 are "ftyp";
+# bytes 8-11 are the "qt  " brand (two trailing spaces).
+header         = "?? ?? ?? ?? 66 74 79 70 71 74 20 20"
+footer         = ""
+min_size       = 4096
+max_size       = 4_294_967_296   # 4 GiB
+size_hint_kind = "mp4"
+# Validates ftyp box size in [12, 512].
+pre_validate   = "mov"
+
+[[signature]]
+name           = "iTunes M4V Video"
+extension      = "m4v"
+# ISOBMFF ftyp box with "M4V " major brand — iTunes purchased / rented video.
+header         = "?? ?? ?? ?? 66 74 79 70 4D 34 56 20"
+footer         = ""
+min_size       = 4096
+max_size       = 4_294_967_296   # 4 GiB
+size_hint_kind = "mp4"
+# Validates ftyp box size in [12, 512].
+pre_validate   = "m4v"
+
+[[signature]]
+name           = "3GPP / 3GPP2 Mobile Video"
+extension      = "3gp"
+# ISOBMFF ftyp box whose major brand starts with "3g" (e.g. 3gp5, 3gp6, 3g2a).
+# 10-byte header anchors on ftyp + first two brand bytes "3g"; pre-validator
+# confirms the full brand is "3gp*" or "3g2*".
+header         = "?? ?? ?? ?? 66 74 79 70 33 67"
+footer         = ""
+min_size       = 4096
+max_size       = 536_870_912     # 512 MiB — mobile clips are small
+size_hint_kind = "mp4"
+# Validates full brand starts with "3gp" or "3g2"; box size in [12, 512].
+pre_validate   = "3gp"
+
+[[signature]]
+name         = "WebM Video"
+extension    = "webm"
+# EBML container with DocType "webm" — VP8/VP9/AV1 video, Vorbis/Opus audio.
+# Shares the same 4-byte EBML magic as MKV; the pre-validator checks the
+# DocType element to distinguish WebM from Matroska.
+header       = "1A 45 DF A3"
+footer       = ""
+max_size     = 8_589_934_592  # 8 GiB
+# Validates EBML VINT leading byte non-zero and DocType element == "webm".
+pre_validate = "webm"
+
+[[signature]]
+name         = "Windows Media Video / ASF"
+extension    = "wmv"
+# ASF (Advanced Systems Format) Header Object — used by WMV, WMA, and ASF
+# files.  The 16-byte GUID is globally unique; no other format shares it.
+header       = "30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C"
+footer       = ""
+min_size     = 4096
+max_size     = 4_294_967_296  # 4 GiB
+# Validates ASF object size (u64 LE @16) is ≥ 30 bytes.
+pre_validate = "wmv"
+
+[[signature]]
+name         = "Flash Video (FLV)"
+extension    = "flv"
+# FLV file header: "FLV" magic + version byte 0x01.
+# Reserved flag bits must be zero; DataOffset must be 9.
+header       = "46 4C 56 01"
+footer       = ""
+min_size     = 4096
+max_size     = 4_294_967_296  # 4 GiB
+# Validates reserved type-flag bits are zero and DataOffset (u32 BE @5) == 9.
+pre_validate = "flv"
+
+[[signature]]
+name         = "MPEG-2 / MPEG-1 Program Stream"
+extension    = "mpg"
+# MPEG Program Stream pack header: 00 00 01 BA.
+# Byte @+4: top-2-bits == 01 → MPEG-2; top-4-bits == 0010 → MPEG-1.
+header       = "00 00 01 BA"
+footer       = ""
+min_size     = 4096
+max_size     = 4_294_967_296  # 4 GiB
+# Validates MPEG-2 (0x40–0x7F) or MPEG-1 (0x20–0x2F) pack-byte pattern.
+pre_validate = "mpeg"
