@@ -65,6 +65,14 @@ pub enum PreValidate {
     Ical,
     /// OLE2: ByteOrder field (u16 LE @28) == 0xFFFE.
     Ole2,
+    /// Sony ARW: TIFF LE + IFD at offset 8, "SONY" string within first 512 bytes.
+    Arw,
+    /// Canon CR2: TIFF LE + `CR\x02\x00` at offset 8, plausible IFD offset.
+    Cr2,
+    /// Panasonic RW2: `II\x55\x00` TIFF variant, plausible IFD offset + entry count.
+    Rw2,
+    /// Fujifilm RAF: `FUJIFILMCCD-RAW ` + 4-digit version string at offset 16.
+    Raf,
 }
 
 impl PreValidate {
@@ -96,6 +104,10 @@ impl PreValidate {
             Self::Vcard => "vcard",
             Self::Ical => "ical",
             Self::Ole2 => "ole2",
+            Self::Arw => "arw",
+            Self::Cr2 => "cr2",
+            Self::Rw2 => "rw2",
+            Self::Raf => "raf",
         }
     }
 
@@ -127,6 +139,10 @@ impl PreValidate {
             "vcard" => Some(Self::Vcard),
             "ical" => Some(Self::Ical),
             "ole2" => Some(Self::Ole2),
+            "arw" => Some(Self::Arw),
+            "cr2" => Some(Self::Cr2),
+            "rw2" => Some(Self::Rw2),
+            "raf" => Some(Self::Raf),
             _ => None,
         }
     }
@@ -166,6 +182,10 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Vcard => validate_vcard(data, pos),
         PreValidate::Ical => validate_ical(data, pos),
         PreValidate::Ole2 => validate_ole2(data, pos),
+        PreValidate::Arw => validate_arw(data, pos),
+        PreValidate::Cr2 => validate_cr2(data, pos),
+        PreValidate::Rw2 => validate_rw2(data, pos),
+        PreValidate::Raf => validate_raf(data, pos),
     }
 }
 
@@ -512,12 +532,48 @@ fn validate_sqlite(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_mkv(data: &[u8], pos: usize) -> bool {
-    // EBML element size is VINT-encoded; its leading byte (pos+4) must be
-    // non-zero (a zero byte would indicate an impossibly wide VINT).
+    // EBML element: \x1A\x45\xDF\xA3 [VINT size] [sub-elements…]
+    // The VINT leading byte (pos+4) must be non-zero.
     if need(data, pos, 5) {
         return true;
     }
-    data[pos + 4] != 0x00
+    if data[pos + 4] == 0x00 {
+        return false;
+    }
+
+    // Look ahead for the EBML DocType element (ID bytes 0x42 0x82).
+    // It is always present within the first 80 bytes of every valid
+    // MKV or WebM file and its value is "matroska" or "webm".
+    // If we can read the full window and find no DocType, this is not MKV.
+    const WINDOW: usize = 80;
+    let search_end = data.len().min(pos + WINDOW);
+    let have_full_window = search_end == pos + WINDOW;
+    let window = &data[pos + 5..search_end];
+
+    let mut i = 0;
+    while i + 1 < window.len() {
+        if window[i] == 0x42 && window[i + 1] == 0x82 {
+            // DocType element found. Next byte is a VINT-encoded length.
+            if i + 2 >= window.len() {
+                return true; // can't read length — benefit of doubt
+            }
+            let vint = window[i + 2];
+            if vint & 0x80 != 0 {
+                // Single-byte VINT: lower 7 bits are the string length.
+                let doc_len = (vint & 0x7F) as usize;
+                let doc_start = i + 3;
+                if doc_start + doc_len <= window.len() {
+                    let doc = &window[doc_start..doc_start + doc_len];
+                    return doc == b"matroska" || doc == b"webm";
+                }
+            }
+            return true; // DocType found but value straddles boundary
+        }
+        i += 1;
+    }
+
+    // Searched the full window and found no DocType → not MKV/WebM.
+    !have_full_window
 }
 
 fn validate_flac(data: &[u8], pos: usize) -> bool {
@@ -656,6 +712,70 @@ fn validate_ole2(data: &[u8], pos: usize) -> bool {
         return true;
     }
     data[pos + 28] == 0xFE && data[pos + 29] == 0xFF
+}
+
+fn validate_arw(data: &[u8], pos: usize) -> bool {
+    // Sony ARW: TIFF little-endian with IFD at offset 8 (anchored in magic).
+    // Verify a plausible IFD entry count, then search for "SONY" within the
+    // first 512 bytes — the Make IFD value is always in this region.
+    if need(data, pos, 10) {
+        return true;
+    }
+    let entry_count = u16::from_le_bytes([data[pos + 8], data[pos + 9]]) as usize;
+    if !(5..=50).contains(&entry_count) {
+        return false;
+    }
+    let window_end = data.len().min(pos + 512);
+    data[pos..window_end].windows(4).any(|w| w == b"SONY")
+}
+
+fn validate_cr2(data: &[u8], pos: usize) -> bool {
+    // Canon CR2: TIFF LE magic + IFD offset (wildcard) + CR\x02\x00 at +8.
+    // The CR marker bytes are already guaranteed by the scan magic; here we
+    // just verify the IFD offset at +4 is plausible (8–4096 bytes).
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_offset = u32::from_le_bytes([
+        data[pos + 4],
+        data[pos + 5],
+        data[pos + 6],
+        data[pos + 7],
+    ]) as usize;
+    (8..=4096).contains(&ifd_offset)
+}
+
+fn validate_rw2(data: &[u8], pos: usize) -> bool {
+    // Panasonic RW2: TIFF variant magic II\x55\x00 (already matched).
+    // Verify the IFD0 offset at +4 and a plausible IFD entry count.
+    if need(data, pos, 10) {
+        return true;
+    }
+    let ifd_offset = u32::from_le_bytes([
+        data[pos + 4],
+        data[pos + 5],
+        data[pos + 6],
+        data[pos + 7],
+    ]) as usize;
+    if !(8..=4096).contains(&ifd_offset) {
+        return false;
+    }
+    let ifd_pos = pos + ifd_offset;
+    if ifd_pos + 2 > data.len() {
+        return true; // IFD outside current chunk — benefit of doubt
+    }
+    let entry_count = u16::from_le_bytes([data[ifd_pos], data[ifd_pos + 1]]) as usize;
+    (3..=50).contains(&entry_count)
+}
+
+fn validate_raf(data: &[u8], pos: usize) -> bool {
+    // Fujifilm RAF: "FUJIFILMCCD-RAW " (16 bytes) + 4-digit version string.
+    // Magic anchors on the first 15 bytes; check the space at +15 and that
+    // bytes +16..+20 are ASCII decimal digits (e.g. "0201").
+    if need(data, pos, 20) {
+        return true;
+    }
+    data[pos + 15] == b' ' && data[pos + 16..pos + 20].iter().all(|b| b.is_ascii_digit())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1060,6 +1180,153 @@ mod tests {
         assert!(!validate_evtx(&data, 0));
     }
 
+    // ── MKV ───────────────────────────────────────────────────────────────────
+
+    fn make_mkv_header(doctype: &[u8]) -> Vec<u8> {
+        // Minimal EBML header: ID + unknown-size VINT + sub-elements.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"\x1A\x45\xDF\xA3"); // EBML ID
+        v.extend_from_slice(b"\x9F");              // VINT: single-byte size = 31
+        // EBMLVersion element (ID 0x4286, value 1).
+        v.extend_from_slice(b"\x42\x86\x81\x01");
+        // EBMLReadVersion element (ID 0x42F7, value 1).
+        v.extend_from_slice(b"\x42\xF7\x81\x01");
+        // DocType element: ID 0x4282 + single-byte VINT len + value.
+        v.push(0x42);
+        v.push(0x82);
+        v.push(0x80 | doctype.len() as u8); // VINT
+        v.extend_from_slice(doctype);
+        v
+    }
+
+    #[test]
+    fn mkv_matroska_doctype_accepted() {
+        let data = make_mkv_header(b"matroska");
+        assert!(validate_mkv(&data, 0));
+    }
+
+    #[test]
+    fn mkv_webm_doctype_accepted() {
+        let data = make_mkv_header(b"webm");
+        assert!(validate_mkv(&data, 0));
+    }
+
+    #[test]
+    fn mkv_unknown_doctype_rejected() {
+        let data = make_mkv_header(b"divx");
+        assert!(!validate_mkv(&data, 0));
+    }
+
+    #[test]
+    fn mkv_no_doctype_in_full_window_rejected() {
+        // 80-byte buffer with valid VINT but no DocType element — rejected.
+        let mut data = vec![0x01u8; 80]; // non-zero VINT bytes, no 0x42 0x82
+        data[0..4].copy_from_slice(b"\x1A\x45\xDF\xA3");
+        data[4] = 0x9F; // valid VINT
+        assert!(!validate_mkv(&data, 0));
+    }
+
+    #[test]
+    fn mkv_short_buffer_benefit_of_doubt() {
+        let data = vec![0x1Au8, 0x45, 0xDF, 0xA3, 0x9F]; // 5 bytes, full window not reachable
+        assert!(validate_mkv(&data, 0));
+    }
+
+    // ── RAW photo formats ─────────────────────────────────────────────────────
+
+    fn make_arw_header(with_sony: bool) -> Vec<u8> {
+        // Minimal TIFF LE header: magic + IFD at 8 + entry count.
+        let mut v = vec![0u8; 512];
+        v[0..4].copy_from_slice(b"II\x2A\x00");         // TIFF LE magic
+        v[4..8].copy_from_slice(&8u32.to_le_bytes());    // IFD at offset 8
+        v[8..10].copy_from_slice(&12u16.to_le_bytes());  // 12 IFD entries
+        if with_sony {
+            v[100..104].copy_from_slice(b"SONY");
+        }
+        v
+    }
+
+    #[test]
+    fn arw_with_sony_string_accepted() {
+        assert!(validate_arw(&make_arw_header(true), 0));
+    }
+
+    #[test]
+    fn arw_without_sony_string_rejected() {
+        assert!(!validate_arw(&make_arw_header(false), 0));
+    }
+
+    #[test]
+    fn arw_implausible_entry_count_rejected() {
+        let mut data = make_arw_header(true);
+        data[8..10].copy_from_slice(&200u16.to_le_bytes()); // entry_count=200 > 50
+        assert!(!validate_arw(&data, 0));
+    }
+
+    #[test]
+    fn cr2_plausible_ifd_offset_accepted() {
+        // Canon CR2: TIFF LE + IFD at 16 + CR\x02\x00 at +8.
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"II\x2A\x00");
+        data[4..8].copy_from_slice(&16u32.to_le_bytes()); // IFD at 16
+        data[8..12].copy_from_slice(b"CR\x02\x00");
+        assert!(validate_cr2(&data, 0));
+    }
+
+    #[test]
+    fn cr2_zero_ifd_offset_rejected() {
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"II\x2A\x00");
+        // IFD offset = 0 — invalid
+        data[8..12].copy_from_slice(b"CR\x02\x00");
+        assert!(!validate_cr2(&data, 0));
+    }
+
+    #[test]
+    fn rw2_valid_accepted() {
+        // Panasonic RW2: II\x55\x00 + IFD at 8 + 10 entries.
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"II\x55\x00");
+        data[4..8].copy_from_slice(&8u32.to_le_bytes()); // IFD at 8
+        data[8..10].copy_from_slice(&10u16.to_le_bytes()); // 10 entries
+        assert!(validate_rw2(&data, 0));
+    }
+
+    #[test]
+    fn rw2_bad_ifd_offset_rejected() {
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"II\x55\x00");
+        data[4..8].copy_from_slice(&8000u32.to_le_bytes()); // way too large
+        assert!(!validate_rw2(&data, 0));
+    }
+
+    #[test]
+    fn raf_valid_accepted() {
+        let mut data = vec![0u8; 20];
+        data[0..15].copy_from_slice(b"FUJIFILMCCD-RAW");
+        data[15] = b' ';
+        data[16..20].copy_from_slice(b"0201"); // version digits
+        assert!(validate_raf(&data, 0));
+    }
+
+    #[test]
+    fn raf_missing_space_rejected() {
+        let mut data = vec![0u8; 20];
+        data[0..15].copy_from_slice(b"FUJIFILMCCD-RAW");
+        data[15] = 0x00; // not a space
+        data[16..20].copy_from_slice(b"0201");
+        assert!(!validate_raf(&data, 0));
+    }
+
+    #[test]
+    fn raf_non_digit_version_rejected() {
+        let mut data = vec![0u8; 20];
+        data[0..15].copy_from_slice(b"FUJIFILMCCD-RAW");
+        data[15] = b' ';
+        data[16..20].copy_from_slice(b"VX01"); // not all digits
+        assert!(!validate_raf(&data, 0));
+    }
+
     // ── Benefit-of-doubt ──────────────────────────────────────────────────────
 
     #[test]
@@ -1091,5 +1358,9 @@ mod tests {
         assert!(validate_vcard(&data, 0));
         assert!(validate_ical(&data, 0));
         assert!(validate_ole2(&data, 0));
+        assert!(validate_arw(&data, 0));
+        assert!(validate_cr2(&data, 0));
+        assert!(validate_rw2(&data, 0));
+        assert!(validate_raf(&data, 0));
     }
 }

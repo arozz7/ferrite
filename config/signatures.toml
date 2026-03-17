@@ -295,3 +295,52 @@ max_size       = 2_147_483_648  # 2 GiB hard cap
 size_hint_kind = "ole2"
 # Validates ByteOrder field (u16 LE @28) == 0xFFFE (mandatory in all OLE2 files).
 pre_validate   = "ole2"
+
+[[signature]]
+name         = "Sony ARW Raw Photo"
+extension    = "arw"
+# TIFF LE magic + IFD offset fixed at 8 (universal for Sony ARW).
+# The 8-byte anchor filters generic TIFF files; the pre-validator confirms
+# a plausible IFD entry count and the "SONY" Make string in the header area.
+header       = "49 49 2A 00 08 00 00 00"
+footer       = ""
+min_size     = 1_000_000    # 1 MB — RAW files are never tiny
+max_size     = 200_000_000  # 200 MB — covers A7R V, A1, and future sensors
+# Validates IFD entry count in [5,50] and "SONY" string within first 512 bytes.
+pre_validate = "arw"
+
+[[signature]]
+name         = "Canon CR2 Raw Photo"
+extension    = "cr2"
+# TIFF LE magic + wildcard IFD offset + Canon marker CR\x02\x00 at offset 8.
+# The 12-byte pattern (4 exact + 4 wildcard + 4 exact) is highly distinctive.
+header       = "49 49 2A 00 ?? ?? ?? ?? 43 52 02 00"
+footer       = ""
+min_size     = 1_000_000    # 1 MB
+max_size     = 120_000_000  # 120 MB — covers 5DS R (50 MP) and newer
+# Validates IFD offset at +4 is in [8, 4096].
+pre_validate = "cr2"
+
+[[signature]]
+name         = "Panasonic RW2 Raw Photo"
+extension    = "rw2"
+# Panasonic TIFF variant: II + 0x55 0x00 (0x0055 instead of standard 0x002A).
+# This single byte difference from standard TIFF is already highly selective.
+header       = "49 49 55 00"
+footer       = ""
+min_size     = 1_000_000    # 1 MB
+max_size     = 150_000_000  # 150 MB — covers S1R (47 MP)
+# Validates IFD offset in [8,4096] and entry count in [3,50].
+pre_validate = "rw2"
+
+[[signature]]
+name         = "Fujifilm RAF Raw Photo"
+extension    = "raf"
+# "FUJIFILMCCD-RAW" — 15 unique ASCII bytes, one of the most distinctive
+# RAW signatures.  False-positive probability is essentially zero.
+header       = "46 55 4A 49 46 49 4C 4D 43 43 44 2D 52 41 57"
+footer       = ""
+min_size     = 1_000_000    # 1 MB
+max_size     = 300_000_000  # 300 MB — covers GFX 100 / GFX 100S (102 MP)
+# Validates space at offset 15 and 4-digit ASCII version string at offset 16.
+pre_validate = "raf"
