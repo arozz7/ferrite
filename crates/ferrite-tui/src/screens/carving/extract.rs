@@ -173,6 +173,7 @@ impl CarvingState {
         let filename = self.filename_for_hit(&hit, &dir);
         let meta_index = self.meta_index.clone();
         let seen_fingerprints = Arc::clone(&self.seen_fingerprints);
+        let skip_truncated_single = self.skip_truncated;
         let config = CarvingConfig {
             signatures: vec![hit.signature.clone()],
             scan_chunk_size: 4 * 1024 * 1024,
@@ -212,14 +213,20 @@ impl CarvingState {
                             &hit.signature.extension,
                             &tail,
                             truncated,
-                        );
-                        tracing::info!(path = %filename, bytes, "extracted file");
-                        let _ = tx.send(CarveMsg::Extracted {
-                            idx,
                             bytes,
-                            truncated,
-                            quality,
-                        });
+                        );
+                        if skip_truncated_single && matches!(quality, CarveQuality::Truncated) {
+                            let _ = std::fs::remove_file(&filename);
+                            let _ = tx.send(CarveMsg::Skipped { idx });
+                        } else {
+                            tracing::info!(path = %filename, bytes, "extracted file");
+                            let _ = tx.send(CarveMsg::Extracted {
+                                idx,
+                                bytes,
+                                truncated,
+                                quality,
+                            });
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(path = %filename, error = %e, "extraction failed");
@@ -335,6 +342,7 @@ impl CarvingState {
         let pause = Arc::clone(&self.extract_pause);
         let meta_index = self.meta_index.clone();
         let seen_fingerprints = Arc::clone(&self.seen_fingerprints);
+        let skip_truncated = self.skip_truncated;
 
         self.extract_progress = Some(ExtractProgress {
             done: 0,
@@ -367,6 +375,7 @@ impl CarvingState {
                     truncated: 0,
                     failed: 0,
                     duplicates: 0,
+                    skipped_trunc: 0,
                     total_bytes: 0,
                     elapsed_secs: extract_start.elapsed().as_secs_f64(),
                 });
@@ -378,6 +387,10 @@ impl CarvingState {
                     idx: usize,
                 },
                 Duplicate {
+                    idx: usize,
+                },
+                /// Truncated file deleted because skip-truncated mode is active.
+                Skipped {
                     idx: usize,
                 },
                 Completed {
@@ -457,17 +470,24 @@ impl CarvingState {
                                 &hit.signature.extension,
                                 &tail,
                                 truncated,
+                                *bytes,
                             )
                         }
                         Err(_) => CarveQuality::Unknown,
                     };
-                    let _ = done_tx.send(WorkerMsg::Completed {
-                        idx,
-                        hit: Box::new(hit),
-                        path,
-                        result,
-                        quality,
-                    });
+                    // Skip-truncated mode: delete the file and report as Skipped.
+                    if skip_truncated && matches!(quality, CarveQuality::Truncated) {
+                        let _ = std::fs::remove_file(&path);
+                        let _ = done_tx.send(WorkerMsg::Skipped { idx });
+                    } else {
+                        let _ = done_tx.send(WorkerMsg::Completed {
+                            idx,
+                            hit: Box::new(hit),
+                            path,
+                            result,
+                            quality,
+                        });
+                    }
                 });
             }
             drop(done_tx); // let done_rx drain once all workers finish
@@ -477,6 +497,7 @@ impl CarvingState {
             let mut truncated_count = 0usize;
             let mut failed = 0usize;
             let mut duplicates = 0usize;
+            let mut skipped_trunc = 0usize;
             let mut total_bytes = 0u64;
             let mut last_name = String::new();
 
@@ -489,6 +510,17 @@ impl CarvingState {
                         duplicates += 1;
                         completed += 1;
                         let _ = tx.send(CarveMsg::Duplicate { idx });
+                        let _ = tx.send(CarveMsg::ExtractionProgress {
+                            done: completed,
+                            total,
+                            total_bytes,
+                            last_name: last_name.clone(),
+                        });
+                    }
+                    WorkerMsg::Skipped { idx } => {
+                        skipped_trunc += 1;
+                        completed += 1;
+                        let _ = tx.send(CarveMsg::Skipped { idx });
                         let _ = tx.send(CarveMsg::ExtractionProgress {
                             done: completed,
                             total,
@@ -549,6 +581,7 @@ impl CarvingState {
                 truncated: truncated_count,
                 failed,
                 duplicates,
+                skipped_trunc,
                 total_bytes,
                 elapsed_secs: extract_start.elapsed().as_secs_f64(),
             });

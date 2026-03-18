@@ -251,6 +251,9 @@ impl CarvingState {
             KeyCode::Char('x') => {
                 self.auto_extract = !self.auto_extract;
             }
+            KeyCode::Char('t') => {
+                self.skip_truncated = !self.skip_truncated;
+            }
             KeyCode::Char('u') => {
                 self.show_user_panel = true;
             }

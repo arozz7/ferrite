@@ -50,6 +50,7 @@ pub(crate) fn stream_until_footer(
     start: u64,
     max_end: u64,
     footer: &[u8],
+    footer_extra: usize,
     writer: &mut dyn Write,
 ) -> Result<u64> {
     let overlap = footer.len().saturating_sub(1);
@@ -69,13 +70,28 @@ pub(crate) fn stream_until_footer(
         let combined: Vec<u8> = tail.iter().chain(new_data.iter()).copied().collect();
 
         if let Some(footer_pos) = memmem::find(&combined, footer) {
-            let end = footer_pos + footer.len();
+            let end = (footer_pos + footer.len() + footer_extra).min(combined.len());
             // The tail is unwritten — write all of combined[0..end] (tail + new bytes
-            // up to and including footer).
+            // up to and including footer + extra trailing bytes).
             writer
                 .write_all(&combined[..end])
                 .map_err(|e| CarveError::Io(e.to_string()))?;
             written += end as u64;
+
+            // If footer_extra extends past the current buffer, read more.
+            let needed = footer_pos + footer.len() + footer_extra;
+            if needed > combined.len() {
+                let still_need = needed - combined.len();
+                let extra_pos = pos + new_data.len() as u64;
+                let extra = read_bytes_clamped(device, extra_pos, still_need)?;
+                if !extra.is_empty() {
+                    writer
+                        .write_all(&extra)
+                        .map_err(|e| CarveError::Io(e.to_string()))?;
+                    written += extra.len() as u64;
+                }
+            }
+
             return Ok(written);
         }
 
@@ -121,6 +137,7 @@ pub(crate) fn stream_until_last_footer(
     start: u64,
     max_end: u64,
     footer: &[u8],
+    footer_extra: usize,
     writer: &mut dyn Write,
 ) -> Result<u64> {
     // We need to see all data before we can identify the last footer position.
@@ -145,7 +162,7 @@ pub(crate) fn stream_until_last_footer(
     // `memmem::rfind` scans from the right, which is O(n) and avoids
     // iterating over every match manually.
     let write_end = if let Some(last_pos) = memmem::rfind(&buf, footer) {
-        last_pos + footer.len()
+        (last_pos + footer.len() + footer_extra).min(buf.len())
     } else {
         // No footer found — write everything (same as stream_bytes).
         buf.len()
@@ -223,6 +240,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         }
     }
 
@@ -326,6 +345,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let hit = CarveHit {
             byte_offset: 0,
@@ -355,6 +376,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let hit = CarveHit {
             byte_offset: 0,

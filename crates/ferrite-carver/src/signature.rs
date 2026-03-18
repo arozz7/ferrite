@@ -133,6 +133,56 @@ pub enum SizeHint {
     ///
     /// Returns `max(jpeg_offset + jpeg_length, cfa_offset + cfa_length)`.
     Raf,
+
+    /// MPEG Transport Stream / Blu-ray M2TS stream walker.
+    ///
+    /// Walks the stream packet-by-packet, checking for the TS sync byte
+    /// (`0x47`) at `ts_offset` within each `stride`-byte packet.  Returns
+    /// the byte length of the contiguous valid-packet run.  Walking stops
+    /// as soon as 10 consecutive packets fail the sync-byte check.
+    ///
+    /// | Format | `ts_offset` | `stride` |
+    /// |--------|-------------|----------|
+    /// | TS     | 0           | 188      |
+    /// | M2TS   | 4           | 192      |
+    MpegTs {
+        /// Byte position of the `0x47` sync byte within each packet.
+        ts_offset: u8,
+        /// Total packet size in bytes (188 for TS, 192 for M2TS).
+        stride: u16,
+    },
+
+    /// Windows PE executable.
+    ///
+    /// Derives file size from the PE section table: walks all sections and
+    /// returns `max(PointerToRawData + SizeOfRawData)` across all sections.
+    Pe,
+
+    /// ELF executable or shared library.
+    ///
+    /// Derives file size from section and program headers:
+    /// `max(section_table_end, max(p_offset + p_filesz))`.
+    /// Supports both 32-bit and 64-bit, LE and BE.
+    Elf,
+
+    /// RAR archive (version 4 or 5).
+    ///
+    /// Walks the block structure to find the end-of-archive marker.
+    /// RAR4 uses fixed-width fields; RAR5 uses variable-length integers.
+    Rar,
+
+    /// EBML container (MKV / WebM).
+    ///
+    /// Reads the top-level Segment element size from the EBML header.
+    /// Returns `None` for unknown-size segments (streaming encodes).
+    Ebml,
+
+    /// Text-boundary scanner for text-based formats (XML, etc.).
+    ///
+    /// Reads forward from `file_offset` and stops when a null byte or a
+    /// sustained run of non-text bytes is encountered.  Returns the offset
+    /// of the last text byte, rounded up to include the final line/tag.
+    TextBound,
 }
 
 impl SizeHint {
@@ -148,6 +198,12 @@ impl SizeHint {
             SizeHint::Isobmff => "mp4",
             SizeHint::Tiff => "tiff",
             SizeHint::Raf => "raf",
+            SizeHint::MpegTs { .. } => "mpeg_ts",
+            SizeHint::Pe => "pe",
+            SizeHint::Elf => "elf",
+            SizeHint::Rar => "rar",
+            SizeHint::Ebml => "ebml",
+            SizeHint::TextBound => "text_bound",
         }
     }
 }
@@ -210,6 +266,28 @@ pub struct Signature {
     /// while still detecting multiple distinct files that are far apart.
     #[serde(default)]
     pub min_hit_gap: u64,
+    /// Cross-signature suppression group (optional).
+    ///
+    /// When two or more signatures share the same `suppress_group` string,
+    /// a hit from any one of them advances the shared gap counter for that
+    /// group.  This suppresses cross-format duplicates such as M2TS (4-byte
+    /// timestamp prefix + 0x47) and TS (bare 0x47), where every M2TS packet
+    /// also produces a spurious TS hit 4 bytes later.
+    ///
+    /// Signatures without a group use their own `name` as the key (existing
+    /// behaviour, fully backward-compatible).
+    #[serde(default)]
+    pub suppress_group: Option<String>,
+    /// Extra bytes to include after the footer match (default: 0).
+    ///
+    /// Some formats have a footer marker that identifies the start of a
+    /// trailing record rather than the exact end of the file.  For example,
+    /// ZIP's EOCD footer `PK\x05\x06` is followed by 18 bytes of fixed
+    /// fields (disk number, central dir offset, entry count, comment length)
+    /// plus a variable-length comment.  Setting `footer_extra = 18` ensures
+    /// the essential EOCD metadata is included in the extracted file.
+    #[serde(default)]
+    pub footer_extra: usize,
 }
 
 /// Configuration passed to [`crate::Carver`].
@@ -267,6 +345,17 @@ impl CarvingConfig {
             // Minimum gap between consecutive hits of this signature (0 = disabled).
             #[serde(default)]
             min_hit_gap: u64,
+            // Cross-signature suppression group (None = use sig name as key).
+            #[serde(default)]
+            suppress_group: Option<String>,
+            // MpegTs size-hint fields (ts_offset and stride).
+            #[serde(default)]
+            size_hint_ts_offset: Option<u8>,
+            #[serde(default)]
+            size_hint_stride: Option<u16>,
+            // Extra bytes to include after footer match.
+            #[serde(default)]
+            footer_extra: usize,
         }
 
         #[derive(Deserialize)]
@@ -304,6 +393,19 @@ impl CarvingConfig {
                     }
                     Some(k) if k.eq_ignore_ascii_case("tiff") => Some(SizeHint::Tiff),
                     Some(k) if k.eq_ignore_ascii_case("raf") => Some(SizeHint::Raf),
+                    Some(k) if k.eq_ignore_ascii_case("pe") => Some(SizeHint::Pe),
+                    Some(k) if k.eq_ignore_ascii_case("elf") => Some(SizeHint::Elf),
+                    Some(k) if k.eq_ignore_ascii_case("rar") => Some(SizeHint::Rar),
+                    Some(k) if k.eq_ignore_ascii_case("ebml") => Some(SizeHint::Ebml),
+                    Some(k) if k.eq_ignore_ascii_case("text_bound") => Some(SizeHint::TextBound),
+                    Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
+                        match (r.size_hint_ts_offset, r.size_hint_stride) {
+                            (Some(ts_offset), Some(stride)) => {
+                                Some(SizeHint::MpegTs { ts_offset, stride })
+                            }
+                            _ => None,
+                        }
+                    }
                     Some(k) if k.eq_ignore_ascii_case("linear_scaled") => {
                         match (r.size_hint_offset, r.size_hint_len, r.size_hint_scale) {
                             (Some(offset), Some(len), Some(scale)) => {
@@ -343,6 +445,8 @@ impl CarvingConfig {
                     pre_validate,
                     header_offset: r.header_offset,
                     min_hit_gap: r.min_hit_gap,
+                    suppress_group: r.suppress_group,
+                    footer_extra: r.footer_extra,
                 })
             })
             .collect();

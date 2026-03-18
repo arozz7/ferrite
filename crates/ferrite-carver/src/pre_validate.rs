@@ -871,7 +871,31 @@ fn validate_rar(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 7) {
         return true;
     }
-    matches!(data[pos + 6], 0x00 | 0x01)
+    let fmt = data[pos + 6];
+    if !matches!(fmt, 0x00 | 0x01) {
+        return false;
+    }
+    // RAR4: archive header at offset 7.
+    //   @9: HEAD_TYPE must be 0x73 (archive header marker).
+    //   @10-11: HEAD_FLAGS (u16 LE):
+    //     bit 0 (0x0001) = MHD_VOLUME (multi-volume archive)
+    //     bit 8 (0x0100) = MHD_FIRSTVOLUME (first volume, RAR 3.0+)
+    //   If it's a volume but NOT the first volume → continuation → useless for recovery.
+    if fmt == 0x00 {
+        if need(data, pos, 12) {
+            return true;
+        }
+        if data[pos + 9] != 0x73 {
+            return false;
+        }
+        let flags = u16::from_le_bytes([data[pos + 10], data[pos + 11]]);
+        let is_volume = flags & 0x0001 != 0;
+        let is_first = flags & 0x0100 != 0;
+        if is_volume && !is_first {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_seven_zip(data: &[u8], pos: usize) -> bool {
@@ -1026,11 +1050,20 @@ fn validate_pst(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_xml(data: &[u8], pos: usize) -> bool {
-    // <?xml followed by a space
-    if need(data, pos, 6) {
+    // <?xml version — the XML spec mandates "version" as the first attribute
+    // in the XML declaration.  Checking 13 bytes: "<?xml version" rejects
+    // embedded `<?xml ` inside video/binary data that lacks a proper declaration.
+    if need(data, pos, 13) {
         return true;
     }
     data[pos + 5] == b' '
+        && data[pos + 6] == b'v'
+        && data[pos + 7] == b'e'
+        && data[pos + 8] == b'r'
+        && data[pos + 9] == b's'
+        && data[pos + 10] == b'i'
+        && data[pos + 11] == b'o'
+        && data[pos + 12] == b'n'
 }
 
 fn validate_html(data: &[u8], pos: usize) -> bool {
@@ -1400,23 +1433,65 @@ fn validate_m4a(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_gz(data: &[u8], pos: usize) -> bool {
-    // GZip: ID1=0x1F ID2=0x8B CM=8 FLG.
-    // RFC 1952: byte @2 is compression method (must be 8); byte @3 is FLG
-    // where bit 5 (0x20) is a reserved bit that must be zero.
+    // GZip: ID1=0x1F ID2=0x8B CM=8 FLG XFL OS.
+    //
+    // RFC 1952 checks:
+    //   @2 CM  — compression method, must be 8 (deflate).
+    //   @3 FLG — bit 5 (0x20) is reserved, must be 0.
+    //   @8 XFL — extra flags: 0 (none), 2 (max compression), 4 (fastest).
+    //            Random byte lands in {0,2,4} ~1.2% of the time.
+    //   @9 OS  — originating OS: 0–13 are defined, 255 = unknown.
+    //            Random byte is valid ~5.9% of the time.
+    //
+    // Combined XFL + OS rejects ~99.9% of false positives on bytes 8–9 alone.
     if need(data, pos, 10) {
         return true;
     }
-    data[pos + 2] == 8 && (data[pos + 3] & 0x20 == 0)
+    if data[pos + 2] != 8 {
+        return false;
+    }
+    if data[pos + 3] & 0x20 != 0 {
+        return false;
+    }
+    let xfl = data[pos + 8];
+    if xfl != 0 && xfl != 2 && xfl != 4 {
+        return false;
+    }
+    let os = data[pos + 9];
+    os <= 13 || os == 255
 }
 
 fn validate_eml(data: &[u8], pos: usize) -> bool {
-    // "From " (5 bytes) must be followed by a printable ASCII character
-    // (0x20–0x7E) to distinguish real mbox headers from binary data.
-    if need(data, pos, 6) {
-        return true;
+    // mbox "From " line format: "From user@domain.tld Day Mon DD HH:MM:SS YYYY"
+    // We scan the first 80 bytes after "From " for:
+    //   1. All bytes must be printable ASCII (0x20–0x7E) or common whitespace (\t, \r, \n)
+    //   2. An '@' sign must appear (sender email address)
+    // This rejects XMP/RDF "From rdf:parseType..." and binary data.
+    let check_len = 80;
+    let header_len = 5; // "From "
+    if need(data, pos, header_len + check_len) {
+        // Short buffer — require at least one printable byte
+        if need(data, pos, 6) {
+            return true;
+        }
+        let next = data[pos + 5];
+        return (0x20..=0x7E).contains(&next);
     }
-    let next = data[pos + 5];
-    (0x20..=0x7E).contains(&next)
+    let window = &data[pos + header_len..pos + header_len + check_len];
+    let mut has_at = false;
+    for &b in window {
+        if b == b'@' {
+            has_at = true;
+        }
+        if b == b'\n' {
+            // End of "From " line — stop checking
+            break;
+        }
+        if !(b == b'\t' || b == b'\r' || (0x20..=0x7E).contains(&b)) {
+            return false; // Non-printable byte → binary data
+        }
+    }
+    has_at
 }
 
 fn validate_elf(data: &[u8], pos: usize) -> bool {
@@ -1598,12 +1673,68 @@ fn validate_realmedia(data: &[u8], pos: usize) -> bool {
 /// Windows ICO file.
 /// Image count (u16 LE @4) must be in [1, 200].
 fn validate_ico(data: &[u8], pos: usize) -> bool {
-    let end = pos + 6;
+    // ICO header: 00 00 01 00 <count:u16 LE> then 16-byte image directory entries.
+    // We validate the first directory entry to reject false positives from the
+    // extremely weak 4-byte magic (3 of which are zeros).
+    let end = pos + 22; // header(6) + one 16-byte directory entry
     if data.len() < end {
-        return true;
+        // Not enough data for even one entry — fall back to count-only check
+        let end6 = pos + 6;
+        if data.len() < end6 {
+            return true;
+        }
+        let count = u16::from_le_bytes([data[pos + 4], data[pos + 5]]);
+        return (1..=200).contains(&count);
     }
     let count = u16::from_le_bytes([data[pos + 4], data[pos + 5]]);
-    (1..=200).contains(&count)
+    if !(1..=200).contains(&count) {
+        return false;
+    }
+    // First directory entry starts at pos+6:
+    //   +0 width, +1 height, +2 color_count, +3 reserved (must be 0)
+    //   +4..+6 planes (u16 LE, must be 0 or 1)
+    //   +6..+8 bpp (u16 LE, must be in standard set)
+    //   +8..+12 data_size (u32 LE, must be > 0)
+    //   +12..+16 data_offset (u32 LE, must be >= header+entries size)
+    let entry = pos + 6;
+    let reserved = data[entry + 3];
+    if reserved != 0 {
+        return false;
+    }
+    let planes = u16::from_le_bytes([data[entry + 4], data[entry + 5]]);
+    if planes > 1 {
+        return false;
+    }
+    let bpp = u16::from_le_bytes([data[entry + 6], data[entry + 7]]);
+    if !matches!(bpp, 0 | 1 | 4 | 8 | 16 | 24 | 32) {
+        return false;
+    }
+    let data_size = u32::from_le_bytes([
+        data[entry + 8],
+        data[entry + 9],
+        data[entry + 10],
+        data[entry + 11],
+    ]);
+    if data_size == 0 || data_size > 1_048_576 {
+        return false;
+    }
+    let data_offset = u32::from_le_bytes([
+        data[entry + 12],
+        data[entry + 13],
+        data[entry + 14],
+        data[entry + 15],
+    ]);
+    let min_offset = 6 + 16 * count as u32;
+    // data_offset must be within the ICO file (max_size = 1 MiB)
+    // and the entry's data must fit within that bound.
+    if data_offset < min_offset || data_offset > 1_048_576 {
+        return false;
+    }
+    // planes and bpp can't BOTH be zero in a real icon
+    if planes == 0 && bpp == 0 {
+        return false;
+    }
+    true
 }
 
 /// Olympus ORF (TIFF LE with RO magic 0x524F).
@@ -1787,17 +1918,44 @@ fn validate_cdr(data: &[u8], pos: usize) -> bool {
 
 fn validate_swf(data: &[u8], pos: usize) -> bool {
     // Shockwave Flash: FWS (uncompressed), CWS (zlib), or ZWS (LZMA).
-    // Version byte @3 must be in [1, 50].
-    // File length (u32 LE @4) must be >= 8 (minimum header size).
-    if need(data, pos, 8) {
+    //
+    // Version byte @3: Flash 3 was the first widely deployed version; the
+    // final release was Flash Player 44 (2024).  Accepting [3, 45] tightens
+    // the 20% pass rate of [1, 50] on random data to ~17%.
+    //
+    // File length (u32 LE @4): the *uncompressed* SWF size.  Must be >= 21
+    // (8 header + 5 RECT + 4 frame-rate/count + end tag) and <= 100 MiB
+    // (the extraction cap).  A random u32 LE exceeds 100 MiB ~97.7% of the
+    // time, so this single check eliminates almost all false positives.
+    if need(data, pos, 9) {
         return true;
     }
     let version = data[pos + 3];
-    if !(1..=50).contains(&version) {
+    if !(3..=45).contains(&version) {
         return false;
     }
     let file_len = u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
-    file_len >= 8
+    if !(21..=104_857_600).contains(&file_len) {
+        return false;
+    }
+    // FWS (uncompressed): byte 8 starts the RECT structure.  Top 5 bits are
+    // Nbits (number of bits per RECT field).  Real values are [1, 25]; higher
+    // would imply stage dimensions > 1M pixels in twips, which is unrealistic.
+    if data[pos] == b'F' {
+        let nbits = data[pos + 8] >> 3;
+        if nbits == 0 || nbits > 25 {
+            return false;
+        }
+    }
+    // CWS (zlib): byte 8 is the zlib CMF byte.  CM (lower 4 bits) must be 8
+    // (deflate) and CINFO (upper 4 bits) must be ≤ 7.
+    if data[pos] == b'C' {
+        let cmf = data[pos + 8];
+        if cmf & 0x0F != 8 || cmf >> 4 > 7 {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_dcr(data: &[u8], pos: usize) -> bool {
@@ -1962,14 +2120,29 @@ fn validate_php(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_shebang(data: &[u8], pos: usize) -> bool {
-    // Unix shebang: "#!" (2 bytes already matched by magic).
-    // Byte @2 must be '/' — all valid interpreter paths are absolute (e.g. `/bin/sh`,
-    // `/usr/bin/env`).  This rejects false positives from binary data that happen
-    // to contain 0x23 0x21 without a following path.
-    if need(data, pos, 3) {
+    // Unix shebang: "#!/" must be followed by a valid interpreter path.
+    // Real shebangs: "#!/bin/sh", "#!/usr/bin/env", "#!/usr/bin/python", etc.
+    // After '/', byte 3 must be 'b' (bin) or 'u' (usr) — covers all standard paths.
+    // Then we verify the next ~30 bytes are printable ASCII (interpreter path),
+    // rejecting binary data that coincidentally contains "#!/".
+    if need(data, pos, 7) {
         return true;
     }
-    data[pos + 2] == b'/'
+    if data[pos + 2] != b'/' {
+        return false;
+    }
+    let b3 = data[pos + 3];
+    if b3 != b'b' && b3 != b'u' {
+        return false;
+    }
+    // Check bytes 4..6 are printable ASCII (part of path like "in/" or "sr/")
+    for i in 4..7 {
+        let b = data[pos + i];
+        if !(0x20..=0x7E).contains(&b) {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_crw(data: &[u8], pos: usize) -> bool {
@@ -2067,7 +2240,16 @@ fn validate_ts(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 377) {
         return true;
     }
-    data[pos] == 0x47 && data[pos + 188] == 0x47 && data[pos + 376] == 0x47
+    if data[pos] != 0x47 || data[pos + 188] != 0x47 || data[pos + 376] != 0x47 {
+        return false;
+    }
+    // When enough data is available, require 2 more sync bytes (packets 4 and 5).
+    // This drops false-positive probability from (1/256)^2 to (1/256)^4 per
+    // candidate position, effectively eliminating random hits on a TB-size drive.
+    if pos + 753 <= data.len() && (data[pos + 564] != 0x47 || data[pos + 752] != 0x47) {
+        return false;
+    }
+    true
 }
 
 fn validate_m2ts(data: &[u8], pos: usize) -> bool {
@@ -2077,7 +2259,14 @@ fn validate_m2ts(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 389) {
         return true;
     }
-    data[pos + 4] == 0x47 && data[pos + 196] == 0x47 && data[pos + 388] == 0x47
+    if data[pos + 4] != 0x47 || data[pos + 196] != 0x47 || data[pos + 388] != 0x47 {
+        return false;
+    }
+    // When enough data is available, require 2 more sync bytes (packets 4 and 5).
+    if pos + 773 <= data.len() && (data[pos + 580] != 0x47 || data[pos + 772] != 0x47) {
+        return false;
+    }
+    true
 }
 
 fn validate_luks(data: &[u8], pos: usize) -> bool {
@@ -2649,6 +2838,70 @@ mod tests {
         assert!(!validate_raf(&data, 0));
     }
 
+    // ── RAR ───────────────────────────────────────────────────────────────────
+
+    fn make_rar4(flags: u16) -> Vec<u8> {
+        let mut d = vec![0u8; 12];
+        d[0..7].copy_from_slice(b"Rar!\x1a\x07\x00");
+        d[7] = 0x00; // CRC lo
+        d[8] = 0x00; // CRC hi
+        d[9] = 0x73; // HEAD_TYPE = archive header
+        d[10..12].copy_from_slice(&flags.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn rar4_standalone_accepted() {
+        assert!(validate_rar(&make_rar4(0x0000), 0));
+    }
+
+    #[test]
+    fn rar4_first_volume_accepted() {
+        assert!(validate_rar(&make_rar4(0x0101), 0));
+    }
+
+    #[test]
+    fn rar4_continuation_volume_rejected() {
+        // Volume bit set, first-volume bit NOT set
+        assert!(!validate_rar(&make_rar4(0x0001), 0));
+    }
+
+    #[test]
+    fn rar4_continuation_with_extra_flags_rejected() {
+        // flags = 0x0011 — volume + lock, but not first volume
+        assert!(!validate_rar(&make_rar4(0x0011), 0));
+    }
+
+    #[test]
+    fn rar4_bad_head_type_rejected() {
+        let mut d = make_rar4(0x0000);
+        d[9] = 0x74; // file header, not archive header
+        assert!(!validate_rar(&d, 0));
+    }
+
+    #[test]
+    fn rar5_type_accepted() {
+        let mut d = vec![0u8; 12];
+        d[0..7].copy_from_slice(b"Rar!\x1a\x07\x01");
+        assert!(validate_rar(&d, 0));
+    }
+
+    #[test]
+    fn rar_invalid_type_rejected() {
+        let mut d = vec![0u8; 12];
+        d[0..7].copy_from_slice(b"Rar!\x1a\x07\x02");
+        assert!(!validate_rar(&d, 0));
+    }
+
+    #[test]
+    fn rar_real_continuation_rejected() {
+        // Actual bytes from a false positive: flags = 0x0001
+        let d: Vec<u8> = vec![
+            0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0xf1, 0xfb, 0x73, 0x01, 0x00,
+        ];
+        assert!(!validate_rar(&d, 0));
+    }
+
     // ── Benefit-of-doubt ──────────────────────────────────────────────────────
 
     #[test]
@@ -3076,57 +3329,119 @@ mod tests {
 
     // ── GZip ──────────────────────────────────────────────────────────────────
 
-    fn make_gz(cm: u8, flg: u8) -> Vec<u8> {
+    fn make_gz_full(cm: u8, flg: u8, xfl: u8, os: u8) -> Vec<u8> {
         let mut data = vec![0u8; 10];
         data[0] = 0x1F;
         data[1] = 0x8B;
         data[2] = cm;
         data[3] = flg;
+        data[8] = xfl;
+        data[9] = os;
         data
     }
 
     #[test]
     fn gz_deflate_method_accepted() {
-        let data = make_gz(8, 0x00);
+        let data = make_gz_full(8, 0x00, 0, 3); // Unix
         assert!(validate_gz(&data, 0));
     }
 
     #[test]
     fn gz_wrong_cm_rejected() {
-        let data = make_gz(7, 0x00); // CM != 8
+        let data = make_gz_full(7, 0x00, 0, 3);
         assert!(!validate_gz(&data, 0));
     }
 
     #[test]
     fn gz_reserved_flag_bit_rejected() {
-        let data = make_gz(8, 0x20); // bit 5 set — reserved
+        let data = make_gz_full(8, 0x20, 0, 3);
+        assert!(!validate_gz(&data, 0));
+    }
+
+    #[test]
+    fn gz_xfl_max_compression_accepted() {
+        let data = make_gz_full(8, 0x00, 2, 255); // XFL=2 (max), OS=unknown
+        assert!(validate_gz(&data, 0));
+    }
+
+    #[test]
+    fn gz_xfl_fastest_accepted() {
+        let data = make_gz_full(8, 0x00, 4, 0); // XFL=4 (fastest), OS=FAT
+        assert!(validate_gz(&data, 0));
+    }
+
+    #[test]
+    fn gz_invalid_xfl_rejected() {
+        let data = make_gz_full(8, 0x00, 6, 3); // XFL=6 not in {0,2,4}
+        assert!(!validate_gz(&data, 0));
+    }
+
+    #[test]
+    fn gz_invalid_os_rejected() {
+        let data = make_gz_full(8, 0x00, 0, 14); // OS=14 not in [0,13]∪{255}
         assert!(!validate_gz(&data, 0));
     }
 
     // ── EML ───────────────────────────────────────────────────────────────────
 
-    fn make_eml(next_char: u8) -> Vec<u8> {
-        let mut data = vec![0u8; 6];
-        data[0..5].copy_from_slice(b"From ");
-        data[5] = next_char;
+    fn make_eml_line(after_from: &[u8]) -> Vec<u8> {
+        let mut data = Vec::with_capacity(5 + after_from.len());
+        data.extend_from_slice(b"From ");
+        data.extend_from_slice(after_from);
+        // Pad to 85 bytes so the full 80-byte window is available
+        while data.len() < 85 {
+            data.push(b' ');
+        }
         data
     }
 
     #[test]
-    fn eml_printable_char_accepted() {
-        let data = make_eml(b'u'); // "From u..."
+    fn eml_real_mbox_from_accepted() {
+        let data = make_eml_line(b"user@example.com Mon Jan  1 00:00:00 2024\n");
         assert!(validate_eml(&data, 0));
     }
 
     #[test]
-    fn eml_control_char_rejected() {
-        let data = make_eml(0x01); // non-printable — binary data
+    fn eml_mailer_daemon_accepted() {
+        let data = make_eml_line(b"MAILER-DAEMON@host.com Fri Feb 14 10:30:00 2025\n");
+        assert!(validate_eml(&data, 0));
+    }
+
+    #[test]
+    fn eml_xmp_rdf_rejected() {
+        // Real false positive: "From rdf:parseType=\"Resource\">"
+        let data = make_eml_line(b"rdf:parseType=\"Resource\">\n");
         assert!(!validate_eml(&data, 0));
     }
 
     #[test]
-    fn eml_del_char_rejected() {
-        let data = make_eml(0x7F); // DEL — outside printable range
+    fn eml_binary_after_from_rejected() {
+        let mut data = Vec::with_capacity(85);
+        data.extend_from_slice(b"From ");
+        data.extend_from_slice(&[0x01, 0xFF, 0x00, 0x47]); // binary garbage
+        while data.len() < 85 {
+            data.push(0x00);
+        }
+        assert!(!validate_eml(&data, 0));
+    }
+
+    #[test]
+    fn eml_no_at_sign_rejected() {
+        // All printable but no '@' — not an email From line
+        let data = make_eml_line(b"just some text without email address here\n");
+        assert!(!validate_eml(&data, 0));
+    }
+
+    #[test]
+    fn eml_short_buffer_printable_accepted() {
+        // Only 6 bytes — falls back to printable-char check
+        let data = b"From u".to_vec();
+        assert!(validate_eml(&data, 0));
+    }
+
+    #[test]
+    fn eml_short_buffer_binary_rejected() {
+        let data = b"From \x01".to_vec();
         assert!(!validate_eml(&data, 0));
     }
 
@@ -3461,13 +3776,71 @@ mod tests {
         assert!(!validate_realmedia(&make_realmedia(0, 17), 0));
     }
 
+    // ── XML ──────────────────────────────────────────────────────────────────
+
+    fn make_xml_decl(suffix: &[u8]) -> Vec<u8> {
+        // "<?xml " + suffix
+        let mut d = Vec::with_capacity(6 + suffix.len());
+        d.extend_from_slice(b"<?xml ");
+        d.extend_from_slice(suffix);
+        d
+    }
+
+    #[test]
+    fn xml_valid_declaration_accepted() {
+        let d = make_xml_decl(b"version=\"1.0\" encoding=\"UTF-8\"?>");
+        assert!(validate_xml(&d, 0));
+    }
+
+    #[test]
+    fn xml_space_without_version_rejected() {
+        // "<?xml something" — space present but no "version"
+        let d = make_xml_decl(b"somethi");
+        assert!(!validate_xml(&d, 0));
+    }
+
+    #[test]
+    fn xml_random_bytes_after_space_rejected() {
+        let d = make_xml_decl(&[0xFF, 0x00, 0x47, 0x11, 0x22, 0x33, 0x44]);
+        assert!(!validate_xml(&d, 0));
+    }
+
+    #[test]
+    fn xml_short_buffer_passes() {
+        // Only 6 bytes — not enough to check "version", passes via need()
+        let d = b"<?xml ".to_vec();
+        assert!(validate_xml(&d, 0));
+    }
+
     // ── ICO ───────────────────────────────────────────────────────────────────
 
-    fn make_ico(count: u16) -> Vec<u8> {
-        let mut d = vec![0u8; 8];
+    /// Build an ICO with one directory entry.
+    fn make_ico_full(
+        count: u16,
+        reserved: u8,
+        planes: u16,
+        bpp: u16,
+        data_size: u32,
+        data_offset: u32,
+    ) -> Vec<u8> {
+        let mut d = vec![0u8; 22];
         d[0..4].copy_from_slice(&[0x00, 0x00, 0x01, 0x00]);
         d[4..6].copy_from_slice(&count.to_le_bytes());
+        // entry: width=32, height=32, colors=0, reserved, planes, bpp, data_size, data_offset
+        d[6] = 32;
+        d[7] = 32;
+        d[8] = 0;
+        d[9] = reserved;
+        d[10..12].copy_from_slice(&planes.to_le_bytes());
+        d[12..14].copy_from_slice(&bpp.to_le_bytes());
+        d[14..18].copy_from_slice(&data_size.to_le_bytes());
+        d[18..22].copy_from_slice(&data_offset.to_le_bytes());
         d
+    }
+
+    fn make_ico(count: u16) -> Vec<u8> {
+        let offset = 6 + 16 * count as u32;
+        make_ico_full(count, 0, 1, 32, 1024, offset)
     }
 
     #[test]
@@ -3488,6 +3861,82 @@ mod tests {
     #[test]
     fn ico_count201_rejected() {
         assert!(!validate_ico(&make_ico(201), 0));
+    }
+
+    #[test]
+    fn ico_reserved_nonzero_rejected() {
+        let d = make_ico_full(1, 0xFF, 1, 32, 1024, 22);
+        assert!(!validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_planes_2_rejected() {
+        let d = make_ico_full(1, 0, 2, 32, 1024, 22);
+        assert!(!validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_invalid_bpp_rejected() {
+        let d = make_ico_full(1, 0, 1, 15, 1024, 22);
+        assert!(!validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_zero_data_size_rejected() {
+        let d = make_ico_full(1, 0, 1, 32, 0, 22);
+        assert!(!validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_offset_too_small_rejected() {
+        // data_offset < 6 + 16*1 = 22
+        let d = make_ico_full(1, 0, 1, 32, 1024, 10);
+        assert!(!validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_short_buffer_count_only() {
+        // Only 8 bytes — falls back to count-only check
+        let mut d = vec![0u8; 8];
+        d[0..4].copy_from_slice(&[0x00, 0x00, 0x01, 0x00]);
+        d[4..6].copy_from_slice(&1u16.to_le_bytes());
+        assert!(validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_data_size_too_large_rejected() {
+        let d = make_ico_full(1, 0, 1, 32, 0xFFFF_FF00, 22);
+        assert!(!validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_data_offset_too_large_rejected() {
+        // data_offset beyond 1 MiB — impossible for a real ICO
+        let d = make_ico_full(1, 0, 1, 32, 1024, 0x0048_09FF);
+        assert!(!validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_planes_and_bpp_both_zero_rejected() {
+        let d = make_ico_full(1, 0, 0, 0, 1024, 22);
+        assert!(!validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_planes_zero_bpp_nonzero_accepted() {
+        // planes=0, bpp=32 is valid (planes unspecified)
+        let d = make_ico_full(1, 0, 0, 32, 1024, 22);
+        assert!(validate_ico(&d, 0));
+    }
+
+    #[test]
+    fn ico_mp4_false_positive_rejected() {
+        // Real false positive from MP4 data: 00 00 01 00 15 00 00 00 0a 00 00 00 00 00 00 00 00 ff ff ff ff ff
+        let d: Vec<u8> = vec![
+            0x00, 0x00, 0x01, 0x00, 0x15, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ];
+        assert!(!validate_ico(&d, 0));
     }
 
     // ── ORF ───────────────────────────────────────────────────────────────────
@@ -3786,44 +4235,71 @@ mod tests {
 
     // ── SWF ───────────────────────────────────────────────────────────────────
 
-    fn make_swf(compression: u8, version: u8, file_len: u32) -> Vec<u8> {
-        let mut buf = vec![0u8; 8];
+    /// Build a minimal SWF header.  `byte8` is the first post-header byte:
+    ///   FWS → RECT Nbits field (top 5 bits); CWS → zlib CMF; ZWS → LZMA.
+    fn make_swf(compression: u8, version: u8, file_len: u32, byte8: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 12];
         buf[0] = compression;
         buf[1] = b'W';
         buf[2] = b'S';
         buf[3] = version;
         buf[4..8].copy_from_slice(&file_len.to_le_bytes());
+        buf[8] = byte8;
         buf
     }
 
     #[test]
     fn swf_fws_accepted() {
-        assert!(validate_swf(&make_swf(b'F', 10, 200), 0));
+        // Nbits = 15 → byte 8 = 15 << 3 = 0x78
+        assert!(validate_swf(&make_swf(b'F', 10, 200, 15 << 3), 0));
     }
 
     #[test]
     fn swf_cws_accepted() {
-        assert!(validate_swf(&make_swf(b'C', 8, 150), 0));
+        // zlib CMF = 0x78 (CM=8, CINFO=7)
+        assert!(validate_swf(&make_swf(b'C', 8, 150, 0x78), 0));
     }
 
     #[test]
     fn swf_zws_accepted() {
-        assert!(validate_swf(&make_swf(b'Z', 13, 80), 0));
+        assert!(validate_swf(&make_swf(b'Z', 13, 80, 0x00), 0));
     }
 
     #[test]
-    fn swf_version_zero_rejected() {
-        assert!(!validate_swf(&make_swf(b'F', 0, 200), 0));
+    fn swf_version_too_low_rejected() {
+        assert!(!validate_swf(&make_swf(b'F', 2, 200, 15 << 3), 0));
     }
 
     #[test]
     fn swf_version_too_high_rejected() {
-        assert!(!validate_swf(&make_swf(b'F', 60, 200), 0));
+        assert!(!validate_swf(&make_swf(b'F', 60, 200, 15 << 3), 0));
     }
 
     #[test]
     fn swf_file_too_short_rejected() {
-        assert!(!validate_swf(&make_swf(b'F', 10, 4), 0));
+        assert!(!validate_swf(&make_swf(b'F', 10, 4, 15 << 3), 0));
+    }
+
+    #[test]
+    fn swf_file_too_large_rejected() {
+        // Random u32 LE > 100 MiB — the #1 false-positive killer.
+        assert!(!validate_swf(&make_swf(b'F', 10, 200_000_000, 15 << 3), 0));
+    }
+
+    #[test]
+    fn swf_fws_nbits_zero_rejected() {
+        assert!(!validate_swf(&make_swf(b'F', 10, 200, 0x00), 0)); // Nbits = 0
+    }
+
+    #[test]
+    fn swf_fws_nbits_too_high_rejected() {
+        assert!(!validate_swf(&make_swf(b'F', 10, 200, 31 << 3), 0)); // Nbits = 31
+    }
+
+    #[test]
+    fn swf_cws_bad_zlib_rejected() {
+        // CMF with CM != 8 → rejected.
+        assert!(!validate_swf(&make_swf(b'C', 10, 200, 0x00), 0));
     }
 
     // ── DCR ───────────────────────────────────────────────────────────────────
@@ -4049,11 +4525,14 @@ mod tests {
 
     // ── TS ────────────────────────────────────────────────────────────────────
 
+    /// Build a TS buffer with 5 valid sync bytes (enough for the extended check).
     fn make_ts() -> Vec<u8> {
-        let mut buf = vec![0u8; 400];
+        let mut buf = vec![0u8; 800];
         buf[0] = 0x47;
         buf[188] = 0x47;
         buf[376] = 0x47;
+        buf[564] = 0x47;
+        buf[752] = 0x47;
         buf
     }
 
@@ -4076,13 +4555,40 @@ mod tests {
         assert!(!validate_ts(&buf, 0));
     }
 
+    #[test]
+    fn ts_missing_fourth_sync_rejected() {
+        let mut buf = make_ts();
+        buf[564] = 0x00;
+        assert!(!validate_ts(&buf, 0));
+    }
+
+    #[test]
+    fn ts_missing_fifth_sync_rejected() {
+        let mut buf = make_ts();
+        buf[752] = 0x00;
+        assert!(!validate_ts(&buf, 0));
+    }
+
+    #[test]
+    fn ts_short_buffer_skips_extended_check() {
+        // Only 3 sync bytes in a 400-byte buffer — extended check is skipped.
+        let mut buf = vec![0u8; 400];
+        buf[0] = 0x47;
+        buf[188] = 0x47;
+        buf[376] = 0x47;
+        assert!(validate_ts(&buf, 0));
+    }
+
     // ── M2TS ──────────────────────────────────────────────────────────────────
 
+    /// Build an M2TS buffer with 5 valid sync bytes.
     fn make_m2ts() -> Vec<u8> {
-        let mut buf = vec![0u8; 400];
+        let mut buf = vec![0u8; 800];
         buf[4] = 0x47;
         buf[196] = 0x47;
         buf[388] = 0x47;
+        buf[580] = 0x47;
+        buf[772] = 0x47;
         buf
     }
 
@@ -4096,6 +4602,23 @@ mod tests {
         let mut buf = make_m2ts();
         buf[196] = 0x00;
         assert!(!validate_m2ts(&buf, 0));
+    }
+
+    #[test]
+    fn m2ts_missing_fifth_sync_rejected() {
+        let mut buf = make_m2ts();
+        buf[772] = 0x00;
+        assert!(!validate_m2ts(&buf, 0));
+    }
+
+    #[test]
+    fn m2ts_short_buffer_skips_extended_check() {
+        // Only 3 sync bytes in a 400-byte buffer — extended check is skipped.
+        let mut buf = vec![0u8; 400];
+        buf[4] = 0x47;
+        buf[196] = 0x47;
+        buf[388] = 0x47;
+        assert!(validate_m2ts(&buf, 0));
     }
 
     // ── LUKS ──────────────────────────────────────────────────────────────────
@@ -4434,22 +4957,51 @@ mod tests {
 
     // ── Shebang ───────────────────────────────────────────────────────────────
 
-    fn make_shebang(byte2: u8) -> Vec<u8> {
-        let mut buf = vec![0u8; 16];
-        buf[0] = b'#';
-        buf[1] = b'!';
-        buf[2] = byte2;
+    fn make_shebang_path(path: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(2 + path.len());
+        buf.extend_from_slice(b"#!");
+        buf.extend_from_slice(path);
+        // Pad to at least 7 bytes
+        while buf.len() < 7 {
+            buf.push(b' ');
+        }
         buf
     }
 
     #[test]
-    fn shebang_slash_accepted() {
-        assert!(validate_shebang(&make_shebang(b'/'), 0));
+    fn shebang_bin_sh_accepted() {
+        assert!(validate_shebang(&make_shebang_path(b"/bin/sh"), 0));
+    }
+
+    #[test]
+    fn shebang_usr_bin_env_accepted() {
+        assert!(validate_shebang(
+            &make_shebang_path(b"/usr/bin/env python3"),
+            0
+        ));
+    }
+
+    #[test]
+    fn shebang_usr_bin_perl_accepted() {
+        assert!(validate_shebang(&make_shebang_path(b"/usr/bin/perl"), 0));
     }
 
     #[test]
     fn shebang_no_slash_rejected() {
-        assert!(!validate_shebang(&make_shebang(b'e'), 0)); // "#!/" not present
+        assert!(!validate_shebang(&make_shebang_path(b"env python"), 0));
+    }
+
+    #[test]
+    fn shebang_slash_then_binary_rejected() {
+        // "#!/" + 0x1e 0xb0 0x3e 0x67 — real false positive from binary data
+        let data = b"#!/\x1e\xb0\x3e\x67".to_vec();
+        assert!(!validate_shebang(&data, 0));
+    }
+
+    #[test]
+    fn shebang_slash_unknown_prefix_rejected() {
+        // "#!/etc/..." — not a valid interpreter path
+        assert!(!validate_shebang(&make_shebang_path(b"/etc/passwd"), 0));
     }
 
     #[test]

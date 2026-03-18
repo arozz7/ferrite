@@ -73,6 +73,10 @@ enum CarveMsg {
     Duplicate {
         idx: usize,
     },
+    /// Truncated file was deleted because skip-truncated mode is active.
+    Skipped {
+        idx: usize,
+    },
     ExtractionStarted {
         idx: usize,
     },
@@ -88,6 +92,8 @@ enum CarveMsg {
         failed: usize,
         /// Hits skipped due to duplicate content fingerprint.
         duplicates: usize,
+        /// Hits skipped because the extracted file was truncated.
+        skipped_trunc: usize,
         total_bytes: u64,
         elapsed_secs: f64,
     },
@@ -110,6 +116,8 @@ struct ExtractionSummary {
     failed: usize,
     /// Hits skipped because their content fingerprint was already seen.
     duplicates: usize,
+    /// Hits skipped because the extracted file was truncated (skip-trunc mode).
+    skipped_trunc: usize,
     total_bytes: u64,
     elapsed_secs: f64,
 }
@@ -176,6 +184,8 @@ pub enum HitStatus {
     },
     /// Skipped — content fingerprint matches a previously extracted file.
     Duplicate,
+    /// Skipped — truncated file deleted by skip-truncated mode.
+    Skipped,
 }
 
 /// Whether the user-signature form is adding a new entry or editing an existing one.
@@ -335,6 +345,11 @@ pub struct CarvingState {
     /// Number of hits skipped during extraction because their content fingerprint
     /// matched a previously extracted file.
     pub(crate) duplicates_suppressed: usize,
+    /// When `true`, truncated files are deleted after extraction and the hit is
+    /// marked as `HitStatus::Skipped` instead of `HitStatus::Truncated`.
+    pub(crate) skip_truncated: bool,
+    /// Running count of hits skipped due to truncation (skip-truncated mode).
+    pub(crate) skipped_trunc_count: usize,
 }
 
 impl Default for CarvingState {
@@ -396,6 +411,8 @@ impl CarvingState {
                 std::collections::HashSet::new(),
             )),
             duplicates_suppressed: 0,
+            skip_truncated: false,
+            skipped_trunc_count: 0,
             user_sig_path: "./ferrite-user-signatures.toml".to_string(),
             user_sigs: Vec::new(),
             show_user_panel: false,
@@ -457,12 +474,18 @@ impl CarvingState {
             if gap == 0 {
                 return true;
             }
-            let accept = match last_by_sig.get(&e.hit.signature.name) {
+            let key = e
+                .hit
+                .signature
+                .suppress_group
+                .as_deref()
+                .unwrap_or(&e.hit.signature.name);
+            let accept = match last_by_sig.get(key) {
                 None => true,
                 Some(&last) => e.hit.byte_offset >= last.saturating_add(gap),
             };
             if accept {
-                last_by_sig.insert(e.hit.signature.name.clone(), e.hit.byte_offset);
+                last_by_sig.insert(key.to_owned(), e.hit.byte_offset);
             }
             accept
         });
@@ -641,6 +664,8 @@ impl CarvingState {
         self.backpressure_paused = false;
         self.seen_fingerprints.lock().unwrap().clear();
         self.duplicates_suppressed = 0;
+        // skip_truncated is intentionally NOT reset on device change — it's a user preference.
+        self.skipped_trunc_count = 0;
     }
 }
 
@@ -791,6 +816,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let hit = CarveHit {
             byte_offset: 0,

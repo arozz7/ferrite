@@ -32,6 +32,9 @@ pub struct CarvingSession {
     /// Whether auto-extract was enabled when the session was saved.
     #[serde(default)]
     pub auto_extract: bool,
+    /// Whether skip-truncated mode was enabled when the session was saved.
+    #[serde(default)]
+    pub skip_truncated: bool,
 }
 
 impl CarvingSession {

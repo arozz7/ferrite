@@ -373,6 +373,9 @@ impl CarvingState {
                     HitStatus::Duplicate => {
                         Span::styled(" [DUP]", Style::default().fg(Color::DarkGray))
                     }
+                    HitStatus::Skipped => {
+                        Span::styled(" [SKIP]", Style::default().fg(Color::DarkGray))
+                    }
                 };
                 let quality_span = match &entry.quality {
                     Some(CarveQuality::Complete) => {
@@ -565,7 +568,17 @@ impl CarvingState {
         );
         let dup_span = if s.duplicates > 0 {
             Span::styled(
-                format!("   ⊘ {} skipped", s.duplicates),
+                format!("   ⊘ {} dup", s.duplicates),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
+        let skip_trunc_span = if s.skipped_trunc > 0 {
+            Span::styled(
+                format!("   ⊘ {} skipped (trunc)", s.skipped_trunc),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
@@ -599,6 +612,7 @@ impl CarvingState {
                 trunc_span,
                 fail_span,
                 dup_span,
+                skip_trunc_span,
                 meta_span,
                 dismiss_span,
             ])),

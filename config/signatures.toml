@@ -16,6 +16,7 @@ extension    = "jpg"
 # 4-byte header: FF D8 FF E0 — standard JFIF JPEGs written by cameras/software.
 header       = "FF D8 FF E0"
 footer       = "FF D9"
+min_size     = 4096        # Skip embedded thumbnails (< 4 KiB)
 max_size     = 10_485_760  # 10 MiB
 # Validates "JFIF\0" identifier at offset 6 to reject FF D8 FF E0 hits
 # that appear inside other binary formats.
@@ -27,6 +28,7 @@ extension    = "jpg"
 # 4-byte header: FF D8 FF E1 — camera photos with EXIF/APP1 metadata block.
 header       = "FF D8 FF E1"
 footer       = "FF D9"
+min_size     = 4096        # Skip embedded thumbnails (< 4 KiB)
 max_size     = 10_485_760  # 10 MiB
 # Validates "Exif" identifier at offset 6.
 pre_validate = "jpeg_exif"
@@ -58,6 +60,10 @@ name         = "ZIP / Office (DOCX/XLSX/PPTX)"
 extension    = "zip"
 header       = "50 4B 03 04"
 footer       = "50 4B 05 06"
+# The EOCD record starts with PK\x05\x06 but has 18 more bytes of fixed fields
+# (disk number, central dir offset, entry count, comment length).  Without them
+# the archive is corrupt.  footer_extra includes these essential trailing bytes.
+footer_extra = 18
 # Validates version, compression method, filename plausibility, and rejects
 # directory entries — eliminates false hits on internal ZIP headers.
 pre_validate = "zip"
@@ -113,13 +119,14 @@ size_hint_kind  = "mp4"
 pre_validate    = "mp4"
 
 [[signature]]
-name         = "RAR Archive"
-extension    = "rar"
-header       = "52 61 72 21 1A 07"
-footer       = ""
-max_size     = 524_288_000  # 500 MiB
+name           = "RAR Archive"
+extension      = "rar"
+header         = "52 61 72 21 1A 07"
+footer         = ""
+max_size       = 524_288_000  # 500 MiB
+size_hint_kind = "rar"
 # Validates type byte (offset 6) is 0x00 (RAR4) or 0x01 (RAR5).
-pre_validate = "rar"
+pre_validate   = "rar"
 
 [[signature]]
 name           = "7-Zip Archive"
@@ -168,13 +175,14 @@ size_hint_add    = 8
 # No pre_validate — the 12-byte RIFF+AVI  header is already highly discriminating.
 
 [[signature]]
-name         = "Matroska / MKV Video"
-extension    = "mkv"
-header       = "1A 45 DF A3"
-footer       = ""
-max_size     = 8_589_934_592  # 8 GiB
+name           = "Matroska / MKV Video"
+extension      = "mkv"
+header         = "1A 45 DF A3"
+footer         = ""
+max_size       = 8_589_934_592  # 8 GiB
+size_hint_kind = "ebml"
 # Validates EBML VINT leading byte (offset 4) is non-zero.
-pre_validate = "mkv"
+pre_validate   = "mkv"
 
 [[signature]]
 name         = "FLAC Audio"
@@ -186,15 +194,16 @@ max_size     = 2_147_483_648  # 2 GiB
 pre_validate = "flac"
 
 [[signature]]
-name         = "Windows PE Executable"
-extension    = "exe"
+name           = "Windows PE Executable"
+extension      = "exe"
 # Extended MZ header: 4D 5A 90 00 (standard MSVC DOS stub).
-header       = "4D 5A 90 00"
-footer       = ""
-min_size     = 4096
-max_size     = 104_857_600  # 100 MiB
+header         = "4D 5A 90 00"
+footer         = ""
+min_size       = 4096
+max_size       = 104_857_600  # 100 MiB
+size_hint_kind = "pe"
 # Validates e_lfanew (u32 LE @60) is in [64, 16384].
-pre_validate = "exe"
+pre_validate   = "exe"
 
 [[signature]]
 name         = "VMDK Disk Image"
@@ -243,14 +252,18 @@ max_size     = 21_474_836_480  # 20 GiB
 pre_validate = "pst"
 
 [[signature]]
-name         = "XML Document"
-extension    = "xml"
-header       = "3C 3F 78 6D 6C"
-footer       = ""
-min_size     = 256
-max_size     = 5_242_880   # 5 MiB
-# Validates that a space follows "<?xml" (byte 5 == 0x20).
-pre_validate = "xml"
+name           = "XML Document"
+extension      = "xml"
+header         = "3C 3F 78 6D 6C"
+footer         = ""
+min_size       = 256
+max_size       = 524_288       # 512 KiB — standalone XML files are small; avoids 5 MiB XMP junk
+min_hit_gap    = 4_194_304     # 4 MiB — XMP metadata in photos produces valid <?xml version hits
+# Validates "<?xml version" — the spec requires "version" as the first attribute.
+pre_validate   = "xml"
+# Scan forward until a null byte or sustained non-text run is found, so that
+# embedded XMP metadata headers do not drag in trailing binary image data.
+size_hint_kind = "text_bound"
 
 [[signature]]
 name         = "HTML Document"
@@ -478,6 +491,7 @@ footer       = ""
 max_size     = 8_589_934_592  # 8 GiB
 # Validates EBML VINT leading byte non-zero and DocType element == "webm".
 pre_validate = "webm"
+size_hint_kind = "ebml"
 
 [[signature]]
 name         = "Windows Media Video / ASF"
@@ -553,7 +567,11 @@ extension    = "gz"
 header       = "1F 8B"
 footer       = ""
 min_size     = 20
-max_size     = 2_147_483_648  # 2 GiB hard cap
+# 1F 8B is a 2-byte magic that appears coincidentally inside compressed video,
+# audio, and other binary data.  The old 2 GiB cap caused catastrophic 2 GiB
+# extractions for every false positive.  512 MiB covers the vast majority of
+# real gzip files (tar.gz backups, compressed disk images, etc.).
+max_size     = 536_870_912    # 512 MiB
 pre_validate = "gz"
 
 [[signature]]
@@ -564,7 +582,9 @@ extension    = "eml"
 header       = "46 72 6F 6D 20"
 footer       = ""
 min_size     = 64
-max_size     = 52_428_800  # 50 MiB
+max_size     = 10_485_760   # 10 MiB — emails >10 MiB are very rare
+min_hit_gap  = 4_194_304    # 4 MiB — "From " appears in XMP/RDF metadata
+# Validates "From " line: printable ASCII + '@' sign within first 80 chars.
 pre_validate = "eml"
 
 [[signature]]
@@ -576,6 +596,7 @@ footer       = ""
 min_size     = 64
 max_size     = 104_857_600  # 100 MiB
 pre_validate = "elf"
+size_hint_kind = "elf"
 
 [[signature]]
 name           = "Windows Registry Hive (REGF)"
@@ -709,7 +730,8 @@ header       = "00 00 01 00"
 footer       = ""
 min_size     = 22
 max_size     = 1_048_576   # 1 MiB — ICO files are always small
-# Validates image count @4 (u16 LE) in [1, 200].
+min_hit_gap  = 524_288     # 512 KiB — 4-byte magic with 3 zeros is very weak
+# Validates image count + first directory entry (reserved=0, planes≤1, valid bpp, size>0, offset).
 pre_validate = "ico"
 
 [[signature]]
@@ -1006,33 +1028,46 @@ max_size     = 104_857_600   # 100 MiB
 pre_validate = "plist"
 
 [[signature]]
-name         = "MPEG Transport Stream (TS)"
-extension    = "ts"
+name                = "MPEG Transport Stream (TS)"
+extension           = "ts"
 # MPEG-TS: sync byte 0x47 at the start of each 188-byte packet.
 # Single-byte magic is noisy; the pre-validator confirms the stride pattern.
-header       = "47"
-footer       = ""
-min_size     = 377           # At least 3 complete 188-byte packets (+ 1 byte)
-max_size     = 2_147_483_648 # 2 GiB
+header              = "47"
+footer              = ""
+min_size            = 377           # At least 3 complete 188-byte packets (+ 1 byte)
+max_size            = 2_147_483_648 # 2 GiB — fallback if stream walk fails
 # Validates sync bytes at offsets 0, 188, and 376 (stride-188 pattern).
-pre_validate = "ts"
-# The stride-3 check still passes at every 188-byte boundary inside a TS file.
-# Suppress hits within 4 MiB of each other to avoid intra-file duplicates.
-min_hit_gap  = 4_194_304     # 4 MiB
+pre_validate        = "ts"
+# Walk the TS stream packet-by-packet; terminate extraction when the sync-byte
+# stride pattern breaks (10 consecutive bad packets).  This prevents blending
+# the end of one stream into the start of the next.
+size_hint_kind      = "mpeg_ts"
+size_hint_ts_offset = 0             # 0x47 at byte 0 of each TS packet
+size_hint_stride    = 188           # standard TS packet size
+# Suppress hits within 512 MiB — drastically reduces hit flood on large
+# Blu-ray/DVB archives while still detecting adjacent recordings.
+min_hit_gap         = 536_870_912   # 512 MiB
+# Shared suppression group with M2TS: every M2TS packet contains a TS sync
+# byte 4 bytes in, so TS fires spuriously at every M2TS hit offset + 4.
+suppress_group      = "mpeg_transport"
 
 [[signature]]
-name         = "Blu-ray M2TS Video"
-extension    = "m2ts"
+name                = "Blu-ray M2TS Video"
+extension           = "m2ts"
 # Blu-ray M2TS: 4-byte timestamp + 188-byte MPEG-TS packet (0x47 at offset 4).
 # Using a 5-byte magic with wildcard prefix to anchor on the first sync byte.
-header       = "?? ?? ?? ?? 47"
-footer       = ""
-min_size     = 389           # At least 3 complete 192-byte packets
-max_size     = 2_147_483_648 # 2 GiB
+header              = "?? ?? ?? ?? 47"
+footer              = ""
+min_size            = 389           # At least 3 complete 192-byte packets
+max_size            = 2_147_483_648 # 2 GiB — fallback if stream walk fails
 # Validates sync bytes at offsets 4, 196, and 388 (stride-192 pattern).
-pre_validate = "m2ts"
-# Same stride-duplication issue as TS; suppress within 4 MiB.
-min_hit_gap  = 4_194_304     # 4 MiB
+pre_validate        = "m2ts"
+# Walk the M2TS stream packet-by-packet; terminate when sync-byte stride breaks.
+size_hint_kind      = "mpeg_ts"
+size_hint_ts_offset = 4             # 0x47 at byte 4 of each 192-byte M2TS packet
+size_hint_stride    = 192           # M2TS packet = 4-byte timestamp + 188-byte TS
+min_hit_gap         = 536_870_912   # 512 MiB (see TS above)
+suppress_group      = "mpeg_transport"
 
 [[signature]]
 name         = "LUKS Encrypted Disk Image"
@@ -1089,6 +1124,10 @@ min_size     = 64           # Minimum valid font
 max_size     = 52_428_800   # 50 MiB — large CJK fonts
 # Validates numTables (u16 BE @4) in [4, 50].
 pre_validate = "ttf"
+# The 5-byte header is short enough to appear repeatedly in binary data.
+# Suppress hits within 512 KiB of each other — no real font file starts
+# only a handful of bytes after the previous one.
+min_hit_gap  = 524_288      # 512 KiB
 
 [[signature]]
 name         = "WOFF Web Font"
@@ -1204,7 +1243,8 @@ extension    = "sh"
 # Unix shebang: "#!" — 2 ASCII bytes (23 21).
 header       = "23 21"
 footer       = ""
-min_size     = 3             # At least the interpreter path start
-max_size     = 10_485_760    # 10 MiB
-# Validates byte @2 is '/' — interpreter path must be absolute (e.g. /bin/sh).
+min_size     = 16            # Real scripts have at least a shebang line + some content
+max_size     = 1_048_576     # 1 MiB — scripts >1 MiB are very rare
+min_hit_gap  = 1_048_576     # 1 MiB — "#!/" appears in binary data
+# Validates "#!/bin/" or "#!/usr/" path prefix + printable ASCII in path.
 pre_validate = "shebang"

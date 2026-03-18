@@ -157,7 +157,10 @@ impl Carver {
 
         let mut total_hits = 0usize;
         let mut offset = scan_start;
-        // Track the last reported hit offset per signature name for min_hit_gap suppression.
+        // Track the last reported hit offset per suppression key.
+        // Key = suppress_group when set; otherwise the signature name.
+        // This allows related signatures (e.g. TS + M2TS) to share a gap counter
+        // so a hit from one suppresses nearby hits from the other.
         let mut last_hit_by_sig: HashMap<String, u64> = HashMap::new();
 
         while offset < scan_end {
@@ -208,14 +211,19 @@ impl Carver {
                     if h.signature.min_hit_gap == 0 {
                         return true;
                     }
-                    let accept = match last_hit_by_sig.get(&h.signature.name) {
-                        None => true, // first hit for this signature — always accept
+                    let key = h
+                        .signature
+                        .suppress_group
+                        .as_deref()
+                        .unwrap_or(&h.signature.name);
+                    let accept = match last_hit_by_sig.get(key) {
+                        None => true, // first hit for this group — always accept
                         Some(&last) => {
                             h.byte_offset >= last.saturating_add(h.signature.min_hit_gap)
                         }
                     };
                     if accept {
-                        last_hit_by_sig.insert(h.signature.name.clone(), h.byte_offset);
+                        last_hit_by_sig.insert(key.to_owned(), h.byte_offset);
                     }
                     accept
                 });
@@ -287,12 +295,25 @@ impl Carver {
         // the embedded field.  Fall back to max_size if the read fails or the
         // parsed value exceeds max_size (corrupt / stale data).
         let extraction_size = if let Some(hint) = &sig.size_hint {
-            read_size_hint(self.device.as_ref(), hit.byte_offset, hint)
+            read_size_hint(self.device.as_ref(), hit.byte_offset, hint, sig.max_size)
                 .unwrap_or(sig.max_size)
                 .min(sig.max_size)
         } else {
             sig.max_size
         };
+
+        // If the resolved size is below the signature's minimum, skip extraction.
+        // This catches false-positive hits where a size-hint walker (e.g. MPEG-TS
+        // stride check) finds very few valid structures and returns a tiny size.
+        if sig.min_size > 0 && extraction_size < sig.min_size {
+            trace!(
+                sig = %sig.name,
+                extraction_size,
+                min_size = sig.min_size,
+                "skipping extraction: resolved size below min_size"
+            );
+            return Ok(0);
+        }
 
         let max_end = (hit.byte_offset + extraction_size).min(device_size);
 
@@ -304,6 +325,7 @@ impl Carver {
                 hit.byte_offset,
                 max_end,
                 &sig.footer,
+                sig.footer_extra,
                 writer,
             )
         } else {
@@ -312,6 +334,7 @@ impl Carver {
                 hit.byte_offset,
                 max_end,
                 &sig.footer,
+                sig.footer_extra,
                 writer,
             )
         }
@@ -345,6 +368,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         }
     }
 
@@ -514,6 +539,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let wav_sig = Signature {
             name: "WAV".into(),
@@ -540,6 +567,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![avi_sig, wav_sig],
@@ -578,6 +607,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![sig],
@@ -613,6 +644,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 512,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![gapped_sig],
@@ -663,6 +696,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 1024,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![gapped_sig],
@@ -674,6 +709,66 @@ mod tests {
 
         assert_eq!(hits.len(), 1, "cross-chunk gap should suppress second hit");
         assert_eq!(hits[0].byte_offset, 0);
+    }
+
+    #[test]
+    fn suppress_group_cross_sig_dedup() {
+        // Simulate M2TS/TS co-detection: SigA fires at offset 0 (magic = 0xDD),
+        // SigB fires at offset 4 (magic = 0xEE), mimicking M2TS+TS where every
+        // M2TS packet places the TS sync byte 4 bytes later.
+        //
+        // Both sigs share suppress_group = "transport" with min_hit_gap = 512.
+        // After SigA hits at 0, the group tracker is at 0.
+        // SigB's hit at 4 is within the 512-byte gap → suppressed.
+        let mut data = vec![0u8; 512];
+        data[0] = 0xDD; // SigA
+        data[4] = 0xEE; // SigB (would be suppressed by the group)
+
+        let dev = device_from(data);
+        let sig_a = Signature {
+            name: "SigA".into(),
+            extension: "a".into(),
+            header: vec![Some(0xDD)],
+            footer: vec![],
+            footer_last: false,
+            max_size: 1_000_000,
+            size_hint: None,
+            min_size: 0,
+            pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 512,
+            suppress_group: Some("transport".into()),
+            footer_extra: 0,
+        };
+        let sig_b = Signature {
+            name: "SigB".into(),
+            extension: "b".into(),
+            header: vec![Some(0xEE)],
+            footer: vec![],
+            footer_last: false,
+            max_size: 1_000_000,
+            size_hint: None,
+            min_size: 0,
+            pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 512,
+            suppress_group: Some("transport".into()),
+            footer_extra: 0,
+        };
+        let cfg = CarvingConfig {
+            signatures: vec![sig_a, sig_b],
+            scan_chunk_size: 512,
+            start_byte: 0,
+            end_byte: None,
+        };
+        let hits = Carver::new(dev, cfg).scan().unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "SigB hit at offset 4 should be suppressed by SigA's group gap"
+        );
+        assert_eq!(hits[0].byte_offset, 0);
+        assert_eq!(hits[0].signature.name, "SigA");
     }
 
     #[test]
@@ -698,6 +793,8 @@ mod tests {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![sig],

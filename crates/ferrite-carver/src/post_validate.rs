@@ -32,9 +32,16 @@ pub enum CarveQuality {
 /// Validate the tail bytes of a newly extracted file.
 ///
 /// `tail` should be the last ≤ 65 536 bytes of the extracted file.
+/// `file_size` is the total extracted file size in bytes (used by ZIP to
+/// validate the central directory offset).
 /// Pass `is_truncated = true` when the extraction hit `max_size` — the check
 /// is skipped and [`CarveQuality::Truncated`] is returned immediately.
-pub fn validate_extracted(ext: &str, tail: &[u8], is_truncated: bool) -> CarveQuality {
+pub fn validate_extracted(
+    ext: &str,
+    tail: &[u8],
+    is_truncated: bool,
+    file_size: u64,
+) -> CarveQuality {
     if is_truncated {
         return CarveQuality::Truncated;
     }
@@ -43,7 +50,7 @@ pub fn validate_extracted(ext: &str, tail: &[u8], is_truncated: bool) -> CarveQu
         "png" => validate_png(tail),
         "gif" => validate_gif(tail),
         "pdf" => validate_pdf(tail),
-        "zip" | "ole" | "7z" | "pst" => validate_zip_eocd(tail),
+        "zip" | "ole" | "7z" | "pst" => validate_zip_eocd(tail, file_size),
         _ => CarveQuality::Unknown,
     }
 }
@@ -95,14 +102,44 @@ fn validate_pdf(tail: &[u8]) -> CarveQuality {
 }
 
 /// ZIP / OLE2 / 7-Zip / PST: End of Central Directory signature `PK\x05\x06`
-/// must appear in the tail (covers all ZIP-based container formats).
-fn validate_zip_eocd(tail: &[u8]) -> CarveQuality {
+/// must appear in the tail.  Additionally, the EOCD's "offset of start of
+/// central directory" (u32 LE at EOCD+16) must fall within the extracted
+/// file — otherwise the EOCD belongs to a larger archive and this extraction
+/// started at an internal entry.
+fn validate_zip_eocd(tail: &[u8], file_size: u64) -> CarveQuality {
     const EOCD: &[u8] = &[0x50, 0x4B, 0x05, 0x06];
-    if tail.windows(4).any(|w| w == EOCD) {
-        CarveQuality::Complete
-    } else {
-        CarveQuality::Corrupt
+    // Find the LAST EOCD in the tail (ZIP64 may have extra preceding data).
+    let mut search = tail;
+    let mut last_eocd: Option<usize> = None;
+    while let Some(pos) = search.windows(4).position(|w| w == EOCD) {
+        let abs_pos = tail.len() - search.len() + pos;
+        last_eocd = Some(abs_pos);
+        if pos + 4 < search.len() {
+            search = &search[pos + 4..];
+        } else {
+            break;
+        }
     }
+    let Some(eocd_pos) = last_eocd else {
+        return CarveQuality::Corrupt;
+    };
+    // EOCD fixed record is 22 bytes: sig(4) + disk_num(2) + cd_disk(2) +
+    // cd_entries_this(2) + cd_entries_total(2) + cd_size(4) + cd_offset(4) +
+    // comment_len(2).  cd_offset is at EOCD+16.
+    if eocd_pos + 22 <= tail.len() {
+        let cd_off_bytes = &tail[eocd_pos + 16..eocd_pos + 20];
+        let cd_offset = u32::from_le_bytes([
+            cd_off_bytes[0],
+            cd_off_bytes[1],
+            cd_off_bytes[2],
+            cd_off_bytes[3],
+        ]) as u64;
+        // 0xFFFFFFFF means ZIP64 — we can't easily validate, treat as Complete.
+        if cd_offset != 0xFFFF_FFFF && cd_offset > file_size {
+            return CarveQuality::Corrupt;
+        }
+    }
+    CarveQuality::Complete
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -116,11 +153,11 @@ mod tests {
     #[test]
     fn truncated_flag_returns_truncated_regardless_of_ext() {
         assert_eq!(
-            validate_extracted("jpg", &[0xFF, 0xD9], true),
+            validate_extracted("jpg", &[0xFF, 0xD9], true, 2),
             CarveQuality::Truncated
         );
         assert_eq!(
-            validate_extracted("unknown", &[], true),
+            validate_extracted("unknown", &[], true, 0),
             CarveQuality::Truncated
         );
     }
@@ -131,7 +168,7 @@ mod tests {
     fn jpeg_complete_with_eoi_marker() {
         let tail = &[0x00u8, 0x01, 0xFF, 0xD9];
         assert_eq!(
-            validate_extracted("jpg", tail, false),
+            validate_extracted("jpg", tail, false, 4),
             CarveQuality::Complete
         );
     }
@@ -140,20 +177,23 @@ mod tests {
     fn jpeg_corrupt_without_eoi() {
         let tail = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00];
         assert_eq!(
-            validate_extracted("jpg", tail, false),
+            validate_extracted("jpg", tail, false, 5),
             CarveQuality::Corrupt
         );
     }
 
     #[test]
     fn jpeg_corrupt_on_empty_data() {
-        assert_eq!(validate_extracted("jpg", &[], false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("jpg", &[], false, 0),
+            CarveQuality::Corrupt
+        );
     }
 
     #[test]
     fn jpeg_corrupt_when_only_one_byte() {
         assert_eq!(
-            validate_extracted("jpg", &[0xD9], false),
+            validate_extracted("jpg", &[0xD9], false, 1),
             CarveQuality::Corrupt
         );
     }
@@ -167,7 +207,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ]);
         assert_eq!(
-            validate_extracted("png", &tail, false),
+            validate_extracted("png", &tail, false, 16),
             CarveQuality::Complete
         );
     }
@@ -178,14 +218,17 @@ mod tests {
             0x89u8, 0x50, 0x4E, 0x47, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         assert_eq!(
-            validate_extracted("png", tail, false),
+            validate_extracted("png", tail, false, 12),
             CarveQuality::Corrupt
         );
     }
 
     #[test]
     fn png_corrupt_on_empty() {
-        assert_eq!(validate_extracted("png", &[], false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("png", &[], false, 0),
+            CarveQuality::Corrupt
+        );
     }
 
     // ── GIF ──────────────────────────────────────────────────────────────────
@@ -194,7 +237,7 @@ mod tests {
     fn gif_complete_with_trailer() {
         let tail = b"GIF89a\x3B";
         assert_eq!(
-            validate_extracted("gif", tail, false),
+            validate_extracted("gif", tail, false, 7),
             CarveQuality::Complete
         );
     }
@@ -203,14 +246,17 @@ mod tests {
     fn gif_corrupt_missing_trailer() {
         let tail = b"GIF89a";
         assert_eq!(
-            validate_extracted("gif", tail, false),
+            validate_extracted("gif", tail, false, 6),
             CarveQuality::Corrupt
         );
     }
 
     #[test]
     fn gif_corrupt_on_empty() {
-        assert_eq!(validate_extracted("gif", &[], false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("gif", &[], false, 0),
+            CarveQuality::Corrupt
+        );
     }
 
     // ── PDF ──────────────────────────────────────────────────────────────────
@@ -219,7 +265,7 @@ mod tests {
     fn pdf_complete_with_eof_marker() {
         let tail = b"%PDF-1.4\n...content...\n%%EOF\n";
         assert_eq!(
-            validate_extracted("pdf", tail, false),
+            validate_extracted("pdf", tail, false, tail.len() as u64),
             CarveQuality::Complete
         );
     }
@@ -228,7 +274,7 @@ mod tests {
     fn pdf_corrupt_without_eof() {
         let tail = b"%PDF-1.4\n...content...";
         assert_eq!(
-            validate_extracted("pdf", tail, false),
+            validate_extracted("pdf", tail, false, tail.len() as u64),
             CarveQuality::Corrupt
         );
     }
@@ -239,7 +285,7 @@ mod tests {
         // Put %%EOF at byte 1800 (within last 1 KiB of the 2000-byte tail).
         tail[1800..1805].copy_from_slice(b"%%EOF");
         assert_eq!(
-            validate_extracted("pdf", &tail, false),
+            validate_extracted("pdf", &tail, false, 2000),
             CarveQuality::Complete
         );
     }
@@ -250,7 +296,7 @@ mod tests {
         // Put %%EOF at byte 100 (more than 1 KiB from the end — not searched).
         tail[100..105].copy_from_slice(b"%%EOF");
         assert_eq!(
-            validate_extracted("pdf", &tail, false),
+            validate_extracted("pdf", &tail, false, 2000),
             CarveQuality::Corrupt
         );
     }
@@ -259,10 +305,12 @@ mod tests {
 
     #[test]
     fn zip_complete_with_eocd() {
+        // EOCD with cd_offset = 0 (fits within any file)
         let mut tail = vec![0u8; 32];
         tail[10..14].copy_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+        // cd_offset at EOCD+16 = tail[26..30] = 0 (already zeroed)
         assert_eq!(
-            validate_extracted("zip", &tail, false),
+            validate_extracted("zip", &tail, false, 32),
             CarveQuality::Complete
         );
     }
@@ -271,8 +319,33 @@ mod tests {
     fn zip_corrupt_missing_eocd() {
         let tail = b"PK\x03\x04some zip content without central dir";
         assert_eq!(
-            validate_extracted("zip", tail, false),
+            validate_extracted("zip", tail, false, tail.len() as u64),
             CarveQuality::Corrupt
+        );
+    }
+
+    #[test]
+    fn zip_corrupt_cd_offset_beyond_file() {
+        // EOCD present but cd_offset points past the extracted file.
+        let mut tail = vec![0u8; 32];
+        tail[0..4].copy_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+        // cd_offset at EOCD+16 = tail[16..20] = 1_000_000 (way beyond 32-byte file)
+        tail[16..20].copy_from_slice(&1_000_000u32.to_le_bytes());
+        assert_eq!(
+            validate_extracted("zip", &tail, false, 32),
+            CarveQuality::Corrupt
+        );
+    }
+
+    #[test]
+    fn zip_complete_cd_offset_within_file() {
+        // EOCD present with cd_offset that fits within a 50 000-byte file.
+        let mut tail = vec![0u8; 32];
+        tail[0..4].copy_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+        tail[16..20].copy_from_slice(&10_000u32.to_le_bytes());
+        assert_eq!(
+            validate_extracted("zip", &tail, false, 50_000),
+            CarveQuality::Complete
         );
     }
 
@@ -281,7 +354,7 @@ mod tests {
         let mut tail = vec![0u8; 32];
         tail[0..4].copy_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
         assert_eq!(
-            validate_extracted("ole", &tail, false),
+            validate_extracted("ole", &tail, false, 32),
             CarveQuality::Complete
         );
     }
@@ -291,15 +364,15 @@ mod tests {
     #[test]
     fn unknown_format_returns_unknown() {
         assert_eq!(
-            validate_extracted("mp4", &[0u8; 32], false),
+            validate_extracted("mp4", &[0u8; 32], false, 32),
             CarveQuality::Unknown
         );
         assert_eq!(
-            validate_extracted("mkv", &[0u8; 32], false),
+            validate_extracted("mkv", &[0u8; 32], false, 32),
             CarveQuality::Unknown
         );
         assert_eq!(
-            validate_extracted("avi", &[0u8; 32], false),
+            validate_extracted("avi", &[0u8; 32], false, 32),
             CarveQuality::Unknown
         );
     }

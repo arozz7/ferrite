@@ -50,6 +50,7 @@ impl CarvingState {
             hits_count: self.hits.len(),
             saved_at,
             auto_extract: self.auto_extract,
+            skip_truncated: self.skip_truncated,
         }
     }
 
@@ -74,5 +75,6 @@ impl CarvingState {
         }
         self.resume_from_byte = session.last_scanned_byte;
         self.auto_extract = session.auto_extract;
+        self.skip_truncated = session.skip_truncated;
     }
 }

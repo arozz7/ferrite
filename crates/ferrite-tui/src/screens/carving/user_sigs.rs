@@ -60,6 +60,8 @@ impl UserSigDef {
             pre_validate: None,
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         })
     }
 }

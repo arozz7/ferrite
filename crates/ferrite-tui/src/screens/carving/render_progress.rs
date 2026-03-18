@@ -44,7 +44,21 @@ impl CarvingState {
             }
         };
 
-        frame.render_widget(Paragraph::new(Line::from(vec![disk_span, auto_str])), area);
+        let skip_trunc_span = if self.skip_truncated {
+            Span::styled(
+                " t: skip-trunc [ON]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(" t: skip-trunc [off]", Style::default().fg(Color::DarkGray))
+        };
+
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![disk_span, auto_str, skip_trunc_span])),
+            area,
+        );
     }
 
     /// Dedicated row showing whether original filenames and folder paths are
