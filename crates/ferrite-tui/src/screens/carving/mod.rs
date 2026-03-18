@@ -441,6 +441,35 @@ impl CarvingState {
         !self.hits.is_empty()
     }
 
+    /// Remove intra-file duplicate hits from the current list using each
+    /// signature's `min_hit_gap`.  Useful for cleaning up sessions that were
+    /// started before the gap suppressor existed (e.g. MPG flood hits).
+    ///
+    /// Hits are processed in offset order; any hit within `min_hit_gap` bytes
+    /// of the last kept hit for the same signature is removed.  Returns the
+    /// number of hits removed.
+    pub fn dedup_hits_by_gap(&mut self) -> usize {
+        use std::collections::HashMap;
+        let before = self.hits.len();
+        let mut last_by_sig: HashMap<String, u64> = HashMap::new();
+        self.hits.retain(|e| {
+            let gap = e.hit.signature.min_hit_gap;
+            if gap == 0 {
+                return true;
+            }
+            let accept = match last_by_sig.get(&e.hit.signature.name) {
+                None => true,
+                Some(&last) => e.hit.byte_offset >= last.saturating_add(gap),
+            };
+            if accept {
+                last_by_sig.insert(e.hit.signature.name.clone(), e.hit.byte_offset);
+            }
+            accept
+        });
+        self.hit_sel = self.hit_sel.min(self.hits.len().saturating_sub(1));
+        before - self.hits.len()
+    }
+
     /// Returns the checkpoint path if one is set.
     pub fn checkpoint_path(&self) -> Option<&str> {
         self.checkpoint_path.as_deref()
@@ -767,6 +796,7 @@ mod tests {
             min_size: 0,
             pre_validate: None,
             header_offset: 0,
+            min_hit_gap: 0,
         };
         let hit = CarveHit {
             byte_offset: 0,

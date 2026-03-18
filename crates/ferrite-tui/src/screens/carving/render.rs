@@ -244,7 +244,7 @@ impl CarvingState {
             format!(" Hits ({hits_label}){auto_str}  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected  PgUp/Dn: page  Home/End: jump ")
         } else {
             format!(
-                " Hits ({hits_label}){auto_str} — Space: select  a: all  E: extract selected  x: auto-extract  PgUp/Dn: page  Home/End: jump "
+                " Hits ({hits_label}){auto_str} — Space: select  a: all  E: extract selected  x: auto-extract  D: dedup  PgUp/Dn: page  Home/End: jump "
             )
         };
         let block = Block::default()

@@ -514,6 +514,10 @@ min_size     = 4096
 max_size     = 4_294_967_296  # 4 GiB
 # Validates MPEG-2 (0x40–0x7F) or MPEG-1 (0x20–0x2F) pack-byte pattern.
 pre_validate = "mpeg"
+# Pack start code appears at every pack boundary within the stream (~every 2KB
+# on DVD), so suppress hits within 16 MiB of each other to avoid flooding the
+# hit list with intra-file duplicates.
+min_hit_gap  = 16_777_216     # 16 MiB
 
 [[signature]]
 name         = "WebP Image"
@@ -1012,6 +1016,9 @@ min_size     = 377           # At least 3 complete 188-byte packets (+ 1 byte)
 max_size     = 2_147_483_648 # 2 GiB
 # Validates sync bytes at offsets 0, 188, and 376 (stride-188 pattern).
 pre_validate = "ts"
+# The stride-3 check still passes at every 188-byte boundary inside a TS file.
+# Suppress hits within 4 MiB of each other to avoid intra-file duplicates.
+min_hit_gap  = 4_194_304     # 4 MiB
 
 [[signature]]
 name         = "Blu-ray M2TS Video"
@@ -1024,6 +1031,8 @@ min_size     = 389           # At least 3 complete 192-byte packets
 max_size     = 2_147_483_648 # 2 GiB
 # Validates sync bytes at offsets 4, 196, and 388 (stride-192 pattern).
 pre_validate = "m2ts"
+# Same stride-duplication issue as TS; suppress within 4 MiB.
+min_hit_gap  = 4_194_304     # 4 MiB
 
 [[signature]]
 name         = "LUKS Encrypted Disk Image"

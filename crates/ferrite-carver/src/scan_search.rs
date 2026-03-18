@@ -120,6 +120,7 @@ mod tests {
             min_size: 0,
             pre_validate: Some(PreValidate::Zip),
             header_offset: 0,
+            min_hit_gap: 0,
         }
     }
 
@@ -158,6 +159,7 @@ mod tests {
             min_size: 0,
             pre_validate: None,
             header_offset: offset,
+            min_hit_gap: 0,
         }
     }
 

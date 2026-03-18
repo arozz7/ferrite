@@ -246,6 +246,9 @@ impl CarvingState {
             KeyCode::Char('d') => {
                 self.extract_summary = None;
             }
+            KeyCode::Char('D') => {
+                self.dedup_hits_by_gap();
+            }
             KeyCode::Char('e') => self.extract_selected(),
             KeyCode::Char('E') => self.extract_all_selected(),
             KeyCode::Char('x') => {

@@ -201,6 +201,15 @@ pub struct Signature {
     /// amount so extraction begins at the true file start.
     #[serde(default)]
     pub header_offset: u64,
+    /// Minimum byte distance between consecutive hits of this signature (0 = disabled).
+    ///
+    /// Formats like MPEG Program Stream embed their magic (`00 00 01 BA`) at
+    /// every pack boundary throughout the file — not just at the true start.
+    /// Setting `min_hit_gap` to a value larger than the typical file size
+    /// (e.g. 16 MiB for MPG) suppresses the flood of intra-file false hits
+    /// while still detecting multiple distinct files that are far apart.
+    #[serde(default)]
+    pub min_hit_gap: u64,
 }
 
 /// Configuration passed to [`crate::Carver`].
@@ -255,6 +264,9 @@ impl CarvingConfig {
             // Offset of the magic bytes within the file (0 for most formats).
             #[serde(default)]
             header_offset: u64,
+            // Minimum gap between consecutive hits of this signature (0 = disabled).
+            #[serde(default)]
+            min_hit_gap: u64,
         }
 
         #[derive(Deserialize)]
@@ -330,6 +342,7 @@ impl CarvingConfig {
                     min_size: r.min_size,
                     pre_validate,
                     header_offset: r.header_offset,
+                    min_hit_gap: r.min_hit_gap,
                 })
             })
             .collect();
