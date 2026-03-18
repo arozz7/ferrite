@@ -328,3 +328,53 @@ fn text_bound_respects_max_size() {
     let result = read_size_hint(dev.as_ref(), 0, &SizeHint::TextBound, 500);
     assert_eq!(result, Some(500));
 }
+
+// ── TTF size-hint tests ───────────────────────────────────────────────────
+
+fn make_ttf_font(tables: &[(u32, u32)]) -> Vec<u8> {
+    let num_tables = tables.len() as u16;
+    let dir_end = 12 + num_tables as usize * 16;
+    let max_extent = tables
+        .iter()
+        .map(|(off, len)| (*off + *len) as usize)
+        .max()
+        .unwrap_or(dir_end);
+    let mut data = vec![0u8; max_extent.max(dir_end) + 64];
+    // sfVersion = 0x00010000
+    data[0..4].copy_from_slice(&[0x00, 0x01, 0x00, 0x00]);
+    data[4..6].copy_from_slice(&num_tables.to_be_bytes());
+    // Fill table records
+    for (i, (offset, length)) in tables.iter().enumerate() {
+        let base = 12 + i * 16;
+        data[base..base + 4].copy_from_slice(b"cmap"); // tag
+        data[base + 8..base + 12].copy_from_slice(&offset.to_be_bytes());
+        data[base + 12..base + 16].copy_from_slice(&length.to_be_bytes());
+    }
+    data
+}
+
+#[test]
+fn ttf_two_tables() {
+    let data = make_ttf_font(&[(100, 500), (700, 300)]);
+    let dev = device_from(data);
+    let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Ttf, u64::MAX);
+    assert_eq!(result, Some(1000), "max extent = 700 + 300");
+}
+
+#[test]
+fn ttf_single_table() {
+    let data = make_ttf_font(&[(44, 256)]);
+    let dev = device_from(data);
+    let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Ttf, u64::MAX);
+    assert_eq!(result, Some(300));
+}
+
+#[test]
+fn ttf_no_tables_returns_none() {
+    let mut data = vec![0u8; 512];
+    data[0..4].copy_from_slice(&[0x00, 0x01, 0x00, 0x00]);
+    // numTables = 0 → out of range [1, 100]
+    let dev = device_from(data);
+    let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Ttf, u64::MAX);
+    assert_eq!(result, None);
+}

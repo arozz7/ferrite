@@ -36,3 +36,8 @@ pub(super) fn read_u16_le(b: &[u8]) -> u16 {
 pub(super) fn read_u32_le(b: &[u8]) -> u32 {
     u32::from_le_bytes([b[0], b[1], b[2], b[3]])
 }
+
+/// Read a u32 BE from a 4-byte slice.
+pub(super) fn read_u32_be(b: &[u8]) -> u32 {
+    u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+}

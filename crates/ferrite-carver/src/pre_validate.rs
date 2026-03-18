@@ -2002,10 +2002,21 @@ fn validate_iso(data: &[u8], pos: usize) -> bool {
 
 fn validate_dicom(data: &[u8], pos: usize) -> bool {
     // DICOM: `DICM` magic at offset 128 within the file (pos points here).
-    // After the magic, the first data element tag (group + element, 4 bytes)
-    // must be present.  We check that at least 8 bytes are available after pos
-    // (4 for "DICM" already confirmed by magic, 4 for the first tag/VR).
-    !need(data, pos, 8)
+    // After the 4-byte "DICM" marker, a DICOM file contains data elements.
+    // The first element should be from group 0x0002 (File Meta Information).
+    // Each element starts with: group (u16 LE) + element (u16 LE) + VR (2 ASCII).
+    // Validate: group == 0x0002 and VR is two uppercase ASCII letters.
+    if need(data, pos, 10) {
+        return true;
+    }
+    let group = u16::from_le_bytes([data[pos + 4], data[pos + 5]]);
+    if group != 0x0002 {
+        return false;
+    }
+    // VR (Value Representation) is 2 uppercase ASCII characters.
+    let vr0 = data[pos + 8];
+    let vr1 = data[pos + 9];
+    vr0.is_ascii_uppercase() && vr1.is_ascii_uppercase()
 }
 
 fn validate_tar(data: &[u8], pos: usize) -> bool {
@@ -2051,12 +2062,26 @@ fn validate_au(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_ttf(data: &[u8], pos: usize) -> bool {
-    // TrueType Font: sfVersion 0x00010000 (4 bytes), then numTables (u16 BE @4) in [4, 50].
-    if need(data, pos, 6) {
+    // TrueType Font: sfVersion 0x00010000 (4 bytes), then numTables (u16 BE @4).
+    // Also validate searchRange (u16 BE @6) is consistent with numTables:
+    //   searchRange = (highest power of 2 <= numTables) * 16.
+    if need(data, pos, 12) {
         return true;
     }
     let num_tables = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
-    (4..=50).contains(&num_tables)
+    if !(4..=50).contains(&num_tables) {
+        return false;
+    }
+    let search_range = u16::from_be_bytes([data[pos + 6], data[pos + 7]]);
+    let entry_selector = u16::from_be_bytes([data[pos + 8], data[pos + 9]]);
+    // searchRange must be (1 << entry_selector) * 16.
+    let expected_sr = (1u16 << entry_selector).saturating_mul(16);
+    if search_range != expected_sr {
+        return false;
+    }
+    // entry_selector = floor(log2(numTables)): (1 << entry_selector) <= numTables.
+    (1u16 << entry_selector) <= num_tables
+        && (entry_selector == 15 || (1u16 << (entry_selector + 1)) > num_tables)
 }
 
 fn validate_woff(data: &[u8], pos: usize) -> bool {
@@ -4701,13 +4726,37 @@ mod tests {
 
     #[test]
     fn dicom_sufficient_data_accepted() {
-        let buf = vec![0u8; 16];
+        // pos points to "DICM"; bytes at pos+4..+6 = group 0x0002, pos+8..+10 = VR "UL"
+        let mut buf = vec![0u8; 16];
+        buf[4..6].copy_from_slice(&0x0002u16.to_le_bytes()); // group
+        buf[8] = b'U'; // VR byte 0
+        buf[9] = b'L'; // VR byte 1
         assert!(validate_dicom(&buf, 0));
     }
 
     #[test]
-    fn dicom_too_short_rejected() {
+    fn dicom_too_short_soft_passes() {
+        // With insufficient data the validator soft-passes (returns true) —
+        // the scan chunk boundary may have cut the header short.
         let buf = vec![0u8; 5];
+        assert!(validate_dicom(&buf, 0));
+    }
+
+    #[test]
+    fn dicom_wrong_group_rejected() {
+        let mut buf = vec![0u8; 16];
+        buf[4..6].copy_from_slice(&0x0008u16.to_le_bytes()); // wrong group
+        buf[8] = b'U';
+        buf[9] = b'L';
+        assert!(!validate_dicom(&buf, 0));
+    }
+
+    #[test]
+    fn dicom_invalid_vr_rejected() {
+        let mut buf = vec![0u8; 16];
+        buf[4..6].copy_from_slice(&0x0002u16.to_le_bytes());
+        buf[8] = 0x01; // non-ASCII VR
+        buf[9] = 0x02;
         assert!(!validate_dicom(&buf, 0));
     }
 
@@ -4797,9 +4846,20 @@ mod tests {
     // ── TTF ───────────────────────────────────────────────────────────────────
 
     fn make_ttf(num_tables: u16) -> Vec<u8> {
-        let mut buf = vec![0u8; 6];
+        let mut buf = vec![0u8; 12];
         buf[0..4].copy_from_slice(&[0x00, 0x01, 0x00, 0x00]);
         buf[4..6].copy_from_slice(&num_tables.to_be_bytes());
+        // Compute correct searchRange, entrySelector, rangeShift.
+        let entry_selector = if num_tables > 0 {
+            (num_tables as f64).log2().floor() as u16
+        } else {
+            0
+        };
+        let search_range = (1u16 << entry_selector) * 16;
+        let range_shift = num_tables * 16 - search_range;
+        buf[6..8].copy_from_slice(&search_range.to_be_bytes());
+        buf[8..10].copy_from_slice(&entry_selector.to_be_bytes());
+        buf[10..12].copy_from_slice(&range_shift.to_be_bytes());
         buf
     }
 

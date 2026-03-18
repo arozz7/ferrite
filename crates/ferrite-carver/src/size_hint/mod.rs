@@ -19,6 +19,7 @@ mod seven_zip;
 mod sqlite;
 mod text_bound;
 mod tiff;
+mod ttf;
 
 use ferrite_blockdev::BlockDevice;
 
@@ -87,6 +88,8 @@ pub(crate) fn read_size_hint(
         SizeHint::Ebml => ebml::ebml_hint(device, file_offset),
 
         SizeHint::TextBound => text_bound::text_bound_hint(device, file_offset, max_size),
+
+        SizeHint::Ttf => ttf::ttf_hint(device, file_offset),
     }
 }
 

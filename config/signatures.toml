@@ -376,6 +376,7 @@ extension      = "tif"
 # format not covered by the dedicated ARW / CR2 / RW2 / NEF signatures.
 header         = "49 49 2A 00"
 footer         = ""
+min_size       = 4096          # Skip Exif metadata headers embedded in JPEGs (typically < 100 bytes)
 max_size       = 1_073_741_824  # 1 GiB — large scans and multi-layer PSD-style TIFFs
 # TIFF IFD walker derives true size from strip/tile offset+length pairs.
 size_hint_kind = "tiff"
@@ -391,6 +392,7 @@ extension      = "tif"
 # produced by some scanners, older Mac software, and certain cameras.
 header         = "4D 4D 00 2A"
 footer         = ""
+min_size       = 4096          # Skip Exif metadata headers embedded in JPEGs
 max_size       = 1_073_741_824  # 1 GiB
 # TIFF IFD walker derives true size.
 size_hint_kind = "tiff"
@@ -1115,19 +1117,22 @@ max_size     = 524_288_000  # 500 MiB
 pre_validate = "au"
 
 [[signature]]
-name         = "TrueType Font (TTF)"
-extension    = "ttf"
+name           = "TrueType Font (TTF)"
+extension      = "ttf"
 # TrueType: sfVersion 0x00010000 + high byte of numTables (must be 0x00).
-header       = "00 01 00 00 00"
-footer       = ""
-min_size     = 64           # Minimum valid font
-max_size     = 52_428_800   # 50 MiB — large CJK fonts
+header         = "00 01 00 00 00"
+footer         = ""
+min_size       = 4096          # Skip false positives inside binary data
+max_size       = 52_428_800    # 50 MiB — large CJK fonts
+# Walks the font table directory to derive true file size from
+# max(table_offset + table_length).
+size_hint_kind = "ttf"
 # Validates numTables (u16 BE @4) in [4, 50].
-pre_validate = "ttf"
+pre_validate   = "ttf"
 # The 5-byte header is short enough to appear repeatedly in binary data.
 # Suppress hits within 512 KiB of each other — no real font file starts
 # only a handful of bytes after the previous one.
-min_hit_gap  = 524_288      # 512 KiB
+min_hit_gap    = 524_288       # 512 KiB
 
 [[signature]]
 name         = "WOFF Web Font"
@@ -1207,9 +1212,10 @@ extension     = "dcm"
 header        = "44 49 43 4D"
 footer        = ""
 min_size      = 256          # Preamble + magic + at least one data element
-max_size      = 2_147_483_648 # 2 GiB — large radiology images
+max_size      = 524_288_000  # 500 MiB — large radiology images (reduced from 2 GiB)
 header_offset = 128
-# Validates that at least 8 bytes are present at the magic position.
+# Validates group 0x0002 (File Meta Info) as first data element after "DICM",
+# and checks that the VR (Value Representation) is two uppercase ASCII letters.
 pre_validate  = "dicom"
 
 [[signature]]

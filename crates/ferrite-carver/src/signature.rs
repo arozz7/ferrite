@@ -183,6 +183,13 @@ pub enum SizeHint {
     /// sustained run of non-text bytes is encountered.  Returns the offset
     /// of the last text byte, rounded up to include the final line/tag.
     TextBound,
+
+    /// TrueType / OpenType font table directory walker.
+    ///
+    /// Reads the font header's `numTables` (u16 BE @4), then walks the
+    /// table directory (16 bytes per record) and returns the maximum
+    /// `table_offset + table_length` across all entries.
+    Ttf,
 }
 
 impl SizeHint {
@@ -204,6 +211,7 @@ impl SizeHint {
             SizeHint::Rar => "rar",
             SizeHint::Ebml => "ebml",
             SizeHint::TextBound => "text_bound",
+            SizeHint::Ttf => "ttf",
         }
     }
 }
@@ -398,6 +406,7 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("rar") => Some(SizeHint::Rar),
                     Some(k) if k.eq_ignore_ascii_case("ebml") => Some(SizeHint::Ebml),
                     Some(k) if k.eq_ignore_ascii_case("text_bound") => Some(SizeHint::TextBound),
+                    Some(k) if k.eq_ignore_ascii_case("ttf") => Some(SizeHint::Ttf),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
                         match (r.size_hint_ts_offset, r.size_hint_stride) {
                             (Some(ts_offset), Some(stride)) => {
