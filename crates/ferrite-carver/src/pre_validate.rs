@@ -3775,7 +3775,7 @@ mod tests {
     }
 
     #[test]
-    fn cdr_versionV_accepted() {
+    fn cdr_version_v_accepted() {
         assert!(validate_cdr(&make_cdr(b'V'), 0));
     }
 
@@ -4374,22 +4374,22 @@ mod tests {
 
     #[test]
     fn indd_sufficient_data_accepted() {
-        assert!(validate_indd(&vec![0u8; 16], 0));
+        assert!(validate_indd(&[0u8; 16], 0));
     }
 
     #[test]
     fn indd_too_short_rejected() {
-        assert!(!validate_indd(&vec![0u8; 10], 0));
+        assert!(!validate_indd(&[0u8; 10], 0));
     }
 
     #[test]
     fn wtv_sufficient_data_accepted() {
-        assert!(validate_wtv(&vec![0u8; 16], 0));
+        assert!(validate_wtv(&[0u8; 16], 0));
     }
 
     #[test]
     fn wtv_too_short_rejected() {
-        assert!(!validate_wtv(&vec![0u8; 10], 0));
+        assert!(!validate_wtv(&[0u8; 10], 0));
     }
 
     // ── PHP ───────────────────────────────────────────────────────────────────

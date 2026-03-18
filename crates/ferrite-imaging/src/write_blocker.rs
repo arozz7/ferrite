@@ -63,6 +63,7 @@ mod tests {
         // Restore write permission before cleanup.
         if let Ok(meta) = std::fs::metadata(&path) {
             let mut p = meta.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
             p.set_readonly(false);
             std::fs::set_permissions(&path, p).ok();
         }

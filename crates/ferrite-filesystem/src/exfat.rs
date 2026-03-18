@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn exfat_ts_invalid_month_is_none() {
         // month=0 (bits 21-24 = 0) with non-zero day — should return None
-        let ts: u32 = (20u32 << 25) | (0u32 << 21) | (1u32 << 16);
+        let ts: u32 = (20u32 << 25) | (1u32 << 16);
         assert_eq!(exfat_ts_to_unix(ts), None);
     }
 }
