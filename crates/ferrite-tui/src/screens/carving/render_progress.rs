@@ -55,8 +55,27 @@ impl CarvingState {
             Span::styled(" t: skip-trunc [off]", Style::default().fg(Color::DarkGray))
         };
 
+        let skip_corrupt_span = if self.skip_corrupt {
+            Span::styled(
+                " C: skip-corrupt [ON]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                " C: skip-corrupt [off]",
+                Style::default().fg(Color::DarkGray),
+            )
+        };
+
         frame.render_widget(
-            Paragraph::new(Line::from(vec![disk_span, auto_str, skip_trunc_span])),
+            Paragraph::new(Line::from(vec![
+                disk_span,
+                auto_str,
+                skip_trunc_span,
+                skip_corrupt_span,
+            ])),
             area,
         );
     }

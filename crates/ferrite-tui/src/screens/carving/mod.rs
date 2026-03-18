@@ -77,6 +77,10 @@ enum CarveMsg {
     Skipped {
         idx: usize,
     },
+    /// Corrupt file was deleted because skip-corrupt mode is active.
+    SkippedCorrupt {
+        idx: usize,
+    },
     ExtractionStarted {
         idx: usize,
     },
@@ -94,6 +98,8 @@ enum CarveMsg {
         duplicates: usize,
         /// Hits skipped because the extracted file was truncated.
         skipped_trunc: usize,
+        /// Hits skipped because the extracted file was corrupt.
+        skipped_corrupt: usize,
         total_bytes: u64,
         elapsed_secs: f64,
     },
@@ -118,6 +124,8 @@ struct ExtractionSummary {
     duplicates: usize,
     /// Hits skipped because the extracted file was truncated (skip-trunc mode).
     skipped_trunc: usize,
+    /// Hits skipped because the extracted file was corrupt (skip-corrupt mode).
+    skipped_corrupt: usize,
     total_bytes: u64,
     elapsed_secs: f64,
 }
@@ -350,6 +358,11 @@ pub struct CarvingState {
     pub(crate) skip_truncated: bool,
     /// Running count of hits skipped due to truncation (skip-truncated mode).
     pub(crate) skipped_trunc_count: usize,
+    /// When `true`, corrupt files (post_validate → Corrupt) are deleted after
+    /// extraction and the hit is marked as `HitStatus::Skipped`.
+    pub(crate) skip_corrupt: bool,
+    /// Running count of hits skipped due to corruption (skip-corrupt mode).
+    pub(crate) skipped_corrupt_count: usize,
 }
 
 impl Default for CarvingState {
@@ -413,6 +426,8 @@ impl CarvingState {
             duplicates_suppressed: 0,
             skip_truncated: false,
             skipped_trunc_count: 0,
+            skip_corrupt: false,
+            skipped_corrupt_count: 0,
             user_sig_path: "./ferrite-user-signatures.toml".to_string(),
             user_sigs: Vec::new(),
             show_user_panel: false,
@@ -664,8 +679,9 @@ impl CarvingState {
         self.backpressure_paused = false;
         self.seen_fingerprints.lock().unwrap().clear();
         self.duplicates_suppressed = 0;
-        // skip_truncated is intentionally NOT reset on device change — it's a user preference.
+        // skip_truncated / skip_corrupt are intentionally NOT reset on device change — user preferences.
         self.skipped_trunc_count = 0;
+        self.skipped_corrupt_count = 0;
     }
 }
 

@@ -254,6 +254,9 @@ impl CarvingState {
             KeyCode::Char('t') => {
                 self.skip_truncated = !self.skip_truncated;
             }
+            KeyCode::Char('C') => {
+                self.skip_corrupt = !self.skip_corrupt;
+            }
             KeyCode::Char('u') => {
                 self.show_user_panel = true;
             }

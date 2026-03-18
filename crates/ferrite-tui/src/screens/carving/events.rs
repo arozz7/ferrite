@@ -166,6 +166,12 @@ impl CarvingState {
                     }
                     self.skipped_trunc_count += 1;
                 }
+                Ok(CarveMsg::SkippedCorrupt { idx }) => {
+                    if let Some(entry) = self.hits.get_mut(idx) {
+                        entry.status = HitStatus::Skipped;
+                    }
+                    self.skipped_corrupt_count += 1;
+                }
                 Ok(CarveMsg::ExtractionStarted { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
                         entry.status = HitStatus::Extracting;
@@ -190,6 +196,7 @@ impl CarvingState {
                     failed,
                     duplicates,
                     skipped_trunc,
+                    skipped_corrupt,
                     total_bytes,
                     elapsed_secs,
                 }) => {
@@ -203,7 +210,9 @@ impl CarvingState {
                         self.pause.store(false, Ordering::Relaxed);
                     }
                     // Only show summary when at least one file was attempted.
-                    if succeeded + truncated + failed + duplicates + skipped_trunc > 0 {
+                    if succeeded + truncated + failed + duplicates + skipped_trunc + skipped_corrupt
+                        > 0
+                    {
                         if self.auto_extract {
                             // Accumulate into the running session total so rapid
                             // per-file completions don't cause visible flicker.
@@ -213,6 +222,7 @@ impl CarvingState {
                                 existing.failed += failed;
                                 existing.duplicates += duplicates;
                                 existing.skipped_trunc += skipped_trunc;
+                                existing.skipped_corrupt += skipped_corrupt;
                                 existing.total_bytes += total_bytes;
                                 existing.elapsed_secs += elapsed_secs;
                             } else {
@@ -222,6 +232,7 @@ impl CarvingState {
                                     failed,
                                     duplicates,
                                     skipped_trunc,
+                                    skipped_corrupt,
                                     total_bytes,
                                     elapsed_secs,
                                 });
@@ -233,6 +244,7 @@ impl CarvingState {
                                 failed,
                                 duplicates,
                                 skipped_trunc,
+                                skipped_corrupt,
                                 total_bytes,
                                 elapsed_secs,
                             });

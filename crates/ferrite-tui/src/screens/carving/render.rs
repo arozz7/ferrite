@@ -586,6 +586,16 @@ impl CarvingState {
         } else {
             Span::raw("")
         };
+        let skip_corrupt_span = if s.skipped_corrupt > 0 {
+            Span::styled(
+                format!("   ⊘ {} skipped (corrupt)", s.skipped_corrupt),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
         let dismiss_span = Span::styled("   (d to dismiss)", Style::default().fg(Color::DarkGray));
 
         let title_style = Style::default()
@@ -613,6 +623,7 @@ impl CarvingState {
                 fail_span,
                 dup_span,
                 skip_trunc_span,
+                skip_corrupt_span,
                 meta_span,
                 dismiss_span,
             ])),
