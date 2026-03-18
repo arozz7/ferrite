@@ -13,8 +13,10 @@ mod linear;
 mod mpeg_ts;
 mod ogg;
 mod ole2;
+mod gif;
 mod pdf;
 mod pe;
+mod png;
 mod rar;
 mod seven_zip;
 mod sqlite;
@@ -93,6 +95,10 @@ pub(crate) fn read_size_hint(
         SizeHint::Ttf => ttf::ttf_hint(device, file_offset),
 
         SizeHint::Pdf => pdf::pdf_hint(device, file_offset),
+
+        SizeHint::Gif => gif::gif_hint(device, file_offset, max_size),
+
+        SizeHint::Png => png::png_hint(device, file_offset),
     }
 }
 

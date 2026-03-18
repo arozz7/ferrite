@@ -34,13 +34,14 @@ max_size     = 10_485_760  # 10 MiB
 pre_validate = "jpeg_exif"
 
 [[signature]]
-name         = "PNG Image"
-extension    = "png"
-header       = "89 50 4E 47 0D 0A 1A 0A"
-footer       = "49 45 4E 44 AE 42 60 82"
-max_size     = 52_428_800  # 50 MiB
+name           = "PNG Image"
+extension      = "png"
+header         = "89 50 4E 47 0D 0A 1A 0A"
+footer         = "49 45 4E 44 AE 42 60 82"
+max_size       = 52_428_800  # 50 MiB
+size_hint_kind = "png"
 # Validates that the first chunk is IHDR with length == 13 (required by spec).
-pre_validate = "png"
+pre_validate   = "png"
 
 [[signature]]
 name           = "PDF Document"
@@ -74,13 +75,14 @@ min_size     = 512
 max_size     = 104_857_600  # 100 MiB
 
 [[signature]]
-name         = "GIF Image"
-extension    = "gif"
-header       = "47 49 46 38"
-footer       = "00 3B"
-max_size     = 10_485_760  # 10 MiB
+name           = "GIF Image"
+extension      = "gif"
+header         = "47 49 46 38"
+footer         = "00 3B"
+max_size       = 10_485_760  # 10 MiB
+size_hint_kind = "gif"
 # Validates bytes 4-5 are "7a" or "9a" (GIF87a / GIF89a).
-pre_validate = "gif"
+pre_validate   = "gif"
 
 [[signature]]
 name             = "BMP Image"

@@ -197,6 +197,23 @@ pub enum SizeHint {
     /// Returns the declared file length for linearized PDFs; non-linearized
     /// PDFs return `None` and fall back to footer-based extraction.
     Pdf,
+
+    /// GIF block-walking size hint.
+    ///
+    /// Walks the GIF block structure (header → extensions → image descriptors
+    /// → sub-blocks → trailer) to find the true `0x3B` trailer, rather than
+    /// scanning raw bytes for the `00 3B` footer — which easily false-matches
+    /// inside LZW compressed image data.
+    Gif,
+
+    /// PNG chunk-walking size hint.
+    ///
+    /// Walks the PNG chunk structure (IHDR → IDAT → … → IEND) by reading
+    /// each chunk's 4-byte big-endian length field and advancing, rather
+    /// than scanning raw bytes for the IEND footer pattern.  This avoids
+    /// false-positive IEND matches inside compressed IDAT data that cause
+    /// premature truncation.
+    Png,
 }
 
 impl SizeHint {
@@ -220,6 +237,8 @@ impl SizeHint {
             SizeHint::TextBound => "text_bound",
             SizeHint::Ttf => "ttf",
             SizeHint::Pdf => "pdf",
+            SizeHint::Gif => "gif",
+            SizeHint::Png => "png",
         }
     }
 }
@@ -416,6 +435,8 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("text_bound") => Some(SizeHint::TextBound),
                     Some(k) if k.eq_ignore_ascii_case("ttf") => Some(SizeHint::Ttf),
                     Some(k) if k.eq_ignore_ascii_case("pdf") => Some(SizeHint::Pdf),
+                    Some(k) if k.eq_ignore_ascii_case("png") => Some(SizeHint::Png),
+                    Some(k) if k.eq_ignore_ascii_case("gif") => Some(SizeHint::Gif),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
                         match (r.size_hint_ts_offset, r.size_hint_stride) {
                             (Some(ts_offset), Some(stride)) => {

@@ -87,6 +87,24 @@ fn read_file_tail(path: &str, max_bytes: u64) -> Vec<u8> {
     buf
 }
 
+/// Read up to `max_bytes` from the **head** (beginning) of `path`.
+///
+/// Used for post-extraction CRC-32 verification of early chunks (PNG).
+fn read_file_head(path: &str, max_bytes: usize) -> Vec<u8> {
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let mut buf = vec![0u8; max_bytes];
+    match f.read(&mut buf) {
+        Ok(n) => {
+            buf.truncate(n);
+            buf
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Compute a fast u64 fingerprint from the first 4 KiB of a hit on `device`.
 ///
 /// Uses `std::hash::DefaultHasher` — sufficient for probabilistic duplicate
@@ -214,9 +232,11 @@ impl CarvingState {
                         if let Some(ref meta_idx) = meta_index {
                             apply_timestamps(&filename, hit.byte_offset, meta_idx);
                         }
+                        let head = read_file_head(&filename, 8192);
                         let tail = read_file_tail(&filename, 65536);
                         let quality = post_validate::validate_extracted(
                             &hit.signature.extension,
+                            &head,
                             &tail,
                             truncated,
                             bytes,
@@ -486,9 +506,11 @@ impl CarvingState {
                     let quality = match &result {
                         Ok(bytes) => {
                             let truncated = *bytes >= hit.signature.max_size;
+                            let head = read_file_head(&path, 8192);
                             let tail = read_file_tail(&path, 65536);
                             post_validate::validate_extracted(
                                 &hit.signature.extension,
+                                &head,
                                 &tail,
                                 truncated,
                                 *bytes,
