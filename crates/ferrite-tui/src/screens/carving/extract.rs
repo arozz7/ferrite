@@ -228,6 +228,17 @@ impl CarvingState {
                         let _ = tx.send(CarveMsg::Skipped { idx });
                     }
                     Ok(bytes) => {
+                        // Post-extraction min_size check: the pre-extraction
+                        // check compares against the *planned* extraction size
+                        // (max_size for footer-based formats), which is always
+                        // large.  The actual extracted bytes may be much smaller
+                        // when the footer is found early (e.g. tiny JPEG
+                        // thumbnails, GIF spacer pixels).
+                        if hit.signature.min_size > 0 && bytes < hit.signature.min_size {
+                            let _ = std::fs::remove_file(&filename);
+                            let _ = tx.send(CarveMsg::Skipped { idx });
+                            return;
+                        }
                         let truncated = bytes >= hit.signature.max_size;
                         if let Some(ref meta_idx) = meta_index {
                             apply_timestamps(&filename, hit.byte_offset, meta_idx);
@@ -500,6 +511,14 @@ impl CarvingState {
                         let _ = std::fs::remove_file(&path);
                         let _ = done_tx.send(WorkerMsg::Skipped { idx });
                         return;
+                    }
+                    // Post-extraction min_size check against actual bytes written.
+                    if let Ok(bytes) = &result {
+                        if hit.signature.min_size > 0 && *bytes < hit.signature.min_size {
+                            let _ = std::fs::remove_file(&path);
+                            let _ = done_tx.send(WorkerMsg::Skipped { idx });
+                            return;
+                        }
                     }
                     // Post-extraction quality check: read file tail, run structural
                     // validator for known formats.

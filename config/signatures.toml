@@ -79,6 +79,7 @@ name           = "GIF Image"
 extension      = "gif"
 header         = "47 49 46 38"
 footer         = "00 3B"
+min_size       = 4096        # Skip tiny spacer/icon GIFs (< 4 KiB)
 max_size       = 10_485_760  # 10 MiB
 size_hint_kind = "gif"
 # Validates bytes 4-5 are "7a" or "9a" (GIF87a / GIF89a).
