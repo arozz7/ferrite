@@ -294,12 +294,13 @@ impl Carver {
         // If the signature carries a size hint, read the true file length from
         // the embedded field.  Fall back to max_size if the read fails or the
         // parsed value exceeds max_size (corrupt / stale data).
-        let extraction_size = if let Some(hint) = &sig.size_hint {
-            read_size_hint(self.device.as_ref(), hit.byte_offset, hint, sig.max_size)
-                .unwrap_or(sig.max_size)
-                .min(sig.max_size)
+        let (extraction_size, hint_resolved) = if let Some(hint) = &sig.size_hint {
+            match read_size_hint(self.device.as_ref(), hit.byte_offset, hint, sig.max_size) {
+                Some(size) => (size.min(sig.max_size), true),
+                None => (sig.max_size, false),
+            }
         } else {
-            sig.max_size
+            (sig.max_size, false)
         };
 
         // If the resolved size is below the signature's minimum, skip extraction.
@@ -317,7 +318,13 @@ impl Carver {
 
         let max_end = (hit.byte_offset + extraction_size).min(device_size);
 
-        if sig.footer.is_empty() {
+        // When the size hint resolved successfully, stream the exact number
+        // of bytes — bypass the footer search entirely.  Structure-walking
+        // hints (PNG, GIF, OGG, EBML, …) already found the true end-of-file;
+        // searching for the footer would risk a false match inside compressed
+        // data (e.g. `00 3B` in GIF LZW data, IEND bytes in PNG IDAT) that
+        // truncates the file prematurely.
+        if hint_resolved || sig.footer.is_empty() {
             stream_bytes(self.device.as_ref(), hit.byte_offset, max_end, writer)
         } else if sig.footer_last {
             stream_until_last_footer(
