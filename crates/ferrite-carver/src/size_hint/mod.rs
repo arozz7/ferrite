@@ -13,6 +13,7 @@ mod linear;
 mod mpeg_ts;
 mod ogg;
 mod ole2;
+mod pdf;
 mod pe;
 mod rar;
 mod seven_zip;
@@ -90,6 +91,8 @@ pub(crate) fn read_size_hint(
         SizeHint::TextBound => text_bound::text_bound_hint(device, file_offset, max_size),
 
         SizeHint::Ttf => ttf::ttf_hint(device, file_offset),
+
+        SizeHint::Pdf => pdf::pdf_hint(device, file_offset),
     }
 }
 

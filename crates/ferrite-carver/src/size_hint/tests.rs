@@ -378,3 +378,38 @@ fn ttf_no_tables_returns_none() {
     let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Ttf, u64::MAX);
     assert_eq!(result, None);
 }
+
+// ── PDF linearized hint ────────────────────────────────────────────────────
+
+#[test]
+fn pdf_linearized_returns_l_value() {
+    let header = b"%PDF-1.3\r%\xe2\xe3\xcf\xd3\r\n55 0 obj\r<< \r/Linearized 1 \r/O 58 \r/H [ 750 203 ] \r/L 15206 \r/E 3976 \r/N 4 \r/T 13988 \r>> \rendobj\r";
+    let mut data = vec![0u8; 512];
+    let len = header.len().min(512);
+    data[..len].copy_from_slice(&header[..len]);
+    let dev = device_from(data);
+    let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Pdf, u64::MAX);
+    assert_eq!(result, Some(15206));
+}
+
+#[test]
+fn pdf_non_linearized_returns_none() {
+    let header = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+    let mut data = vec![0u8; 512];
+    let len = header.len().min(512);
+    data[..len].copy_from_slice(&header[..len]);
+    let dev = device_from(data);
+    let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Pdf, u64::MAX);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn pdf_linearized_no_l_key_returns_none() {
+    let header = b"%PDF-1.5\n1 0 obj\n<< /Linearized 1 /O 10 >>\nendobj\n";
+    let mut data = vec![0u8; 512];
+    let len = header.len().min(512);
+    data[..len].copy_from_slice(&header[..len]);
+    let dev = device_from(data);
+    let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Pdf, u64::MAX);
+    assert_eq!(result, None);
+}

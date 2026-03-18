@@ -190,6 +190,13 @@ pub enum SizeHint {
     /// table directory (16 bytes per record) and returns the maximum
     /// `table_offset + table_length` across all entries.
     Ttf,
+
+    /// PDF linearized-length reader.
+    ///
+    /// Reads the first ~256 bytes looking for `/Linearized` and `/L <n>`.
+    /// Returns the declared file length for linearized PDFs; non-linearized
+    /// PDFs return `None` and fall back to footer-based extraction.
+    Pdf,
 }
 
 impl SizeHint {
@@ -212,6 +219,7 @@ impl SizeHint {
             SizeHint::Ebml => "ebml",
             SizeHint::TextBound => "text_bound",
             SizeHint::Ttf => "ttf",
+            SizeHint::Pdf => "pdf",
         }
     }
 }
@@ -407,6 +415,7 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("ebml") => Some(SizeHint::Ebml),
                     Some(k) if k.eq_ignore_ascii_case("text_bound") => Some(SizeHint::TextBound),
                     Some(k) if k.eq_ignore_ascii_case("ttf") => Some(SizeHint::Ttf),
+                    Some(k) if k.eq_ignore_ascii_case("pdf") => Some(SizeHint::Pdf),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
                         match (r.size_hint_ts_offset, r.size_hint_stride) {
                             (Some(ts_offset), Some(stride)) => {

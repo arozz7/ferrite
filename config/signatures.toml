@@ -43,17 +43,20 @@ max_size     = 52_428_800  # 50 MiB
 pre_validate = "png"
 
 [[signature]]
-name         = "PDF Document"
-extension    = "pdf"
-header       = "25 50 44 46"
-footer       = "25 25 45 4F 46"
+name           = "PDF Document"
+extension      = "pdf"
+header         = "25 50 44 46"
+footer         = "25 25 45 4F 46"
 # footer_last = true: PDF binary streams can contain %%EOF internally, and
 # incrementally-updated PDFs accumulate multiple %%EOF markers.  Using the
 # last occurrence gives the complete, valid file.
-footer_last  = true
-max_size     = 104_857_600  # 100 MiB
+footer_last    = true
+max_size       = 104_857_600  # 100 MiB
 # Validates PDF version string "-1.x" or "-2.x" at offset 4.
-pre_validate = "pdf"
+pre_validate   = "pdf"
+# Linearized PDFs declare their total size in /L — use it to cap extraction
+# so we don't sweep past the real file end looking for a later %%EOF.
+size_hint_kind = "pdf"
 
 [[signature]]
 name         = "ZIP / Office (DOCX/XLSX/PPTX)"
@@ -1036,7 +1039,7 @@ extension           = "ts"
 # Single-byte magic is noisy; the pre-validator confirms the stride pattern.
 header              = "47"
 footer              = ""
-min_size            = 377           # At least 3 complete 188-byte packets (+ 1 byte)
+min_size            = 18_800         # At least 100 complete 188-byte packets
 max_size            = 2_147_483_648 # 2 GiB — fallback if stream walk fails
 # Validates sync bytes at offsets 0, 188, and 376 (stride-188 pattern).
 pre_validate        = "ts"
@@ -1060,7 +1063,7 @@ extension           = "m2ts"
 # Using a 5-byte magic with wildcard prefix to anchor on the first sync byte.
 header              = "?? ?? ?? ?? 47"
 footer              = ""
-min_size            = 389           # At least 3 complete 192-byte packets
+min_size            = 19_200         # At least 100 complete 192-byte packets
 max_size            = 2_147_483_648 # 2 GiB — fallback if stream walk fails
 # Validates sync bytes at offsets 4, 196, and 388 (stride-192 pattern).
 pre_validate        = "m2ts"
