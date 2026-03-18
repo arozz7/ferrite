@@ -6,10 +6,122 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
 
-use super::{preview, CarveFocus, CarveMsg, CarveStatus, CarvingState, ScanRangeField};
+use super::{
+    preview, user_sig_panel, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow, FormMode,
+    ScanRangeField, UserSigForm,
+};
 
 impl CarvingState {
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // ── User-signature import path input ──────────────────────────────────
+        if self.editing_import {
+            match code {
+                KeyCode::Esc => {
+                    self.user_import_path.clear();
+                    self.editing_import = false;
+                }
+                KeyCode::Enter => self.do_import(),
+                KeyCode::Backspace => {
+                    self.user_import_path.pop();
+                }
+                KeyCode::Char(c) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
+                    self.user_import_path.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── User-signature form ───────────────────────────────────────────────
+        if self.show_user_panel {
+            if let Some(mut form) = self.user_sig_form.take() {
+                let action = user_sig_panel::handle_form_key(&mut form, code, modifiers);
+                match action {
+                    user_sig_panel::FormAction::None => {
+                        self.user_sig_form = Some(form);
+                    }
+                    user_sig_panel::FormAction::Submit => {
+                        self.submit_user_form(form);
+                    }
+                    user_sig_panel::FormAction::Cancel => {
+                        // form dropped; error state discarded
+                    }
+                }
+                return;
+            }
+
+            // ── User-signature panel list ─────────────────────────────────────
+            if self.user_confirm_delete {
+                match code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        if self.user_panel_sel < self.user_sigs.len() {
+                            self.user_sigs.remove(self.user_panel_sel);
+                            let max = self.user_sigs.len().saturating_sub(1);
+                            self.user_panel_sel = self.user_panel_sel.min(max);
+                            let _ = super::user_sigs::save_user_sigs(
+                                &self.user_sig_path,
+                                &self.user_sigs,
+                            );
+                            self.refresh_custom_group();
+                        }
+                        self.user_confirm_delete = false;
+                    }
+                    _ => {
+                        self.user_confirm_delete = false;
+                    }
+                }
+                return;
+            }
+
+            match code {
+                KeyCode::Esc => {
+                    self.show_user_panel = false;
+                }
+                KeyCode::Up => {
+                    self.user_panel_sel = self.user_panel_sel.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if !self.user_sigs.is_empty() {
+                        let max = self.user_sigs.len() - 1;
+                        self.user_panel_sel = (self.user_panel_sel + 1).min(max);
+                    }
+                }
+                KeyCode::Char('a') => {
+                    self.user_sig_form = Some(UserSigForm {
+                        mode: FormMode::Add,
+                        field: 0,
+                        name: String::new(),
+                        extension: String::new(),
+                        header: String::new(),
+                        footer: String::new(),
+                        max_size_str: String::new(),
+                        error: None,
+                    });
+                }
+                KeyCode::Char('e') if !self.user_sigs.is_empty() => {
+                    let def = &self.user_sigs[self.user_panel_sel];
+                    self.user_sig_form = Some(UserSigForm {
+                        mode: FormMode::Edit(self.user_panel_sel),
+                        field: 0,
+                        name: def.name.clone(),
+                        extension: def.extension.clone(),
+                        header: def.header.clone(),
+                        footer: def.footer.clone(),
+                        max_size_str: def.max_size.to_string(),
+                        error: None,
+                    });
+                }
+                KeyCode::Char('d') if !self.user_sigs.is_empty() => {
+                    self.user_confirm_delete = true;
+                }
+                KeyCode::Char('i') => {
+                    self.editing_import = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // While editing the output directory, route all keys there.
         if self.editing_dir {
             match code {
@@ -103,6 +215,9 @@ impl CarvingState {
             KeyCode::Char(' ') if self.focus == CarveFocus::Signatures => {
                 self.toggle_signature();
             }
+            KeyCode::Enter if self.focus == CarveFocus::Signatures => {
+                self.toggle_group_expand();
+            }
             KeyCode::Char(' ') if self.focus == CarveFocus::Hits => {
                 self.toggle_hit_selected();
             }
@@ -128,10 +243,16 @@ impl CarvingState {
             KeyCode::Char('d') => {
                 self.extract_summary = None;
             }
+            KeyCode::Char('D') => {
+                self.dedup_hits_by_gap();
+            }
             KeyCode::Char('e') => self.extract_selected(),
             KeyCode::Char('E') => self.extract_all_selected(),
             KeyCode::Char('x') => {
                 self.auto_extract = !self.auto_extract;
+            }
+            KeyCode::Char('u') => {
+                self.show_user_panel = true;
             }
             KeyCode::Char('v') if self.focus == CarveFocus::Hits => {
                 self.show_preview = !self.show_preview;
@@ -190,7 +311,7 @@ impl CarvingState {
     pub(super) fn move_selection(&mut self, delta: i32) {
         match self.focus {
             CarveFocus::Signatures => {
-                let len = self.sig_list.len();
+                let len = self.cursor_rows.len();
                 if len == 0 {
                     return;
                 }
@@ -215,8 +336,29 @@ impl CarvingState {
     }
 
     pub(super) fn toggle_signature(&mut self) {
-        if let Some(e) = self.sig_list.get_mut(self.sig_sel) {
-            e.enabled = !e.enabled;
+        match self.cursor_rows.get(self.sig_sel).copied() {
+            Some(CursorRow::Group(gi)) => {
+                // Toggle all entries in the group: if all are on, turn them off;
+                // otherwise turn them all on.
+                let all_on = self.groups[gi].entries.iter().all(|e| e.enabled);
+                let new_state = !all_on;
+                for e in &mut self.groups[gi].entries {
+                    e.enabled = new_state;
+                }
+            }
+            Some(CursorRow::Sig(gi, si)) => {
+                if let Some(e) = self.groups[gi].entries.get_mut(si) {
+                    e.enabled = !e.enabled;
+                }
+            }
+            None => {}
+        }
+    }
+
+    pub(super) fn toggle_group_expand(&mut self) {
+        if let Some(CursorRow::Group(gi)) = self.cursor_rows.get(self.sig_sel).copied() {
+            self.groups[gi].expanded = !self.groups[gi].expanded;
+            self.rebuild_cursor_rows();
         }
     }
 
@@ -232,8 +374,9 @@ impl CarvingState {
             None => return,
         };
         let enabled: Vec<Signature> = self
-            .sig_list
+            .groups
             .iter()
+            .flat_map(|g| g.entries.iter())
             .filter(|e| e.enabled)
             .map(|e| e.sig.clone())
             .collect();
@@ -247,6 +390,10 @@ impl CarvingState {
             .parse::<u64>()
             .unwrap_or(0)
             .saturating_mul(sector_size);
+        // Record the configured window start for progress display (so a resumed
+        // scan shows overall completion rather than always starting at 0%).
+        self.scan_window_start = window_start;
+
         // If a session resume position is set, pick up from where we left off
         // (clamped so it never falls before the configured window start).
         let start_byte = if self.resume_from_byte > window_start {
@@ -287,6 +434,8 @@ impl CarvingState {
         self.paused_elapsed = std::time::Duration::ZERO;
         self.paused_since = None;
         self.status = CarveStatus::Running;
+        self.seen_fingerprints.lock().unwrap().clear();
+        self.duplicates_suppressed = 0;
 
         let (tx, rx) = mpsc::channel::<CarveMsg>();
         // Keep tx alive so extraction results can be sent back after Done.

@@ -65,6 +65,184 @@ pub enum PreValidate {
     Ical,
     /// OLE2: ByteOrder field (u16 LE @28) == 0xFFFE.
     Ole2,
+    /// Sony ARW: TIFF LE + IFD at offset 8, "SONY" string within first 512 bytes.
+    Arw,
+    /// Canon CR2: TIFF LE + `CR\x02\x00` at offset 8, plausible IFD offset.
+    Cr2,
+    /// Panasonic RW2: `II\x55\x00` TIFF variant, plausible IFD offset + entry count.
+    Rw2,
+    /// Fujifilm RAF: `FUJIFILMCCD-RAW ` + 4-digit version string at offset 16.
+    Raf,
+    /// Generic TIFF (little-endian `II\x2A\x00`): plausible IFD offset and entry
+    /// count.  Explicitly rejects Sony ARW ("SONY" marker), Canon CR2 (`CR\x02\x00`
+    /// at offset 8), and Nikon NEF ("NIKON" marker) since those have dedicated
+    /// signatures that produce correctly-named output files.
+    TiffLe,
+    /// Generic TIFF (big-endian `MM\x00\x2A`): plausible IFD offset and entry count.
+    TiffBe,
+    /// Nikon NEF: TIFF LE file that contains the "NIKON" manufacturer string within
+    /// the first 512 bytes of the header.
+    Nef,
+    /// Apple HEIC / HEIF: ISO Base Media File Format with an `heic` or `heix` major
+    /// brand in the `ftyp` box.  Box size must be in [12, 512].
+    Heic,
+    /// QuickTime MOV: ISOBMFF ftyp box with `qt  ` major brand.
+    Mov,
+    /// iTunes M4V video: ISOBMFF ftyp box with `M4V ` major brand.
+    M4v,
+    /// 3GPP / 3GPP2 mobile video: ISOBMFF ftyp box whose major brand starts
+    /// with `3gp` or `3g2`.
+    ThreeGp,
+    /// WebM video: EBML file whose DocType element equals `"webm"` (not
+    /// `"matroska"`).
+    Webm,
+    /// Windows Media Video / ASF: ASF Header Object GUID at offset 0; object
+    /// size (u64 LE @16) must be ≥ 30.
+    Wmv,
+    /// Flash Video: `FLV\x01` header; type-flags reserved bits must be zero;
+    /// DataOffset (u32 BE @5) must equal 9.
+    Flv,
+    /// MPEG-2 / MPEG-1 Program Stream: pack header `00 00 01 BA`; top 2 bits
+    /// of byte 4 must be `01` (MPEG-2) or top 4 bits must be `0010` (MPEG-1).
+    Mpeg,
+    /// WebP image: RIFF container with "WEBP" subtype at bytes 8–11; RIFF size
+    /// field (u32 LE @4) must be ≥ 4.
+    Webp,
+    /// AAC / M4A audio: ISOBMFF ftyp box with `M4A ` major brand; box size in
+    /// [12, 512].
+    M4a,
+    /// GZip compressed file: compression method (byte @2) must be 8 (DEFLATE);
+    /// reserved flag bit 5 of byte @3 must be 0 per RFC 1952.
+    Gz,
+    /// Email message (EML): `From ` header followed by a printable ASCII character.
+    Eml,
+    /// ELF executable or shared library: EI_CLASS in {1,2}; EI_DATA in {1,2};
+    /// EI_VERSION == 1.
+    Elf,
+    /// Windows Registry Hive (REGF): major version (u32 LE @20) == 1; minor
+    /// version (u32 LE @24) in [2, 6].
+    Regf,
+    /// Adobe Photoshop Document (PSD/PSB): version (u16 BE @4) in {1,2};
+    /// number of channels (u16 BE @6) in [1, 56].
+    Psd,
+    /// VHD Virtual Hard Disk: disk type (u32 BE @60) in {2, 3, 4}.
+    Vhd,
+    /// VHDX Virtual Hard Disk: 8-byte "vhdxfile" magic is globally unique.
+    Vhdx,
+    /// QCOW2 virtual disk: version (u32 BE @4) in {2, 3}; cluster_bits
+    /// (u32 BE @20) in [9, 21].
+    Qcow2,
+    /// Standard MIDI File: chunk length (u32 BE @4) == 6; format (u16 BE @8) in {0,1,2}.
+    Midi,
+    /// AIFF / AIFC: byte @11 is 'F' (AIFF) or 'C' (AIFC); FORM chunk size > 4.
+    Aiff,
+    /// XZ compressed stream: reserved byte @6 == 0x00; check type byte @7
+    /// in {0x00, 0x01, 0x04, 0x0A}.
+    Xz,
+    /// BZip2: level byte @3 in '1'-'9'; block magic bytes @4-9 equal the BWT pi constant.
+    Bzip2,
+    /// RealMedia File Format: object version (u16 BE @4) in {0,1}; header size
+    /// (u32 BE @6) >= 18.
+    RealMedia,
+    /// Windows ICO: image count (u16 LE @4) in [1, 200].
+    Ico,
+    /// Olympus ORF: TIFF LE with RO magic; IFD offset (u32 LE @4) in [8, 4096].
+    Orf,
+    /// Pentax PEF: TIFF LE file with "PENTAX " string in first 512 bytes.
+    Pef,
+    /// Mach-O 64-bit: filetype (u32 LE @12) in [1, 12]; ncmds (u32 LE @16) in [1, 512].
+    MachO,
+    /// Canon CR3: ISOBMFF `ftyp` box with `crx ` brand; box size (u32 BE @0) in [12, 512].
+    Cr3,
+    /// Sony SR2: TIFF LE with IFD at offset 8; "SONY" string in first 512 bytes; IFD entry
+    /// for private tag 0x7200 (SR2Private) present in IFD0 entries.
+    Sr2,
+    /// EPUB e-book: ZIP container whose first local file entry is named `mimetype` (8 bytes,
+    /// uncompressed) and whose content contains `epub+zip`.
+    Epub,
+    /// OpenDocument (ODT/ODS/ODP/…): ZIP container whose first local file entry is named
+    /// `mimetype` and whose content contains `opendocument`.
+    Odt,
+    /// Outlook MSG: OLE2 compound document; ByteOrder @28 == 0xFFFE and first 4 KiB contains
+    /// the MAPI stream name `__substg1.0_`.
+    Msg,
+    /// WavPack audio: `wvpk` block; ck_size (u32 LE @4) > 0; version (u16 LE @8) in
+    /// [0x0402, 0x0410].
+    WavPack,
+    /// CorelDRAW CDR: RIFF container with `CDR` at bytes 8–10 and a valid version suffix
+    /// at byte 11 (e.g. `4`–`9`, `A`–`Z`, space).
+    Cdr,
+    /// Shockwave Flash (FWS/CWS/ZWS): first byte identifies compression; version byte @3
+    /// in [1, 50]; file length (u32 LE @4) >= 8.
+    Swf,
+    /// Kodak DCR: TIFF LE with `Kodak` or `KODAK` string in first 512 bytes; rejects other
+    /// TIFF-based RAW formats.
+    Dcr,
+    /// Canon CRW: legacy CIFF-based RAW; `HEAPCCDR` string at offset 6 in the first 14 bytes.
+    Crw,
+    /// Minolta MRW: `\x00MRM` header; first data block tag at offset 8 is `PRD` or `TTW`.
+    Mrw,
+    /// KeePass 2.x (KDBX): sig1 `03 D9 A2 9A` + sig2 `67 FB 4B B5`; major version @10
+    /// (u16 LE) in {3, 4}.
+    Kdbx,
+    /// KeePass 1.x (KDB): sig1 `03 D9 A2 9A` + sig2 `65 FB 4B B5`; major version @10
+    /// (u16 LE) in {1, 2}.
+    Kdb,
+    /// EnCase EWF/E01 evidence file: `EVF\x09\x0D\x0A\xFF\x00` header; segment number
+    /// (u16 LE @8) == 1 (first segment only).
+    E01,
+    /// PCAP network capture (libpcap): magic `D4 C3 B2 A1` (LE) or `A1 B2 C3 D4` (BE);
+    /// major version == 2, minor version == 4.
+    Pcap,
+    /// Windows Minidump: `MDMP\x93\xA7` header; stream count (u32 LE @8) > 0.
+    Dmp,
+    /// Apple binary property list: `bplist00` magic; data length ≥ 34 bytes.
+    Plist,
+    /// MPEG-TS (Transport Stream): sync byte `0x47` at stride 188; at least 3 consecutive
+    /// sync bytes at offsets 0, 188, and 376.
+    Ts,
+    /// Blu-ray M2TS: `0x47` at offset 4 (stride 192); sync bytes at offsets 4, 196, 388.
+    M2ts,
+    /// LUKS encrypted disk image: `LUKS\xBA\xBE` magic; version (u16 BE @6) in {1, 2}.
+    Luks,
+    /// Sigma X3F RAW photo: `FOVb` magic; version (u32 LE @4) major byte in {2, 3}.
+    X3f,
+    /// Monkey's Audio (APE): `MAC ` magic; version (u16 LE @6) in [3930, 4100].
+    Ape,
+    /// Sun AU audio: `.snd` magic; data_offset (u32 BE @4) ≥ 24; encoding (u32 BE @12) in known
+    /// set.
+    Au,
+    /// TrueType Font (TTF): sfVersion `00 01 00 00`; numTables (u16 BE @4) in [4, 50].
+    Ttf,
+    /// WOFF web font: `wOFF` magic; flavor in {0x00010000, 0x4F54544F}; length ≥ 44;
+    /// numTables in [1, 50].
+    Woff,
+    /// Microsoft CHM help: `ITSF\x03\x00\x00\x00\x60\x00\x00\x00` 12-byte magic — fully
+    /// deterministic, no further validation required.
+    Chm,
+    /// Blender 3D file: `BLENDER` magic; pointer-size byte @7 in {`-`, `_`}; endian byte @8
+    /// in {`v`, `V`}.
+    Blend,
+    /// Adobe InDesign document: 16-byte GUID magic — globally unique, no further validation.
+    Indd,
+    /// Windows WTV television recording: 16-byte GUID magic — globally unique, same pattern
+    /// as WMV/ASF GUID headers.
+    Wtv,
+    /// ISO 9660 disc image: `CD001` identifier at the start of the Primary Volume Descriptor
+    /// (magic at offset 32769 within the file); version byte @5 must be 1.
+    Iso,
+    /// DICOM medical image: `DICM` magic at offset 128; data after the magic must be >= 8
+    /// bytes to confirm a valid DICOM dataset element tag follows.
+    Dicom,
+    /// POSIX TAR archive (ustar): `ustar\0` magic at offset 257 (within a 512-byte header
+    /// block); version string at offset 263 must be `"00"` or `"  "`.
+    Tar,
+    /// PHP script: `<?php` opener; byte @5 must be whitespace (space, tab, CR, or LF).
+    Php,
+    /// Unix shebang script (`#!`): byte @2 must be `/` (interpreter path start).
+    /// Extension is fixed as `.sh`; content-based classification is not performed
+    /// at scan time.
+    Shebang,
 }
 
 impl PreValidate {
@@ -96,6 +274,74 @@ impl PreValidate {
             Self::Vcard => "vcard",
             Self::Ical => "ical",
             Self::Ole2 => "ole2",
+            Self::Arw => "arw",
+            Self::Cr2 => "cr2",
+            Self::Rw2 => "rw2",
+            Self::Raf => "raf",
+            Self::TiffLe => "tiff_le",
+            Self::TiffBe => "tiff_be",
+            Self::Nef => "nef",
+            Self::Heic => "heic",
+            Self::Mov => "mov",
+            Self::M4v => "m4v",
+            Self::ThreeGp => "3gp",
+            Self::Webm => "webm",
+            Self::Wmv => "wmv",
+            Self::Flv => "flv",
+            Self::Mpeg => "mpeg",
+            Self::Webp => "webp",
+            Self::M4a => "m4a",
+            Self::Gz => "gz",
+            Self::Eml => "eml",
+            Self::Elf => "elf",
+            Self::Regf => "regf",
+            Self::Psd => "psd",
+            Self::Vhd => "vhd",
+            Self::Vhdx => "vhdx",
+            Self::Qcow2 => "qcow2",
+            Self::Midi => "midi",
+            Self::Aiff => "aiff",
+            Self::Xz => "xz",
+            Self::Bzip2 => "bzip2",
+            Self::RealMedia => "realmedia",
+            Self::Ico => "ico",
+            Self::Orf => "orf",
+            Self::Pef => "pef",
+            Self::MachO => "macho",
+            Self::Cr3 => "cr3",
+            Self::Sr2 => "sr2",
+            Self::Epub => "epub",
+            Self::Odt => "odt",
+            Self::Msg => "msg",
+            Self::WavPack => "wavpack",
+            Self::Cdr => "cdr",
+            Self::Swf => "swf",
+            Self::Dcr => "dcr",
+            Self::Crw => "crw",
+            Self::Mrw => "mrw",
+            Self::Kdbx => "kdbx",
+            Self::Kdb => "kdb",
+            Self::E01 => "e01",
+            Self::Pcap => "pcap",
+            Self::Dmp => "dmp",
+            Self::Plist => "plist",
+            Self::Ts => "ts",
+            Self::M2ts => "m2ts",
+            Self::Luks => "luks",
+            Self::X3f => "x3f",
+            Self::Ape => "ape",
+            Self::Au => "au",
+            Self::Ttf => "ttf",
+            Self::Woff => "woff",
+            Self::Chm => "chm",
+            Self::Blend => "blend",
+            Self::Indd => "indd",
+            Self::Wtv => "wtv",
+            Self::Iso => "iso",
+            Self::Dicom => "dicom",
+            Self::Tar => "tar",
+            Self::Php => "php",
+            Self::Shebang => "shebang",
         }
     }
 
@@ -127,6 +373,74 @@ impl PreValidate {
             "vcard" => Some(Self::Vcard),
             "ical" => Some(Self::Ical),
             "ole2" => Some(Self::Ole2),
+            "arw" => Some(Self::Arw),
+            "cr2" => Some(Self::Cr2),
+            "rw2" => Some(Self::Rw2),
+            "raf" => Some(Self::Raf),
+            "tiff_le" => Some(Self::TiffLe),
+            "tiff_be" => Some(Self::TiffBe),
+            "nef" => Some(Self::Nef),
+            "heic" => Some(Self::Heic),
+            "mov" => Some(Self::Mov),
+            "m4v" => Some(Self::M4v),
+            "3gp" => Some(Self::ThreeGp),
+            "webm" => Some(Self::Webm),
+            "wmv" => Some(Self::Wmv),
+            "flv" => Some(Self::Flv),
+            "mpeg" => Some(Self::Mpeg),
+            "webp" => Some(Self::Webp),
+            "m4a" => Some(Self::M4a),
+            "gz" => Some(Self::Gz),
+            "eml" => Some(Self::Eml),
+            "elf" => Some(Self::Elf),
+            "regf" => Some(Self::Regf),
+            "psd" => Some(Self::Psd),
+            "vhd" => Some(Self::Vhd),
+            "vhdx" => Some(Self::Vhdx),
+            "qcow2" => Some(Self::Qcow2),
+            "midi" => Some(Self::Midi),
+            "aiff" => Some(Self::Aiff),
+            "xz" => Some(Self::Xz),
+            "bzip2" => Some(Self::Bzip2),
+            "realmedia" => Some(Self::RealMedia),
+            "ico" => Some(Self::Ico),
+            "orf" => Some(Self::Orf),
+            "pef" => Some(Self::Pef),
+            "macho" => Some(Self::MachO),
+            "cr3" => Some(Self::Cr3),
+            "sr2" => Some(Self::Sr2),
+            "epub" => Some(Self::Epub),
+            "odt" => Some(Self::Odt),
+            "msg" => Some(Self::Msg),
+            "wavpack" => Some(Self::WavPack),
+            "cdr" => Some(Self::Cdr),
+            "swf" => Some(Self::Swf),
+            "dcr" => Some(Self::Dcr),
+            "crw" => Some(Self::Crw),
+            "mrw" => Some(Self::Mrw),
+            "kdbx" => Some(Self::Kdbx),
+            "kdb" => Some(Self::Kdb),
+            "e01" => Some(Self::E01),
+            "pcap" => Some(Self::Pcap),
+            "dmp" => Some(Self::Dmp),
+            "plist" => Some(Self::Plist),
+            "ts" => Some(Self::Ts),
+            "m2ts" => Some(Self::M2ts),
+            "luks" => Some(Self::Luks),
+            "x3f" => Some(Self::X3f),
+            "ape" => Some(Self::Ape),
+            "au" => Some(Self::Au),
+            "ttf" => Some(Self::Ttf),
+            "woff" => Some(Self::Woff),
+            "chm" => Some(Self::Chm),
+            "blend" => Some(Self::Blend),
+            "indd" => Some(Self::Indd),
+            "wtv" => Some(Self::Wtv),
+            "iso" => Some(Self::Iso),
+            "dicom" => Some(Self::Dicom),
+            "tar" => Some(Self::Tar),
+            "php" => Some(Self::Php),
+            "shebang" => Some(Self::Shebang),
             _ => None,
         }
     }
@@ -166,6 +480,74 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Vcard => validate_vcard(data, pos),
         PreValidate::Ical => validate_ical(data, pos),
         PreValidate::Ole2 => validate_ole2(data, pos),
+        PreValidate::Arw => validate_arw(data, pos),
+        PreValidate::Cr2 => validate_cr2(data, pos),
+        PreValidate::Rw2 => validate_rw2(data, pos),
+        PreValidate::Raf => validate_raf(data, pos),
+        PreValidate::TiffLe => validate_tiff_le(data, pos),
+        PreValidate::TiffBe => validate_tiff_be(data, pos),
+        PreValidate::Nef => validate_nef(data, pos),
+        PreValidate::Heic => validate_heic(data, pos),
+        PreValidate::Mov => validate_mov(data, pos),
+        PreValidate::M4v => validate_m4v(data, pos),
+        PreValidate::ThreeGp => validate_3gp(data, pos),
+        PreValidate::Webm => validate_webm(data, pos),
+        PreValidate::Wmv => validate_wmv(data, pos),
+        PreValidate::Flv => validate_flv(data, pos),
+        PreValidate::Mpeg => validate_mpeg(data, pos),
+        PreValidate::Webp => validate_webp(data, pos),
+        PreValidate::M4a => validate_m4a(data, pos),
+        PreValidate::Gz => validate_gz(data, pos),
+        PreValidate::Eml => validate_eml(data, pos),
+        PreValidate::Elf => validate_elf(data, pos),
+        PreValidate::Regf => validate_regf(data, pos),
+        PreValidate::Psd => validate_psd(data, pos),
+        PreValidate::Vhd => validate_vhd(data, pos),
+        PreValidate::Vhdx => validate_vhdx(data, pos),
+        PreValidate::Qcow2 => validate_qcow2(data, pos),
+        PreValidate::Midi => validate_midi(data, pos),
+        PreValidate::Aiff => validate_aiff(data, pos),
+        PreValidate::Xz => validate_xz(data, pos),
+        PreValidate::Bzip2 => validate_bzip2(data, pos),
+        PreValidate::RealMedia => validate_realmedia(data, pos),
+        PreValidate::Ico => validate_ico(data, pos),
+        PreValidate::Orf => validate_orf(data, pos),
+        PreValidate::Pef => validate_pef(data, pos),
+        PreValidate::MachO => validate_macho(data, pos),
+        PreValidate::Cr3 => validate_cr3(data, pos),
+        PreValidate::Sr2 => validate_sr2(data, pos),
+        PreValidate::Epub => validate_epub(data, pos),
+        PreValidate::Odt => validate_odt(data, pos),
+        PreValidate::Msg => validate_msg(data, pos),
+        PreValidate::WavPack => validate_wavpack(data, pos),
+        PreValidate::Cdr => validate_cdr(data, pos),
+        PreValidate::Swf => validate_swf(data, pos),
+        PreValidate::Dcr => validate_dcr(data, pos),
+        PreValidate::Crw => validate_crw(data, pos),
+        PreValidate::Mrw => validate_mrw(data, pos),
+        PreValidate::Kdbx => validate_kdbx(data, pos),
+        PreValidate::Kdb => validate_kdb(data, pos),
+        PreValidate::E01 => validate_e01(data, pos),
+        PreValidate::Pcap => validate_pcap(data, pos),
+        PreValidate::Dmp => validate_dmp(data, pos),
+        PreValidate::Plist => validate_plist(data, pos),
+        PreValidate::Ts => validate_ts(data, pos),
+        PreValidate::M2ts => validate_m2ts(data, pos),
+        PreValidate::Luks => validate_luks(data, pos),
+        PreValidate::X3f => validate_x3f(data, pos),
+        PreValidate::Ape => validate_ape(data, pos),
+        PreValidate::Au => validate_au(data, pos),
+        PreValidate::Ttf => validate_ttf(data, pos),
+        PreValidate::Woff => validate_woff(data, pos),
+        PreValidate::Chm => validate_chm(data, pos),
+        PreValidate::Blend => validate_blend(data, pos),
+        PreValidate::Indd => validate_indd(data, pos),
+        PreValidate::Wtv => validate_wtv(data, pos),
+        PreValidate::Iso => validate_iso(data, pos),
+        PreValidate::Dicom => validate_dicom(data, pos),
+        PreValidate::Tar => validate_tar(data, pos),
+        PreValidate::Php => validate_php(data, pos),
+        PreValidate::Shebang => validate_shebang(data, pos),
     }
 }
 
@@ -202,7 +584,60 @@ fn validate_zip(data: &[u8], pos: usize) -> bool {
     if pos + 30 + fname_len <= data.len() && data[pos + 30 + fname_len - 1] == b'/' {
         return false;
     }
+
+    // Reject internal ZIP entries.
+    //
+    // A ZIP archive's Local File Headers (PK\x03\x04) appear at the start of
+    // each entry.  Only the FIRST entry is the true archive start; all others
+    // are internal.  When a scan chunk contains multiple LFH hits from the same
+    // archive, look backward for a preceding LFH with no EOCD (PK\x05\x06)
+    // between it and the current position.  If found, this hit is an internal
+    // entry — discard it.  (Hits that straddle a chunk boundary may still slip
+    // through; those are handled by deduplication at extraction time.)
+    if pos >= 4 {
+        let lookback = &data[..pos];
+        if let Some(prev_lfh) = pk_find_last(lookback, b'\x03', b'\x04') {
+            // No EOCD between the previous LFH and us → same archive, internal entry.
+            if pk_find_first(&lookback[prev_lfh + 4..], b'\x05', b'\x06').is_none() {
+                return false;
+            }
+        }
+    }
+
     true
+}
+
+/// Find the rightmost `PK<b1><b2>` in `data`, returning its byte index.
+fn pk_find_last(data: &[u8], b1: u8, b2: u8) -> Option<usize> {
+    let mut end = data.len();
+    loop {
+        let p = memchr::memrchr(b'P', &data[..end])?;
+        if p + 3 < data.len() && data[p + 1] == b'K' && data[p + 2] == b1 && data[p + 3] == b2 {
+            return Some(p);
+        }
+        if p == 0 {
+            return None;
+        }
+        end = p;
+    }
+}
+
+/// Find the first `PK<b1><b2>` in `data`, returning its byte index.
+fn pk_find_first(data: &[u8], b1: u8, b2: u8) -> Option<usize> {
+    let mut start = 0;
+    while start < data.len() {
+        let rel = memchr::memchr(b'P', &data[start..])?;
+        let abs = start + rel;
+        if abs + 3 < data.len()
+            && data[abs + 1] == b'K'
+            && data[abs + 2] == b1
+            && data[abs + 3] == b2
+        {
+            return Some(abs);
+        }
+        start = abs + 1;
+    }
+    None
 }
 
 fn validate_jpeg_jfif(data: &[u8], pos: usize) -> bool {
@@ -210,7 +645,15 @@ fn validate_jpeg_jfif(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 11) {
         return true;
     }
-    &data[pos + 6..pos + 11] == b"JFIF\x00"
+    if &data[pos + 6..pos + 11] != b"JFIF\x00" {
+        return false;
+    }
+    // Reject embedded thumbnails.
+    // A JPEG thumbnail embedded inside an EXIF APP1 segment starts with the
+    // same FF D8 magic.  If a preceding SOI (FF D8) appears in the lookback
+    // buffer with no matching EOI (FF D9) between it and `pos`, this hit is
+    // nested inside an outer JPEG and should be discarded.
+    !jpeg_is_embedded(data, pos)
 }
 
 fn validate_jpeg_exif(data: &[u8], pos: usize) -> bool {
@@ -218,7 +661,64 @@ fn validate_jpeg_exif(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 10) {
         return true;
     }
-    &data[pos + 6..pos + 10] == b"Exif"
+    if &data[pos + 6..pos + 10] != b"Exif" {
+        return false;
+    }
+    !jpeg_is_embedded(data, pos)
+}
+
+/// Returns `true` when `pos` appears to be an embedded JPEG (thumbnail) inside
+/// an outer JPEG that is already present in the lookback buffer.
+///
+/// Strategy: search backward from `pos` for a JPEG SOI marker (`FF D8`).  If
+/// one is found with no intervening EOI (`FF D9`) between it and `pos`, the
+/// current hit is nested — it is a thumbnail, not an independent file.
+///
+/// False negatives (outer SOI straddling a chunk boundary) may still produce
+/// one extra hit per boundary; those are tolerable and rare.
+fn jpeg_is_embedded(data: &[u8], pos: usize) -> bool {
+    if pos < 2 {
+        return false;
+    }
+    let lookback = &data[..pos];
+    // Walk backward looking for FF D8.
+    let mut end = lookback.len();
+    loop {
+        let Some(ff_pos) = memchr::memrchr(0xFF, &lookback[..end]) else {
+            break;
+        };
+        if ff_pos + 1 < lookback.len() && lookback[ff_pos + 1] == 0xD8 {
+            // Found a preceding SOI.  Check for EOI between it and pos.
+            let between = &lookback[ff_pos + 2..];
+            if !jpeg_has_eoi(between) {
+                return true; // no EOI → embedded thumbnail
+            }
+            // EOI found → the outer JPEG ended before us; we are independent.
+            return false;
+        }
+        if ff_pos == 0 {
+            break;
+        }
+        end = ff_pos;
+    }
+    false
+}
+
+/// Returns `true` if `data` contains a JPEG EOI marker (`FF D9`).
+#[inline]
+fn jpeg_has_eoi(data: &[u8]) -> bool {
+    let mut start = 0;
+    while start < data.len() {
+        let Some(rel) = memchr::memchr(0xFF, &data[start..]) else {
+            break;
+        };
+        let abs = start + rel;
+        if abs + 1 < data.len() && data[abs + 1] == 0xD9 {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
 }
 
 fn validate_png(data: &[u8], pos: usize) -> bool {
@@ -252,11 +752,35 @@ fn validate_gif(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_bmp(data: &[u8], pos: usize) -> bool {
-    // DIB header size (u32 LE) at offset 14 must be a known value.
-    // Known sizes: 12 (CORE), 40 (INFO), 52, 56 (INFO v2/v3), 108 (V4), 124 (V5).
+    // BMP file layout (all offsets from pos):
+    //   0-1  "BM"  (magic — already matched by scanner)
+    //   2-5  FileSize (u32 LE)
+    //   10-13 PixelDataOffset (u32 LE)
+    //   14-17 DIB header size (u32 LE)
     if need(data, pos, 18) {
         return true;
     }
+
+    // FileSize must be at least 26 bytes (smallest theoretically valid BMP).
+    let file_size =
+        u32::from_le_bytes([data[pos + 2], data[pos + 3], data[pos + 4], data[pos + 5]]);
+    if file_size < 26 {
+        return false;
+    }
+
+    // PixelDataOffset must be >= 14 (past the file header) and <= FileSize.
+    let pixel_offset = u32::from_le_bytes([
+        data[pos + 10],
+        data[pos + 11],
+        data[pos + 12],
+        data[pos + 13],
+    ]);
+    if pixel_offset < 14 || pixel_offset > file_size {
+        return false;
+    }
+
+    // DIB header size must be a known value.
+    // Known sizes: 12 (CORE), 40 (INFO), 52, 56 (INFO v2/v3), 108 (V4), 124 (V5).
     let dib_size = u32::from_le_bytes([
         data[pos + 14],
         data[pos + 15],
@@ -286,9 +810,8 @@ fn validate_mp3(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_mp4(data: &[u8], pos: usize) -> bool {
-    // [ftyp box size: u32 BE][ftyp][brand: 4 bytes]
-    // Box size must be in [12, 512] (reasonable for an ftyp box).
-    // Brand bytes must be printable ASCII (0x20-0x7E).
+    // Layout: [box_size: u32 BE][ftyp][major_brand: 4B][minor_ver: 4B][compat…]
+    // `pos` is the start of the ftyp box (the scanner wildcards the 4-byte size).
     if need(data, pos, 12) {
         return true;
     }
@@ -296,9 +819,51 @@ fn validate_mp4(data: &[u8], pos: usize) -> bool {
     if !(12..=512).contains(&box_size) {
         return false;
     }
-    data[pos + 8..pos + 12]
+    // Major brand (bytes 8-11) must be printable ASCII.
+    if !data[pos + 8..pos + 12]
         .iter()
         .all(|b| (0x20..=0x7E).contains(b))
+    {
+        return false;
+    }
+
+    // Reject brands handled by dedicated signatures to avoid duplicate output.
+    let brand = &data[pos + 8..pos + 12];
+    if brand == b"qt  "
+        || brand == b"M4V "
+        || brand.starts_with(b"3gp")
+        || brand.starts_with(b"3g2")
+    {
+        return false;
+    }
+
+    // Look-ahead: verify the box immediately after the ftyp box is also a
+    // plausible ISOBMFF box.  In a real MP4 the next box is always one of
+    // `moov`, `mdat`, `free`, `skip`, `wide`, `moof`, `meta`, `uuid`, etc.
+    // Random H.264/H.265 data inside an mdat region is very unlikely to
+    // produce two consecutive valid-looking ISOBMFF boxes.
+    let next = pos + box_size as usize;
+    if next + 8 <= data.len() {
+        let next_size =
+            u32::from_be_bytes([data[next], data[next + 1], data[next + 2], data[next + 3]]);
+        // Minimum valid box is 8 bytes (size + type with no payload).
+        if next_size < 8 {
+            return false;
+        }
+        // Next box type must be 4 ASCII letter/digit/space bytes — the full
+        // ISOBMFF type alphabet.  Control characters and high bytes are
+        // rejected; punctuation is also rejected to avoid gibberish from
+        // encoded video data.
+        let next_type = &data[next + 4..next + 8];
+        if !next_type
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b' ')
+        {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn validate_rar(data: &[u8], pos: usize) -> bool {
@@ -331,12 +896,48 @@ fn validate_sqlite(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_mkv(data: &[u8], pos: usize) -> bool {
-    // EBML element size is VINT-encoded; its leading byte (pos+4) must be
-    // non-zero (a zero byte would indicate an impossibly wide VINT).
+    // EBML element: \x1A\x45\xDF\xA3 [VINT size] [sub-elements…]
+    // The VINT leading byte (pos+4) must be non-zero.
     if need(data, pos, 5) {
         return true;
     }
-    data[pos + 4] != 0x00
+    if data[pos + 4] == 0x00 {
+        return false;
+    }
+
+    // Look ahead for the EBML DocType element (ID bytes 0x42 0x82).
+    // It is always present within the first 80 bytes of every valid
+    // MKV or WebM file and its value is "matroska" or "webm".
+    // If we can read the full window and find no DocType, this is not MKV.
+    const WINDOW: usize = 80;
+    let search_end = data.len().min(pos + WINDOW);
+    let have_full_window = search_end == pos + WINDOW;
+    let window = &data[pos + 5..search_end];
+
+    let mut i = 0;
+    while i + 1 < window.len() {
+        if window[i] == 0x42 && window[i + 1] == 0x82 {
+            // DocType element found. Next byte is a VINT-encoded length.
+            if i + 2 >= window.len() {
+                return true; // can't read length — benefit of doubt
+            }
+            let vint = window[i + 2];
+            if vint & 0x80 != 0 {
+                // Single-byte VINT: lower 7 bits are the string length.
+                let doc_len = (vint & 0x7F) as usize;
+                let doc_start = i + 3;
+                if doc_start + doc_len <= window.len() {
+                    let doc = &window[doc_start..doc_start + doc_len];
+                    return doc == b"matroska";
+                }
+            }
+            return true; // DocType found but value straddles boundary
+        }
+        i += 1;
+    }
+
+    // Searched the full window and found no DocType → not MKV/WebM.
+    !have_full_window
 }
 
 fn validate_flac(data: &[u8], pos: usize) -> bool {
@@ -348,8 +949,8 @@ fn validate_flac(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_exe(data: &[u8], pos: usize) -> bool {
-    // e_lfanew (u32 LE) at offset 60: byte offset from start of file to PE header.
-    // Must be in [64, 16384] for a plausible PE file.
+    // MZ DOS header: e_lfanew (u32 LE) at offset 60 is the byte offset to the
+    // PE header.  Must be in [64, 16384] for a plausible PE file.
     if need(data, pos, 64) {
         return true;
     }
@@ -358,8 +959,20 @@ fn validate_exe(data: &[u8], pos: usize) -> bool {
         data[pos + 61],
         data[pos + 62],
         data[pos + 63],
-    ]);
-    (64..=16384).contains(&e_lfanew)
+    ]) as usize;
+    if !(64..=16384).contains(&e_lfanew) {
+        return false;
+    }
+    // Look-ahead: verify the PE signature (`PE\0\0`) at the e_lfanew offset.
+    // This is a near-certain discriminator — random data that both (a) passes
+    // the e_lfanew range check AND (b) has `PE\0\0` at that exact variable
+    // offset is essentially impossible.  When the PE header falls outside the
+    // current scan chunk we give benefit of the doubt.
+    let pe_pos = pos + e_lfanew;
+    if pe_pos + 4 <= data.len() {
+        return &data[pe_pos..pe_pos + 4] == b"PE\x00\x00";
+    }
+    true
 }
 
 fn validate_vmdk(data: &[u8], pos: usize) -> bool {
@@ -381,9 +994,23 @@ fn validate_ogg(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_evtx(data: &[u8], pos: usize) -> bool {
-    // ElfFile\0 ... MajorVersion (u16 LE) at offset 38 must be 3.
-    if need(data, pos, 40) {
+    // EVTX file header layout (offsets from pos):
+    //   0-7   "ElfFile\0"  (magic — already matched)
+    //   32-35  HeaderSize (u32 LE) — always 128
+    //   36-37  MinorVersion (u16 LE) — always 1
+    //   38-39  MajorVersion (u16 LE) — always 3
+    if need(data, pos, 42) {
         return true;
+    }
+    // HeaderSize is a fixed constant in all known EVTX files.
+    let header_size = u32::from_le_bytes([
+        data[pos + 32],
+        data[pos + 33],
+        data[pos + 34],
+        data[pos + 35],
+    ]);
+    if header_size != 128 {
+        return false;
     }
     let major = u16::from_le_bytes([data[pos + 38], data[pos + 39]]);
     major == 3
@@ -451,6 +1078,1027 @@ fn validate_ole2(data: &[u8], pos: usize) -> bool {
     data[pos + 28] == 0xFE && data[pos + 29] == 0xFF
 }
 
+fn validate_arw(data: &[u8], pos: usize) -> bool {
+    // Sony ARW: TIFF little-endian with IFD at offset 8 (anchored in magic).
+    // Verify a plausible IFD entry count, then search for "SONY" within the
+    // first 512 bytes — the Make IFD value is always in this region.
+    // Rejects Sony SR2: those have private tag 0x7200 in IFD0.
+    if need(data, pos, 10) {
+        return true;
+    }
+    let entry_count = u16::from_le_bytes([data[pos + 8], data[pos + 9]]) as usize;
+    if !(5..=50).contains(&entry_count) {
+        return false;
+    }
+    let window_end = data.len().min(pos + 512);
+    if !data[pos..window_end].windows(4).any(|w| w == b"SONY") {
+        return false;
+    }
+    // Reject SR2: private tag 0x7200 present as IFD entry (LE tag bytes 0x00 0x72).
+    // IFD0 entries start at byte 10; each entry is 12 bytes.
+    let ifd_entries_end = (pos + 10 + entry_count * 12).min(data.len());
+    let has_sr2_tag = (pos + 10..ifd_entries_end)
+        .step_by(12)
+        .any(|e| e + 2 <= data.len() && data[e] == 0x00 && data[e + 1] == 0x72);
+    !has_sr2_tag
+}
+
+fn validate_cr2(data: &[u8], pos: usize) -> bool {
+    // Canon CR2: TIFF LE magic + IFD offset (wildcard) + CR\x02\x00 at +8.
+    // The CR marker bytes are already guaranteed by the scan magic; here we
+    // just verify the IFD offset at +4 is plausible (8–4096 bytes).
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_offset =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
+    (8..=4096).contains(&ifd_offset)
+}
+
+fn validate_rw2(data: &[u8], pos: usize) -> bool {
+    // Panasonic RW2: TIFF variant magic II\x55\x00 (already matched).
+    // Verify the IFD0 offset at +4 and a plausible IFD entry count.
+    if need(data, pos, 10) {
+        return true;
+    }
+    let ifd_offset =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
+    if !(8..=4096).contains(&ifd_offset) {
+        return false;
+    }
+    let ifd_pos = pos + ifd_offset;
+    if ifd_pos + 2 > data.len() {
+        return true; // IFD outside current chunk — benefit of doubt
+    }
+    let entry_count = u16::from_le_bytes([data[ifd_pos], data[ifd_pos + 1]]) as usize;
+    (3..=50).contains(&entry_count)
+}
+
+fn validate_raf(data: &[u8], pos: usize) -> bool {
+    // Fujifilm RAF: "FUJIFILMCCD-RAW " (16 bytes) + 4-digit version string.
+    // Magic anchors on the first 15 bytes; check the space at +15 and that
+    // bytes +16..+20 are ASCII decimal digits (e.g. "0201").
+    if need(data, pos, 20) {
+        return true;
+    }
+    data[pos + 15] == b' ' && data[pos + 16..pos + 20].iter().all(|b| b.is_ascii_digit())
+}
+
+fn validate_tiff_le(data: &[u8], pos: usize) -> bool {
+    // Generic little-endian TIFF (II\x2A\x00).
+    // 1. IFD0 offset (u32 LE @ +4) must be in [8, 65536].
+    // 2. Reject Sony ARW ("SONY" in first 512 bytes — use dedicated .arw signature).
+    // 3. Reject Canon CR2 (CR\x02\x00 at offset +8 — use dedicated .cr2 signature).
+    // 4. Reject Nikon NEF ("NIKON" in first 512 bytes — use dedicated .nef signature).
+    // 5. IFD entry count at IFD0 offset must be in [1, 500] (if within chunk).
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_off =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
+    if !(8..=65536).contains(&ifd_off) {
+        return false;
+    }
+    // Reject CR2 (Canon marker)
+    if data.len() >= pos + 12 && &data[pos + 8..pos + 12] == b"CR\x02\x00" {
+        return false;
+    }
+    let window_end = data.len().min(pos + 512);
+    let window = &data[pos..window_end];
+    // Reject ARW (Sony)
+    if window.windows(4).any(|w| w == b"SONY") {
+        return false;
+    }
+    // Reject NEF (Nikon) — has its own signature
+    if window.windows(5).any(|w| w == b"NIKON") {
+        return false;
+    }
+    // Reject DCR (Kodak) — has its own signature
+    if window.windows(5).any(|w| w == b"Kodak" || w == b"KODAK") {
+        return false;
+    }
+    // Plausible IFD entry count
+    if data.len() >= pos + ifd_off + 2 {
+        let entry_count =
+            u16::from_le_bytes([data[pos + ifd_off], data[pos + ifd_off + 1]]) as usize;
+        if !(1..=500).contains(&entry_count) {
+            return false;
+        }
+    }
+    true
+}
+
+fn validate_tiff_be(data: &[u8], pos: usize) -> bool {
+    // Generic big-endian TIFF (MM\x00\x2A).
+    // IFD0 offset (u32 BE @ +4) must be in [8, 65536].
+    // IFD entry count at IFD0 must be in [1, 500] (if within chunk).
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_off =
+        u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
+    if !(8..=65536).contains(&ifd_off) {
+        return false;
+    }
+    if data.len() >= pos + ifd_off + 2 {
+        let entry_count =
+            u16::from_be_bytes([data[pos + ifd_off], data[pos + ifd_off + 1]]) as usize;
+        if !(1..=500).contains(&entry_count) {
+            return false;
+        }
+    }
+    true
+}
+
+fn validate_nef(data: &[u8], pos: usize) -> bool {
+    // Nikon NEF: TIFF LE file with "NIKON" manufacturer string in first 512 bytes.
+    // IFD0 offset (u32 LE @ +4) must also be in [8, 4096].
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_off =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
+    if !(8..=4096).contains(&ifd_off) {
+        return false;
+    }
+    let window_end = data.len().min(pos + 512);
+    data[pos..window_end].windows(5).any(|w| w == b"NIKON")
+}
+
+fn validate_heic(data: &[u8], pos: usize) -> bool {
+    // Apple HEIC / HEIF: ftyp box with heic or heix major brand.
+    // Magic already anchors on "ftyp" + first 3 brand bytes ("hei").
+    // The 12-byte signature covers the full brand; here we just verify
+    // the ftyp box size (u32 BE @ pos) is in [12, 512].
+    // Require 8 bytes so a short chunk gets benefit of doubt.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
+fn validate_mov(data: &[u8], pos: usize) -> bool {
+    // QuickTime MOV: magic anchors on ftyp + "qt  " brand (12 bytes).
+    // Validate that the ftyp box size (u32 BE @pos) is in [12, 512].
+    if need(data, pos, 12) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
+fn validate_m4v(data: &[u8], pos: usize) -> bool {
+    // iTunes M4V: magic anchors on ftyp + "M4V " brand (12 bytes).
+    // Validate that the ftyp box size (u32 BE @pos) is in [12, 512].
+    if need(data, pos, 12) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
+fn validate_3gp(data: &[u8], pos: usize) -> bool {
+    // 3GPP / 3GPP2: magic anchors on ftyp + "3g" (10 bytes).
+    // Full brand (bytes 8-11) must start with "3gp" or "3g2".
+    // Box size (u32 BE @pos) must be in [12, 512].
+    if need(data, pos, 12) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    if !(12..=512).contains(&box_size) {
+        return false;
+    }
+    let brand = &data[pos + 8..pos + 12];
+    brand.starts_with(b"3gp") || brand.starts_with(b"3g2")
+}
+
+fn validate_webm(data: &[u8], pos: usize) -> bool {
+    // WebM: EBML file with DocType element == "webm" (not "matroska").
+    // Identical structure to MKV; only the expected DocType string differs.
+    if need(data, pos, 5) {
+        return true;
+    }
+    if data[pos + 4] == 0x00 {
+        return false;
+    }
+    const WINDOW: usize = 80;
+    let search_end = data.len().min(pos + WINDOW);
+    let have_full_window = search_end == pos + WINDOW;
+    let window = &data[pos + 5..search_end];
+    let mut i = 0;
+    while i + 1 < window.len() {
+        if window[i] == 0x42 && window[i + 1] == 0x82 {
+            if i + 2 >= window.len() {
+                return true;
+            }
+            let vint = window[i + 2];
+            if vint & 0x80 != 0 {
+                let doc_len = (vint & 0x7F) as usize;
+                let doc_start = i + 3;
+                if doc_start + doc_len <= window.len() {
+                    let doc = &window[doc_start..doc_start + doc_len];
+                    return doc == b"webm";
+                }
+            }
+            return true;
+        }
+        i += 1;
+    }
+    !have_full_window
+}
+
+fn validate_wmv(data: &[u8], pos: usize) -> bool {
+    // ASF Header Object: 16-byte GUID at pos, then u64 LE object size @16.
+    // Object size must be ≥ 30 (minimum valid ASF header body).
+    if need(data, pos, 24) {
+        return true;
+    }
+    let size_bytes: [u8; 8] = data[pos + 16..pos + 24].try_into().unwrap();
+    u64::from_le_bytes(size_bytes) >= 30
+}
+
+fn validate_flv(data: &[u8], pos: usize) -> bool {
+    // FLV file header (9 bytes): "FLV" + version(0x01) + type_flags + data_offset(u32 BE).
+    // Reserved bits in type_flags (offset 4) must be zero: bits 7-3 and bit 1.
+    // DataOffset (u32 BE @5) must be 9 for version 1.
+    if need(data, pos, 9) {
+        return true;
+    }
+    if data[pos + 4] & 0b1111_1010 != 0 {
+        return false;
+    }
+    let offset = u32::from_be_bytes([data[pos + 5], data[pos + 6], data[pos + 7], data[pos + 8]]);
+    offset == 9
+}
+
+fn validate_mpeg(data: &[u8], pos: usize) -> bool {
+    // MPEG Program Stream pack header: 00 00 01 BA + 9 bytes of SCR/mux_rate fields.
+    //
+    // The ISO 13818-1 standard mandates several fixed "marker_bit = 1" positions
+    // within the pack header.  Checking all of them simultaneously reduces the
+    // false-positive rate to ~1-in-256 on random data and near-zero on H.264/H.265
+    // Annex-B NAL streams (which also contain `00 00 01 BA` bytes in video payload).
+    //
+    // MPEG-2 pack header layout (offsets relative to `pos`):
+    //   +4 : 01 SCR_b[32:30] M SCR_b[29:28]   — bit 2 must be 1 (marker)
+    //   +5 : SCR_b[27:20]
+    //   +6 : SCR_b[19:15] M SCR_b[14:13]      — bit 2 must be 1 (marker)
+    //   +7 : SCR_b[12:5]
+    //   +8 : SCR_b[4:0]  M  SCR_ext[8:7]      — bit 2 must be 1 (marker)
+    //   +9 : SCR_ext[6:0] M                   — bit 0 must be 1 (marker)
+    //  +10 : mux_rate[21:14]
+    //  +11 : mux_rate[13:6]
+    //  +12 : mux_rate[5:0] M M                — bits 1:0 must be 11 (two markers)
+    //  +13 : 1 1 1 1 1 stuffing_length[2:0]   — top 5 bits must be 11111
+    if need(data, pos, 5) {
+        return true;
+    }
+    let b4 = data[pos + 4];
+    if (b4 & 0xC0) == 0x40 {
+        // MPEG-2: verify all mandatory marker bits in the 14-byte pack header.
+        if need(data, pos, 14) {
+            return true; // short buffer — benefit of doubt
+        }
+        (b4 & 0x04 != 0)                     // byte  4, bit 2: marker
+            && (data[pos + 6] & 0x04 != 0)   // byte  6, bit 2: marker
+            && (data[pos + 8] & 0x04 != 0)   // byte  8, bit 2: marker
+            && (data[pos + 9] & 0x01 != 0)   // byte  9, bit 0: marker
+            && (data[pos + 12] & 0x03 == 0x03) // byte 12, bits 1:0: two markers
+            && (data[pos + 13] & 0xF8 == 0xF8) // byte 13, top 5: stuffing fixed bits
+    } else if (b4 & 0xF0) == 0x20 {
+        // MPEG-1: bit 0 of byte 4 is a marker bit in the SCR field.
+        b4 & 0x01 != 0
+    } else {
+        false
+    }
+}
+
+fn validate_webp(data: &[u8], pos: usize) -> bool {
+    // RIFF + 4-byte size + "WEBP" subtype (12 bytes total).
+    // Magic already anchors on RIFF[0..4] + WEBP[8..12]; re-check WEBP and
+    // verify the RIFF chunk size (u32 LE @4) is ≥ 4 (minimum: 4 bytes for "WEBP").
+    if need(data, pos, 12) {
+        return true;
+    }
+    if &data[pos + 8..pos + 12] != b"WEBP" {
+        return false;
+    }
+    let riff_size =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    riff_size >= 4
+}
+
+fn validate_m4a(data: &[u8], pos: usize) -> bool {
+    // ISOBMFF ftyp box with "M4A " major brand.
+    // Magic already anchors on ftyp + "M4A "; validate ftyp box size in [12, 512].
+    if need(data, pos, 12) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
+fn validate_gz(data: &[u8], pos: usize) -> bool {
+    // GZip: ID1=0x1F ID2=0x8B CM=8 FLG.
+    // RFC 1952: byte @2 is compression method (must be 8); byte @3 is FLG
+    // where bit 5 (0x20) is a reserved bit that must be zero.
+    if need(data, pos, 10) {
+        return true;
+    }
+    data[pos + 2] == 8 && (data[pos + 3] & 0x20 == 0)
+}
+
+fn validate_eml(data: &[u8], pos: usize) -> bool {
+    // "From " (5 bytes) must be followed by a printable ASCII character
+    // (0x20–0x7E) to distinguish real mbox headers from binary data.
+    if need(data, pos, 6) {
+        return true;
+    }
+    let next = data[pos + 5];
+    (0x20..=0x7E).contains(&next)
+}
+
+fn validate_elf(data: &[u8], pos: usize) -> bool {
+    // ELF e_ident: 7F ELF EI_CLASS EI_DATA EI_VERSION ...
+    // EI_CLASS @4: 1 = 32-bit, 2 = 64-bit.
+    // EI_DATA  @5: 1 = little-endian, 2 = big-endian.
+    // EI_VERSION @6: must be 1.
+    if need(data, pos, 16) {
+        return true;
+    }
+    let ei_class = data[pos + 4];
+    let ei_data = data[pos + 5];
+    let ei_version = data[pos + 6];
+    matches!(ei_class, 1 | 2) && matches!(ei_data, 1 | 2) && ei_version == 1
+}
+
+fn validate_regf(data: &[u8], pos: usize) -> bool {
+    // Windows Registry REGF hive.
+    // Major version (u32 LE @20) must be 1.
+    // Minor version (u32 LE @24) must be in [2, 6].
+    if need(data, pos, 28) {
+        return true;
+    }
+    let major = u32::from_le_bytes([
+        data[pos + 20],
+        data[pos + 21],
+        data[pos + 22],
+        data[pos + 23],
+    ]);
+    let minor = u32::from_le_bytes([
+        data[pos + 24],
+        data[pos + 25],
+        data[pos + 26],
+        data[pos + 27],
+    ]);
+    major == 1 && (2..=6).contains(&minor)
+}
+
+fn validate_psd(data: &[u8], pos: usize) -> bool {
+    // Adobe Photoshop Document: "8BPS" magic + version + reserved + channels.
+    // Version (u16 BE @4): 1 = PSD, 2 = PSB.
+    // Number of channels (u16 BE @6): must be in [1, 56].
+    if need(data, pos, 26) {
+        return true;
+    }
+    let version = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+    if !matches!(version, 1 | 2) {
+        return false;
+    }
+    let channels = u16::from_be_bytes([data[pos + 6], data[pos + 7]]);
+    (1..=56).contains(&channels)
+}
+
+fn validate_vhd(data: &[u8], pos: usize) -> bool {
+    // VHD footer: "conectix" creator string (already matched by magic).
+    // Disk type (u32 BE @60): 2 = fixed, 3 = dynamic, 4 = differencing.
+    if need(data, pos, 68) {
+        return true;
+    }
+    let disk_type = u32::from_be_bytes([
+        data[pos + 60],
+        data[pos + 61],
+        data[pos + 62],
+        data[pos + 63],
+    ]);
+    (2..=4).contains(&disk_type)
+}
+
+fn validate_vhdx(data: &[u8], pos: usize) -> bool {
+    // VHDX: "vhdxfile" (8 bytes) — globally unique, no additional check needed.
+    // Return benefit of doubt when the buffer is short; accept when magic present.
+    if need(data, pos, 8) {
+        return true;
+    }
+    true
+}
+
+fn validate_qcow2(data: &[u8], pos: usize) -> bool {
+    // QCOW2: QFI\xFB magic + version (u32 BE @4) in {2,3} +
+    // cluster_bits (u32 BE @20) in [9, 21].
+    if need(data, pos, 24) {
+        return true;
+    }
+    let version = u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if !matches!(version, 2 | 3) {
+        return false;
+    }
+    let cluster_bits = u32::from_be_bytes([
+        data[pos + 20],
+        data[pos + 21],
+        data[pos + 22],
+        data[pos + 23],
+    ]);
+    (9..=21).contains(&cluster_bits)
+}
+
+// ── Phase 52 validators ───────────────────────────────────────────────────────
+
+/// MIDI — Standard MIDI File header chunk.
+/// Chunk length (u32 BE @4) must be 6; format (u16 BE @8) must be 0, 1, or 2.
+fn validate_midi(data: &[u8], pos: usize) -> bool {
+    let end = pos + 10;
+    if data.len() < end {
+        return true;
+    }
+    let chunk_len =
+        u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if chunk_len != 6 {
+        return false;
+    }
+    let format = u16::from_be_bytes([data[pos + 8], data[pos + 9]]);
+    format <= 2
+}
+
+/// AIFF / AIFC — IFF FORM chunk with AIFF or AIFC sub-type.
+/// Byte @11 must be 'F' (AIFF) or 'C' (AIFC); FORM data size must be > 4.
+fn validate_aiff(data: &[u8], pos: usize) -> bool {
+    let end = pos + 12;
+    if data.len() < end {
+        return true;
+    }
+    let subtype = data[pos + 11];
+    if subtype != b'F' && subtype != b'C' {
+        return false;
+    }
+    let form_size =
+        u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    form_size > 4
+}
+
+/// XZ compressed stream.
+/// Byte @6 must be 0x00 (reserved); byte @7 check type must be in
+/// {0x00=none, 0x01=CRC-32, 0x04=CRC-64, 0x0A=SHA-256}.
+fn validate_xz(data: &[u8], pos: usize) -> bool {
+    let end = pos + 8;
+    if data.len() < end {
+        return true;
+    }
+    if data[pos + 6] != 0x00 {
+        return false;
+    }
+    matches!(data[pos + 7], 0x00 | 0x01 | 0x04 | 0x0A)
+}
+
+/// BZip2 compressed file.
+/// Byte @3 must be a level digit '1'-'9' (0x31-0x39).
+/// Bytes @4-9 must match the BWT block magic constant (Pi in packed binary):
+/// 0x31 0x41 0x59 0x26 0x53 0x59.
+fn validate_bzip2(data: &[u8], pos: usize) -> bool {
+    let end = pos + 10;
+    if data.len() < end {
+        return true;
+    }
+    let level = data[pos + 3];
+    if !(b'1'..=b'9').contains(&level) {
+        return false;
+    }
+    const BLOCK_MAGIC: [u8; 6] = [0x31, 0x41, 0x59, 0x26, 0x53, 0x59];
+    data[pos + 4..pos + 10] == BLOCK_MAGIC
+}
+
+/// RealMedia File Format (.RMF).
+/// Object version (u16 BE @4) must be 0 or 1.
+/// Header size (u32 BE @6) must be >= 18.
+fn validate_realmedia(data: &[u8], pos: usize) -> bool {
+    let end = pos + 10;
+    if data.len() < end {
+        return true;
+    }
+    let obj_version = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+    if obj_version > 1 {
+        return false;
+    }
+    let header_size =
+        u32::from_be_bytes([data[pos + 6], data[pos + 7], data[pos + 8], data[pos + 9]]);
+    header_size >= 18
+}
+
+/// Windows ICO file.
+/// Image count (u16 LE @4) must be in [1, 200].
+fn validate_ico(data: &[u8], pos: usize) -> bool {
+    let end = pos + 6;
+    if data.len() < end {
+        return true;
+    }
+    let count = u16::from_le_bytes([data[pos + 4], data[pos + 5]]);
+    (1..=200).contains(&count)
+}
+
+/// Olympus ORF (TIFF LE with RO magic 0x524F).
+/// IFD offset (u32 LE @4) must be in [8, 4096].
+fn validate_orf(data: &[u8], pos: usize) -> bool {
+    let end = pos + 8;
+    if data.len() < end {
+        return true;
+    }
+    let ifd_offset =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    (8..=4096).contains(&ifd_offset)
+}
+
+/// Pentax PEF (TIFF LE file with "PENTAX " string in first 512 bytes).
+/// IFD offset (u32 LE @4) must also be in [8, 4096].
+fn validate_pef(data: &[u8], pos: usize) -> bool {
+    let end = pos + 8;
+    if data.len() < end {
+        return true;
+    }
+    let ifd_offset =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if !(8..=4096).contains(&ifd_offset) {
+        return false;
+    }
+    let scan_end = (pos + 512).min(data.len());
+    data[pos..scan_end].windows(7).any(|w| w == b"PENTAX ")
+}
+
+/// Mach-O 64-bit little-endian executable.
+/// filetype (u32 LE @12) must be in [1, 12]; ncmds (u32 LE @16) in [1, 512].
+fn validate_macho(data: &[u8], pos: usize) -> bool {
+    let end = pos + 20;
+    if data.len() < end {
+        return true;
+    }
+    let filetype = u32::from_le_bytes([
+        data[pos + 12],
+        data[pos + 13],
+        data[pos + 14],
+        data[pos + 15],
+    ]);
+    if !(1..=12).contains(&filetype) {
+        return false;
+    }
+    let ncmds = u32::from_le_bytes([
+        data[pos + 16],
+        data[pos + 17],
+        data[pos + 18],
+        data[pos + 19],
+    ]);
+    (1..=512).contains(&ncmds)
+}
+
+fn validate_cr3(data: &[u8], pos: usize) -> bool {
+    // Canon CR3: ISOBMFF ftyp box with "crx " brand.
+    // Magic anchors bytes 4-11 ("ftypcrx "); validate box size (u32 BE @pos) in [12, 512].
+    if need(data, pos, 8) {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+    (12..=512).contains(&box_size)
+}
+
+fn validate_sr2(data: &[u8], pos: usize) -> bool {
+    // Sony SR2: TIFF LE with IFD at offset 8 (anchored in magic).
+    // Requires "SONY" in first 512 bytes AND private tag 0x7200 (SR2Private) as an
+    // IFD0 entry — uniquely present in SR2, absent in ARW.
+    if need(data, pos, 10) {
+        return true;
+    }
+    let entry_count = u16::from_le_bytes([data[pos + 8], data[pos + 9]]) as usize;
+    if !(3..=50).contains(&entry_count) {
+        return false;
+    }
+    let window_end = data.len().min(pos + 512);
+    if !data[pos..window_end].windows(4).any(|w| w == b"SONY") {
+        return false;
+    }
+    // Check for tag 0x7200 (SR2Private) in IFD0 entries.
+    // Each entry is 12 bytes; the tag is the first 2 bytes in LE (0x00 0x72).
+    let ifd_entries_end = (pos + 10 + entry_count * 12).min(data.len());
+    (pos + 10..ifd_entries_end)
+        .step_by(12)
+        .any(|e| e + 2 <= data.len() && data[e] == 0x00 && data[e + 1] == 0x72)
+}
+
+fn validate_epub(data: &[u8], pos: usize) -> bool {
+    // EPUB: ZIP container.  First local file entry must be named "mimetype" (8 bytes,
+    // uncompressed store, no extra field typical) and its content contains "epub+zip".
+    // ZIP LFH layout: +26 fname_len (u16 LE), +28 extra_len (u16 LE), +30 fname.
+    if need(data, pos, 38) {
+        return true;
+    }
+    let fname_len = u16::from_le_bytes([data[pos + 26], data[pos + 27]]) as usize;
+    if fname_len != 8 {
+        return false;
+    }
+    if &data[pos + 30..pos + 38] != b"mimetype" {
+        return false;
+    }
+    let extra_len = u16::from_le_bytes([data[pos + 28], data[pos + 29]]) as usize;
+    let content_start = pos + 30 + fname_len + extra_len;
+    if content_start >= data.len() {
+        return true; // content straddles chunk boundary — benefit of doubt
+    }
+    let content_end = data.len().min(content_start + 32);
+    data[content_start..content_end]
+        .windows(8)
+        .any(|w| w == b"epub+zip")
+}
+
+fn validate_odt(data: &[u8], pos: usize) -> bool {
+    // OpenDocument (ODT/ODS/ODP/…): ZIP container.  First local file entry must be
+    // named "mimetype" and its content contains "opendocument" (covers all ODF subtypes).
+    if need(data, pos, 38) {
+        return true;
+    }
+    let fname_len = u16::from_le_bytes([data[pos + 26], data[pos + 27]]) as usize;
+    if fname_len != 8 {
+        return false;
+    }
+    if &data[pos + 30..pos + 38] != b"mimetype" {
+        return false;
+    }
+    // Reject EPUB — it also has fname="mimetype" but different content.
+    let extra_len = u16::from_le_bytes([data[pos + 28], data[pos + 29]]) as usize;
+    let content_start = pos + 30 + fname_len + extra_len;
+    if content_start >= data.len() {
+        return true;
+    }
+    let content_end = data.len().min(content_start + 50);
+    data[content_start..content_end]
+        .windows(12)
+        .any(|w| w == b"opendocument")
+}
+
+fn validate_msg(data: &[u8], pos: usize) -> bool {
+    // Outlook MSG: OLE2 compound document.
+    // ByteOrder field (u16 LE @28) must equal 0xFFFE (standard OLE2).
+    // Scan first 4 KiB for the MAPI stream name "__substg1.0_" — present in all
+    // MSG files, absent in DOC/XLS/PPT compound documents.
+    if need(data, pos, 30) {
+        return true;
+    }
+    let byte_order = u16::from_le_bytes([data[pos + 28], data[pos + 29]]);
+    if byte_order != 0xFFFE {
+        return false;
+    }
+    let scan_end = data.len().min(pos + 4096);
+    data[pos..scan_end]
+        .windows(12)
+        .any(|w| w == b"__substg1.0_")
+}
+
+fn validate_wavpack(data: &[u8], pos: usize) -> bool {
+    // WavPack: "wvpk" block header (magic already matched).
+    // ck_size (u32 LE @4): block data size minus 8 header bytes; must be > 0.
+    // version (u16 LE @8): WavPack file format version; valid range [0x0402, 0x0410].
+    if need(data, pos, 10) {
+        return true;
+    }
+    let ck_size = u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if ck_size == 0 {
+        return false;
+    }
+    let version = u16::from_le_bytes([data[pos + 8], data[pos + 9]]);
+    (0x0402..=0x0410).contains(&version)
+}
+
+fn validate_cdr(data: &[u8], pos: usize) -> bool {
+    // CorelDRAW CDR: RIFF container.  Magic anchors "CDR" at bytes 8–10.
+    // Byte @11 is the version suffix: '4'–'9' (CDR4–CDR9), 'A'–'Z' (CDRv10+),
+    // or space (some CDR12 variants).
+    if need(data, pos, 12) {
+        return true;
+    }
+    matches!(data[pos + 11], b'4'..=b'9' | b'A'..=b'Z' | b' ')
+}
+
+fn validate_swf(data: &[u8], pos: usize) -> bool {
+    // Shockwave Flash: FWS (uncompressed), CWS (zlib), or ZWS (LZMA).
+    // Version byte @3 must be in [1, 50].
+    // File length (u32 LE @4) must be >= 8 (minimum header size).
+    if need(data, pos, 8) {
+        return true;
+    }
+    let version = data[pos + 3];
+    if !(1..=50).contains(&version) {
+        return false;
+    }
+    let file_len = u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    file_len >= 8
+}
+
+fn validate_dcr(data: &[u8], pos: usize) -> bool {
+    // Kodak DCR: TIFF LE file identified by "Kodak" or "KODAK" Make string in the
+    // first 512 bytes.  IFD0 offset (u32 LE @4) must be in [8, 65536].
+    // Rejects CR2 (Canon marker at +8), NEF (NIKON string), ARW/SR2 (SONY string),
+    // and PEF (PENTAX string) to avoid duplicate hits.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ifd_off =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
+    if !(8..=65536).contains(&ifd_off) {
+        return false;
+    }
+    if data.len() >= pos + 12 && &data[pos + 8..pos + 12] == b"CR\x02\x00" {
+        return false;
+    }
+    let window_end = data.len().min(pos + 512);
+    let window = &data[pos..window_end];
+    if window.windows(5).any(|w| w == b"NIKON") {
+        return false;
+    }
+    if window.windows(4).any(|w| w == b"SONY") {
+        return false;
+    }
+    if window.windows(7).any(|w| w == b"PENTAX ") {
+        return false;
+    }
+    window.windows(5).any(|w| w == b"Kodak" || w == b"KODAK")
+}
+
+fn validate_iso(data: &[u8], pos: usize) -> bool {
+    // ISO 9660: `CD001` magic at offset 32769 within the file (pos points here).
+    // Byte at pos+5 is the Volume Descriptor version — must be 1.
+    // Byte immediately before pos (at pos-1, if present) is the Descriptor Type
+    // — must be 0x01 (Primary Volume Descriptor) or 0xFF (Volume Descriptor Set
+    // Terminator); we accept any type to avoid false negatives on supplementary VDs.
+    if need(data, pos, 6) {
+        return true;
+    }
+    data[pos + 5] == 0x01
+}
+
+fn validate_dicom(data: &[u8], pos: usize) -> bool {
+    // DICOM: `DICM` magic at offset 128 within the file (pos points here).
+    // After the magic, the first data element tag (group + element, 4 bytes)
+    // must be present.  We check that at least 8 bytes are available after pos
+    // (4 for "DICM" already confirmed by magic, 4 for the first tag/VR).
+    !need(data, pos, 8)
+}
+
+fn validate_tar(data: &[u8], pos: usize) -> bool {
+    // POSIX ustar TAR: `ustar\0` magic at offset 257 within a 512-byte header
+    // block (pos points to `ustar\0`).  The 2-byte version field at pos+6 must
+    // be `"00"` (POSIX) or `"  "` (GNU tar ustar variant).
+    if need(data, pos, 8) {
+        return true;
+    }
+    let ver = &data[pos + 6..pos + 8];
+    ver == b"00" || ver == b"  "
+}
+
+fn validate_ape(data: &[u8], pos: usize) -> bool {
+    // Monkey's Audio APE: "MAC " magic (4 bytes), then sub-version (u16 LE @4),
+    // then version (u16 LE @6) which must be in [3930, 4100].
+    if need(data, pos, 8) {
+        return true;
+    }
+    let version = u16::from_le_bytes([data[pos + 6], data[pos + 7]]);
+    (3930..=4100).contains(&version)
+}
+
+fn validate_au(data: &[u8], pos: usize) -> bool {
+    // Sun AU: ".snd" magic (4 bytes), then data_offset (u32 BE @4) >= 24,
+    // and encoding (u32 BE @12) in known valid set.
+    if need(data, pos, 16) {
+        return true;
+    }
+    let data_offset =
+        u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if data_offset < 24 {
+        return false;
+    }
+    let encoding = u32::from_be_bytes([
+        data[pos + 12],
+        data[pos + 13],
+        data[pos + 14],
+        data[pos + 15],
+    ]);
+    // Known encodings: 1=MULAW, 2-7=PCM/float variants, 23-27=G.7xx
+    matches!(encoding, 1..=7 | 23..=27)
+}
+
+fn validate_ttf(data: &[u8], pos: usize) -> bool {
+    // TrueType Font: sfVersion 0x00010000 (4 bytes), then numTables (u16 BE @4) in [4, 50].
+    if need(data, pos, 6) {
+        return true;
+    }
+    let num_tables = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+    (4..=50).contains(&num_tables)
+}
+
+fn validate_woff(data: &[u8], pos: usize) -> bool {
+    // WOFF web font: "wOFF" magic (4 bytes).
+    // flavor @4 (u32 BE) in {0x00010000 TTF, 0x4F54544F OTF, 0x74727565 true}.
+    // length @8 (u32 BE) >= 44 (minimum WOFF header size).
+    // numTables @12 (u16 BE) in [1, 50].
+    if need(data, pos, 14) {
+        return true;
+    }
+    let flavor = u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if !matches!(flavor, 0x0001_0000 | 0x4F54_544F | 0x7472_7565) {
+        return false;
+    }
+    let length = u32::from_be_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    if length < 44 {
+        return false;
+    }
+    let num_tables = u16::from_be_bytes([data[pos + 12], data[pos + 13]]);
+    (1..=50).contains(&num_tables)
+}
+
+fn validate_chm(data: &[u8], pos: usize) -> bool {
+    // CHM: 12-byte magic is fully deterministic (ITSF + version 3 + length 96).
+    // The TOML magic encodes all 12 bytes; just confirm enough data is present.
+    !need(data, pos, 12)
+}
+
+fn validate_blend(data: &[u8], pos: usize) -> bool {
+    // Blender: "BLENDER" (7 bytes), then pointer-size byte @7 in {'-'=32-bit, '_'=64-bit},
+    // then endian byte @8 in {'v'=little-endian, 'V'=big-endian}.
+    if need(data, pos, 9) {
+        return true;
+    }
+    let ptr = data[pos + 7];
+    let endian = data[pos + 8];
+    matches!(ptr, b'-' | b'_') && matches!(endian, b'v' | b'V')
+}
+
+fn validate_indd(data: &[u8], pos: usize) -> bool {
+    // Adobe InDesign: 16-byte GUID is globally unique — already encoded in TOML magic.
+    // Just confirm sufficient data present.
+    !need(data, pos, 16)
+}
+
+fn validate_wtv(data: &[u8], pos: usize) -> bool {
+    // Windows WTV: 16-byte GUID is globally unique — already encoded in TOML magic.
+    // Just confirm sufficient data present.
+    !need(data, pos, 16)
+}
+
+fn validate_php(data: &[u8], pos: usize) -> bool {
+    // PHP: "<?php" opener (5 bytes already matched by magic).
+    // Byte @5 must be whitespace: space, tab, CR, or LF.
+    // This rejects `<?phpinfo()` style obfuscation while accepting all standard
+    // PHP files (`<?php `, `<?php\n`, `<?php\r\n`, `<?php\t`).
+    if need(data, pos, 6) {
+        return true;
+    }
+    matches!(data[pos + 5], b' ' | b'\t' | b'\r' | b'\n')
+}
+
+fn validate_shebang(data: &[u8], pos: usize) -> bool {
+    // Unix shebang: "#!" (2 bytes already matched by magic).
+    // Byte @2 must be '/' — all valid interpreter paths are absolute (e.g. `/bin/sh`,
+    // `/usr/bin/env`).  This rejects false positives from binary data that happen
+    // to contain 0x23 0x21 without a following path.
+    if need(data, pos, 3) {
+        return true;
+    }
+    data[pos + 2] == b'/'
+}
+
+fn validate_crw(data: &[u8], pos: usize) -> bool {
+    // Canon CRW (CIFF): magic `II\x1A\x00\x00\x00HEAPCCDR` — 14 bytes total.
+    // The pre-validator just confirms enough bytes are present; the magic
+    // already encodes the full 14-byte signature.
+    if need(data, pos, 14) {
+        return true;
+    }
+    &data[pos + 6..pos + 14] == b"HEAPCCDR"
+}
+
+fn validate_mrw(data: &[u8], pos: usize) -> bool {
+    // Minolta MRW: `\x00MRM` header (4 bytes), then 4-byte length field,
+    // then first block tag at offset 8.  Tag must be `PRD`, `TTW`, or `WBG`.
+    if need(data, pos, 12) {
+        return true;
+    }
+    let tag = &data[pos + 8..pos + 11];
+    tag == b"PRD" || tag == b"TTW" || tag == b"WBG"
+}
+
+fn validate_kdbx(data: &[u8], pos: usize) -> bool {
+    // KeePass 2.x: sig1 (4B) + sig2 (4B) + minor (u16 LE) + major (u16 LE).
+    // Major version at offset 10 must be 3 or 4.
+    if need(data, pos, 12) {
+        return true;
+    }
+    let major = u16::from_le_bytes([data[pos + 10], data[pos + 11]]);
+    major == 3 || major == 4
+}
+
+fn validate_kdb(data: &[u8], pos: usize) -> bool {
+    // KeePass 1.x: sig1 (4B) + sig2 (4B) + minor (u16 LE) + major (u16 LE).
+    // Major version at offset 10 must be 1 or 2.
+    if need(data, pos, 12) {
+        return true;
+    }
+    let major = u16::from_le_bytes([data[pos + 10], data[pos + 11]]);
+    major == 1 || major == 2
+}
+
+fn validate_e01(data: &[u8], pos: usize) -> bool {
+    // EnCase EVF/E01: 8-byte magic `EVF\x09\x0D\x0A\xFF\x00`, then segment
+    // number (u16 LE @8).  Only accept the first segment (== 1).
+    if need(data, pos, 10) {
+        return true;
+    }
+    let segment = u16::from_le_bytes([data[pos + 8], data[pos + 9]]);
+    segment == 1
+}
+
+fn validate_pcap(data: &[u8], pos: usize) -> bool {
+    // PCAP: detect byte order from magic, then validate major == 2, minor == 4.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let (major, minor) = if data[pos..pos + 4] == [0xD4, 0xC3, 0xB2, 0xA1] {
+        // Little-endian
+        (
+            u16::from_le_bytes([data[pos + 4], data[pos + 5]]),
+            u16::from_le_bytes([data[pos + 6], data[pos + 7]]),
+        )
+    } else {
+        // Big-endian (A1 B2 C3 D4)
+        (
+            u16::from_be_bytes([data[pos + 4], data[pos + 5]]),
+            u16::from_be_bytes([data[pos + 6], data[pos + 7]]),
+        )
+    };
+    major == 2 && minor == 4
+}
+
+fn validate_dmp(data: &[u8], pos: usize) -> bool {
+    // Windows Minidump: `MDMP` (4B) + version (2B) + stream_count (u32 LE @8).
+    // stream_count must be > 0.
+    if need(data, pos, 12) {
+        return true;
+    }
+    let stream_count =
+        u32::from_le_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    stream_count > 0
+}
+
+fn validate_plist(data: &[u8], pos: usize) -> bool {
+    // Apple binary plist: `bplist00` magic (8 bytes).  Must be at least 34
+    // bytes long (8 magic + some data + 26-byte trailer).
+    // The magic is already encoded in the TOML header; just enforce min length.
+    !need(data, pos, 34)
+}
+
+fn validate_ts(data: &[u8], pos: usize) -> bool {
+    // MPEG-TS: sync byte 0x47 at stride 188.  Require at least 3 consecutive
+    // sync bytes at offsets 0, 188, and 376 relative to pos.
+    if need(data, pos, 377) {
+        return true;
+    }
+    data[pos] == 0x47 && data[pos + 188] == 0x47 && data[pos + 376] == 0x47
+}
+
+fn validate_m2ts(data: &[u8], pos: usize) -> bool {
+    // Blu-ray M2TS: each 192-byte packet starts with a 4-byte timestamp, then
+    // a 188-byte MPEG-TS packet (sync byte 0x47 at offset 4 within each packet).
+    // Require sync bytes at offsets 4, 196, and 388 relative to pos.
+    if need(data, pos, 389) {
+        return true;
+    }
+    data[pos + 4] == 0x47 && data[pos + 196] == 0x47 && data[pos + 388] == 0x47
+}
+
+fn validate_luks(data: &[u8], pos: usize) -> bool {
+    // LUKS: `LUKS\xBA\xBE` magic (6 bytes), then version (u16 BE @6) in {1, 2}.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let version = u16::from_be_bytes([data[pos + 6], data[pos + 7]]);
+    version == 1 || version == 2
+}
+
+fn validate_x3f(data: &[u8], pos: usize) -> bool {
+    // Sigma X3F: `FOVb` magic (4 bytes), then version (u32 LE @4).
+    // Major version byte (little-endian high byte at offset 5) must be 2 or 3.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let major = data[pos + 5]; // u32 LE: byte 4 = minor, byte 5 = major
+    major == 2 || major == 3
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -490,6 +2138,43 @@ mod tests {
         assert!(!validate_zip(&make_zip_lfh("file.bin", 20, 255), 0));
     }
 
+    #[test]
+    fn zip_first_entry_in_chunk_accepted() {
+        // First LFH in a buffer with no preceding PK\x03\x04 — must pass.
+        let lfh = make_zip_lfh("file.txt", 20, 8);
+        assert!(validate_zip(&lfh, 0));
+    }
+
+    #[test]
+    fn zip_internal_entry_rejected() {
+        // Buffer: [LFH for "a.txt"][some data][LFH for "b.txt"]
+        // The second LFH at pos=64 should be rejected as an internal entry.
+        let first = make_zip_lfh("a.txt", 20, 8);
+        let mut buf = vec![0u8; 64]; // fake compressed data gap
+        buf[..first.len()].copy_from_slice(&first);
+        let second = make_zip_lfh("b.txt", 20, 8);
+        buf.extend_from_slice(&second);
+        let pos = 64;
+        assert!(!validate_zip(&buf, pos), "internal LFH should be rejected");
+    }
+
+    #[test]
+    fn zip_new_archive_after_eocd_accepted() {
+        // Buffer: [LFH][EOCD][LFH] — second LFH starts a new archive after an EOCD.
+        let first = make_zip_lfh("a.txt", 20, 8);
+        let eocd =
+            b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        let second = make_zip_lfh("b.txt", 20, 8);
+        let mut buf = first.clone();
+        buf.extend_from_slice(eocd);
+        let pos = buf.len();
+        buf.extend_from_slice(&second);
+        assert!(
+            validate_zip(&buf, pos),
+            "LFH after EOCD should be accepted as new archive"
+        );
+    }
+
     // ── PNG ───────────────────────────────────────────────────────────────────
 
     #[test]
@@ -512,8 +2197,25 @@ mod tests {
 
     // ── EXE ───────────────────────────────────────────────────────────────────
 
+    fn make_pe(e_lfanew: u32) -> Vec<u8> {
+        let total = e_lfanew as usize + 4;
+        let mut data = vec![0u8; total];
+        data[0..4].copy_from_slice(b"MZ\x90\x00");
+        data[60..64].copy_from_slice(&e_lfanew.to_le_bytes());
+        data[e_lfanew as usize..e_lfanew as usize + 4].copy_from_slice(b"PE\x00\x00");
+        data
+    }
+
+    #[test]
+    fn exe_valid_pe_signature_accepted() {
+        // e_lfanew = 128, PE\0\0 present at that offset.
+        let data = make_pe(128);
+        assert!(validate_exe(&data, 0));
+    }
+
     #[test]
     fn exe_valid_e_lfanew_accepted() {
+        // Buffer too short for look-ahead — benefit of doubt.
         let mut data = vec![0u8; 64];
         data[0..4].copy_from_slice(b"MZ\x90\x00");
         data[60..64].copy_from_slice(&128u32.to_le_bytes()); // e_lfanew = 128
@@ -526,6 +2228,29 @@ mod tests {
         data[0..4].copy_from_slice(b"MZ\x90\x00");
         // e_lfanew = 0 (all zeroes) — invalid
         assert!(!validate_exe(&data, 0));
+    }
+
+    #[test]
+    fn exe_missing_pe_signature_rejected() {
+        // e_lfanew = 128, but no PE\0\0 at that offset (random bytes instead).
+        let mut data = make_pe(128);
+        // Overwrite the PE signature with garbage.
+        data[128..132].copy_from_slice(b"NOPE");
+        assert!(!validate_exe(&data, 0));
+    }
+
+    #[test]
+    fn exe_mz_in_binary_data_rejected() {
+        // Simulate `MZ` appearing inside a binary data region: e_lfanew
+        // resolves to a plausible offset but there is no PE signature there.
+        let mut data = vec![0xCC_u8; 300]; // filler
+                                           // Inject fake MZ header at offset 50.
+        let pos = 50_usize;
+        data[pos] = b'M';
+        data[pos + 1] = b'Z';
+        data[pos + 60..pos + 64].copy_from_slice(&100u32.to_le_bytes()); // e_lfanew=100
+                                                                         // No PE\0\0 at pos+100 (just 0xCC filler).
+        assert!(!validate_exe(&data, pos));
     }
 
     // ── MP4 ───────────────────────────────────────────────────────────────────
@@ -557,6 +2282,61 @@ mod tests {
         assert!(!validate_mp4(&data, 0));
     }
 
+    // ── MP4 ───────────────────────────────────────────────────────────────────
+
+    /// Build a 16-byte ftyp box: [size=16][ftyp][brand][minor_version=0].
+    /// The next box appended directly after this will be at offset 16.
+    fn make_mp4_ftyp(brand: &[u8; 4]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&16u32.to_be_bytes()); // box_size = 16
+        v.extend_from_slice(b"ftyp");
+        v.extend_from_slice(brand);
+        v.extend_from_slice(&[0u8; 4]); // minor version
+        v
+    }
+
+    #[test]
+    fn mp4_valid_ftyp_followed_by_moov_accepted() {
+        let mut data = make_mp4_ftyp(b"isom");
+        // Next box: moov, size 100
+        data.extend_from_slice(&100u32.to_be_bytes());
+        data.extend_from_slice(b"moov");
+        assert!(validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_valid_ftyp_followed_by_mdat_accepted() {
+        let mut data = make_mp4_ftyp(b"mp42");
+        data.extend_from_slice(&1000u32.to_be_bytes());
+        data.extend_from_slice(b"mdat");
+        assert!(validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_ftyp_followed_by_garbage_rejected() {
+        let mut data = make_mp4_ftyp(b"isom");
+        // Next "box": size=500 but type has non-alphanumeric bytes (H.264 NAL).
+        data.extend_from_slice(&500u32.to_be_bytes());
+        data.extend_from_slice(&[0x00, 0x01, 0xB3, 0xFF]); // H.262 start codes
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_ftyp_followed_by_tiny_next_box_rejected() {
+        let mut data = make_mp4_ftyp(b"isom");
+        // Next box: size < 8 (impossible for a valid box).
+        data.extend_from_slice(&4u32.to_be_bytes());
+        data.extend_from_slice(b"moov");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_ftyp_no_lookahead_data_accepted() {
+        // ftyp box is at the very end of the scan chunk — no lookahead available.
+        let data = make_mp4_ftyp(b"isom");
+        assert!(validate_mp4(&data, 0));
+    }
+
     // ── OGG ───────────────────────────────────────────────────────────────────
 
     #[test]
@@ -575,6 +2355,298 @@ mod tests {
         data[4] = 0x00;
         data[5] = 0x00; // no BOS flag — this is a continuation page, not a file start
         assert!(!validate_ogg(&data, 0));
+    }
+
+    // ── JPEG ──────────────────────────────────────────────────────────────────
+
+    /// Build a minimal JFIF JPEG header at `pos` inside `buf`.
+    fn make_jfif_at(buf: &mut Vec<u8>, pos: usize) {
+        // Ensure buf is long enough.
+        if buf.len() < pos + 11 {
+            buf.resize(pos + 11, 0);
+        }
+        buf[pos] = 0xFF;
+        buf[pos + 1] = 0xD8;
+        buf[pos + 2] = 0xFF;
+        buf[pos + 3] = 0xE0;
+        buf[pos + 4] = 0x00;
+        buf[pos + 5] = 0x10;
+        buf[pos + 6..pos + 11].copy_from_slice(b"JFIF\x00");
+    }
+
+    #[test]
+    fn jpeg_jfif_standalone_accepted() {
+        // First JPEG in the buffer — no preceding SOI, must be accepted.
+        let mut data = vec![0u8; 11];
+        make_jfif_at(&mut data, 0);
+        assert!(validate_jpeg_jfif(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_jfif_embedded_thumbnail_rejected() {
+        // Outer JPEG SOI at offset 0, then an embedded JFIF JPEG at offset 100
+        // with no EOI (FF D9) between them — should be rejected as thumbnail.
+        let mut buf = vec![0u8; 120];
+        // Outer SOI at 0.
+        buf[0] = 0xFF;
+        buf[1] = 0xD8;
+        // Embedded JFIF at 100 — no FF D9 between 0 and 100.
+        make_jfif_at(&mut buf, 100);
+        assert!(!validate_jpeg_jfif(&buf, 100));
+    }
+
+    #[test]
+    fn jpeg_jfif_after_eoi_accepted() {
+        // Outer JPEG: SOI at 0, EOI at 50.  New standalone JFIF at 60 — must
+        // be accepted because the preceding JPEG is closed.
+        let mut buf = vec![0u8; 80];
+        // Outer SOI.
+        buf[0] = 0xFF;
+        buf[1] = 0xD8;
+        // Outer EOI.
+        buf[50] = 0xFF;
+        buf[51] = 0xD9;
+        // Standalone JFIF.
+        make_jfif_at(&mut buf, 60);
+        assert!(validate_jpeg_jfif(&buf, 60));
+    }
+
+    #[test]
+    fn jpeg_exif_embedded_thumbnail_rejected() {
+        // Outer JPEG SOI at 0, Exif JPEG at 200 — no EOI between them.
+        let mut buf = vec![0u8; 210];
+        buf[0] = 0xFF;
+        buf[1] = 0xD8;
+        // Exif header at 200.
+        buf[200] = 0xFF;
+        buf[201] = 0xD8;
+        buf[202] = 0xFF;
+        buf[203] = 0xE1;
+        buf[204] = 0x00;
+        buf[205] = 0x20;
+        buf[206..210].copy_from_slice(b"Exif");
+        assert!(!validate_jpeg_exif(&buf, 200));
+    }
+
+    // ── BMP ───────────────────────────────────────────────────────────────────
+
+    fn make_bmp(file_size: u32, pixel_offset: u32, dib_size: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 18];
+        data[0..2].copy_from_slice(b"BM");
+        data[2..6].copy_from_slice(&file_size.to_le_bytes());
+        data[10..14].copy_from_slice(&pixel_offset.to_le_bytes());
+        data[14..18].copy_from_slice(&dib_size.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn bmp_valid_accepted() {
+        // Typical BMP: 40-byte BITMAPINFOHEADER, pixel data at 54.
+        let data = make_bmp(1078, 54, 40);
+        assert!(validate_bmp(&data, 0));
+    }
+
+    #[test]
+    fn bmp_tiny_file_size_rejected() {
+        let data = make_bmp(10, 54, 40); // file_size < 26
+        assert!(!validate_bmp(&data, 0));
+    }
+
+    #[test]
+    fn bmp_pixel_offset_past_file_size_rejected() {
+        let data = make_bmp(1000, 2000, 40); // pixel_offset > file_size
+        assert!(!validate_bmp(&data, 0));
+    }
+
+    #[test]
+    fn bmp_pixel_offset_before_header_rejected() {
+        let data = make_bmp(1000, 4, 40); // pixel_offset < 14
+        assert!(!validate_bmp(&data, 0));
+    }
+
+    #[test]
+    fn bmp_unknown_dib_size_rejected() {
+        let data = make_bmp(1000, 54, 99); // 99 is not a known DIB size
+        assert!(!validate_bmp(&data, 0));
+    }
+
+    // ── EVTX ──────────────────────────────────────────────────────────────────
+
+    fn make_evtx_header() -> Vec<u8> {
+        let mut data = vec![0u8; 42];
+        data[0..8].copy_from_slice(b"ElfFile\x00");
+        // HeaderSize at offset 32 = 128
+        data[32..36].copy_from_slice(&128u32.to_le_bytes());
+        // MajorVersion at offset 38 = 3
+        data[38..40].copy_from_slice(&3u16.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn evtx_valid_header_accepted() {
+        assert!(validate_evtx(&make_evtx_header(), 0));
+    }
+
+    #[test]
+    fn evtx_wrong_header_size_rejected() {
+        let mut data = make_evtx_header();
+        data[32..36].copy_from_slice(&64u32.to_le_bytes()); // not 128
+        assert!(!validate_evtx(&data, 0));
+    }
+
+    #[test]
+    fn evtx_wrong_major_version_rejected() {
+        let mut data = make_evtx_header();
+        data[38..40].copy_from_slice(&2u16.to_le_bytes()); // not 3
+        assert!(!validate_evtx(&data, 0));
+    }
+
+    // ── MKV ───────────────────────────────────────────────────────────────────
+
+    fn make_mkv_header(doctype: &[u8]) -> Vec<u8> {
+        // Minimal EBML header: ID + unknown-size VINT + sub-elements.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"\x1A\x45\xDF\xA3"); // EBML ID
+        v.extend_from_slice(b"\x9F"); // VINT: single-byte size = 31
+                                      // EBMLVersion element (ID 0x4286, value 1).
+        v.extend_from_slice(b"\x42\x86\x81\x01");
+        // EBMLReadVersion element (ID 0x42F7, value 1).
+        v.extend_from_slice(b"\x42\xF7\x81\x01");
+        // DocType element: ID 0x4282 + single-byte VINT len + value.
+        v.push(0x42);
+        v.push(0x82);
+        v.push(0x80 | doctype.len() as u8); // VINT
+        v.extend_from_slice(doctype);
+        v
+    }
+
+    #[test]
+    fn mkv_matroska_doctype_accepted() {
+        let data = make_mkv_header(b"matroska");
+        assert!(validate_mkv(&data, 0));
+    }
+
+    #[test]
+    fn mkv_webm_doctype_rejected() {
+        // WebM now has its own signature; the MKV validator rejects "webm".
+        let data = make_mkv_header(b"webm");
+        assert!(!validate_mkv(&data, 0));
+    }
+
+    #[test]
+    fn mkv_unknown_doctype_rejected() {
+        let data = make_mkv_header(b"divx");
+        assert!(!validate_mkv(&data, 0));
+    }
+
+    #[test]
+    fn mkv_no_doctype_in_full_window_rejected() {
+        // 80-byte buffer with valid VINT but no DocType element — rejected.
+        let mut data = vec![0x01u8; 80]; // non-zero VINT bytes, no 0x42 0x82
+        data[0..4].copy_from_slice(b"\x1A\x45\xDF\xA3");
+        data[4] = 0x9F; // valid VINT
+        assert!(!validate_mkv(&data, 0));
+    }
+
+    #[test]
+    fn mkv_short_buffer_benefit_of_doubt() {
+        let data = vec![0x1Au8, 0x45, 0xDF, 0xA3, 0x9F]; // 5 bytes, full window not reachable
+        assert!(validate_mkv(&data, 0));
+    }
+
+    // ── RAW photo formats ─────────────────────────────────────────────────────
+
+    fn make_arw_header(with_sony: bool) -> Vec<u8> {
+        // Minimal TIFF LE header: magic + IFD at 8 + entry count.
+        let mut v = vec![0u8; 512];
+        v[0..4].copy_from_slice(b"II\x2A\x00"); // TIFF LE magic
+        v[4..8].copy_from_slice(&8u32.to_le_bytes()); // IFD at offset 8
+        v[8..10].copy_from_slice(&12u16.to_le_bytes()); // 12 IFD entries
+        if with_sony {
+            v[100..104].copy_from_slice(b"SONY");
+        }
+        v
+    }
+
+    #[test]
+    fn arw_with_sony_string_accepted() {
+        assert!(validate_arw(&make_arw_header(true), 0));
+    }
+
+    #[test]
+    fn arw_without_sony_string_rejected() {
+        assert!(!validate_arw(&make_arw_header(false), 0));
+    }
+
+    #[test]
+    fn arw_implausible_entry_count_rejected() {
+        let mut data = make_arw_header(true);
+        data[8..10].copy_from_slice(&200u16.to_le_bytes()); // entry_count=200 > 50
+        assert!(!validate_arw(&data, 0));
+    }
+
+    #[test]
+    fn cr2_plausible_ifd_offset_accepted() {
+        // Canon CR2: TIFF LE + IFD at 16 + CR\x02\x00 at +8.
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"II\x2A\x00");
+        data[4..8].copy_from_slice(&16u32.to_le_bytes()); // IFD at 16
+        data[8..12].copy_from_slice(b"CR\x02\x00");
+        assert!(validate_cr2(&data, 0));
+    }
+
+    #[test]
+    fn cr2_zero_ifd_offset_rejected() {
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"II\x2A\x00");
+        // IFD offset = 0 — invalid
+        data[8..12].copy_from_slice(b"CR\x02\x00");
+        assert!(!validate_cr2(&data, 0));
+    }
+
+    #[test]
+    fn rw2_valid_accepted() {
+        // Panasonic RW2: II\x55\x00 + IFD at 8 + 10 entries.
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"II\x55\x00");
+        data[4..8].copy_from_slice(&8u32.to_le_bytes()); // IFD at 8
+        data[8..10].copy_from_slice(&10u16.to_le_bytes()); // 10 entries
+        assert!(validate_rw2(&data, 0));
+    }
+
+    #[test]
+    fn rw2_bad_ifd_offset_rejected() {
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"II\x55\x00");
+        data[4..8].copy_from_slice(&8000u32.to_le_bytes()); // way too large
+        assert!(!validate_rw2(&data, 0));
+    }
+
+    #[test]
+    fn raf_valid_accepted() {
+        let mut data = vec![0u8; 20];
+        data[0..15].copy_from_slice(b"FUJIFILMCCD-RAW");
+        data[15] = b' ';
+        data[16..20].copy_from_slice(b"0201"); // version digits
+        assert!(validate_raf(&data, 0));
+    }
+
+    #[test]
+    fn raf_missing_space_rejected() {
+        let mut data = vec![0u8; 20];
+        data[0..15].copy_from_slice(b"FUJIFILMCCD-RAW");
+        data[15] = 0x00; // not a space
+        data[16..20].copy_from_slice(b"0201");
+        assert!(!validate_raf(&data, 0));
+    }
+
+    #[test]
+    fn raf_non_digit_version_rejected() {
+        let mut data = vec![0u8; 20];
+        data[0..15].copy_from_slice(b"FUJIFILMCCD-RAW");
+        data[15] = b' ';
+        data[16..20].copy_from_slice(b"VX01"); // not all digits
+        assert!(!validate_raf(&data, 0));
     }
 
     // ── Benefit-of-doubt ──────────────────────────────────────────────────────
@@ -608,5 +2680,1781 @@ mod tests {
         assert!(validate_vcard(&data, 0));
         assert!(validate_ical(&data, 0));
         assert!(validate_ole2(&data, 0));
+        assert!(validate_arw(&data, 0));
+        assert!(validate_cr2(&data, 0));
+        assert!(validate_rw2(&data, 0));
+        assert!(validate_raf(&data, 0));
+        assert!(validate_tiff_le(&data, 0));
+        assert!(validate_tiff_be(&data, 0));
+        assert!(validate_nef(&data, 0));
+        assert!(validate_heic(&data, 0));
+        assert!(validate_mov(&data, 0));
+        assert!(validate_m4v(&data, 0));
+        assert!(validate_3gp(&data, 0));
+        assert!(validate_webm(&data, 0));
+        assert!(validate_wmv(&data, 0));
+        assert!(validate_flv(&data, 0));
+        assert!(validate_mpeg(&data, 0));
+    }
+
+    // ── TIFF LE ───────────────────────────────────────────────────────────────
+
+    fn make_tiff_le_header(ifd_off: u32, entry_count: u16, maker: Option<&[u8]>) -> Vec<u8> {
+        let mut v = vec![0u8; 512];
+        v[0..4].copy_from_slice(b"II\x2A\x00");
+        v[4..8].copy_from_slice(&ifd_off.to_le_bytes());
+        if ifd_off < 512 {
+            let pos = ifd_off as usize;
+            v[pos..pos + 2].copy_from_slice(&entry_count.to_le_bytes());
+        }
+        if let Some(m) = maker {
+            v[100..100 + m.len()].copy_from_slice(m);
+        }
+        v
+    }
+
+    #[test]
+    fn tiff_le_plain_accepted() {
+        let data = make_tiff_le_header(8, 12, None);
+        assert!(validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_rejects_sony_arw() {
+        let data = make_tiff_le_header(8, 12, Some(b"SONY"));
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_rejects_nikon_nef() {
+        let data = make_tiff_le_header(8, 12, Some(b"NIKON"));
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_rejects_canon_cr2() {
+        let mut data = make_tiff_le_header(16, 12, None);
+        // Place Canon CR2 marker at offset 8
+        data[8..12].copy_from_slice(b"CR\x02\x00");
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_bad_ifd_offset_rejected() {
+        let data = make_tiff_le_header(100_000, 12, None); // IFD offset > 65536
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    // ── TIFF BE ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tiff_be_valid_accepted() {
+        let mut data = vec![0u8; 512];
+        data[0..4].copy_from_slice(b"MM\x00\x2A");
+        data[4..8].copy_from_slice(&8u32.to_be_bytes()); // IFD at 8
+        data[8..10].copy_from_slice(&10u16.to_be_bytes()); // 10 entries
+        assert!(validate_tiff_be(&data, 0));
+    }
+
+    #[test]
+    fn tiff_be_bad_ifd_offset_rejected() {
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(b"MM\x00\x2A");
+        data[4..8].copy_from_slice(&0u32.to_be_bytes()); // IFD at 0 — invalid
+        assert!(!validate_tiff_be(&data, 0));
+    }
+
+    // ── NEF ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn nef_with_nikon_string_accepted() {
+        let data = make_tiff_le_header(8, 20, Some(b"NIKON"));
+        assert!(validate_nef(&data, 0));
+    }
+
+    #[test]
+    fn nef_without_nikon_string_rejected() {
+        let data = make_tiff_le_header(8, 20, None);
+        assert!(!validate_nef(&data, 0));
+    }
+
+    #[test]
+    fn nef_bad_ifd_offset_rejected() {
+        // IFD offset > 4096 — rejected even with NIKON string.
+        let mut data = vec![0u8; 512];
+        data[0..4].copy_from_slice(b"II\x2A\x00");
+        data[4..8].copy_from_slice(&8000u32.to_le_bytes()); // too large
+        data[100..105].copy_from_slice(b"NIKON");
+        assert!(!validate_nef(&data, 0));
+    }
+
+    // ── HEIC ──────────────────────────────────────────────────────────────────
+
+    fn make_heic_ftyp(box_size: u32, brand: &[u8; 4]) -> Vec<u8> {
+        let mut data = vec![0u8; 24];
+        data[0..4].copy_from_slice(&box_size.to_be_bytes());
+        data[4..8].copy_from_slice(b"ftyp");
+        data[8..12].copy_from_slice(brand);
+        data
+    }
+
+    #[test]
+    fn heic_valid_box_size_accepted() {
+        let data = make_heic_ftyp(24, b"heic");
+        assert!(validate_heic(&data, 0));
+    }
+
+    #[test]
+    fn heic_heix_brand_accepted() {
+        let data = make_heic_ftyp(28, b"heix");
+        assert!(validate_heic(&data, 0));
+    }
+
+    #[test]
+    fn heic_too_small_box_rejected() {
+        let data = make_heic_ftyp(8, b"heic"); // box_size < 12
+        assert!(!validate_heic(&data, 0));
+    }
+
+    #[test]
+    fn heic_oversized_box_rejected() {
+        let data = make_heic_ftyp(1024, b"heic"); // box_size > 512
+        assert!(!validate_heic(&data, 0));
+    }
+
+    // ── MOV ───────────────────────────────────────────────────────────────────
+
+    fn make_isobmff_ftyp(box_size: u32, brand: &[u8; 4]) -> Vec<u8> {
+        let mut data = vec![0u8; box_size.max(32) as usize];
+        data[0..4].copy_from_slice(&box_size.to_be_bytes());
+        data[4..8].copy_from_slice(b"ftyp");
+        data[8..12].copy_from_slice(brand);
+        data
+    }
+
+    #[test]
+    fn mov_valid_box_accepted() {
+        let data = make_isobmff_ftyp(20, b"qt  ");
+        assert!(validate_mov(&data, 0));
+    }
+
+    #[test]
+    fn mov_oversized_box_rejected() {
+        let data = make_isobmff_ftyp(1024, b"qt  "); // box_size > 512
+        assert!(!validate_mov(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_qt_brand() {
+        let data = make_isobmff_ftyp(20, b"qt  ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    // ── M4V ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn m4v_valid_box_accepted() {
+        let data = make_isobmff_ftyp(20, b"M4V ");
+        assert!(validate_m4v(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_m4v_brand() {
+        let data = make_isobmff_ftyp(20, b"M4V ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    // ── 3GP ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn three_gp_brand_accepted() {
+        let data = make_isobmff_ftyp(20, b"3gp5");
+        assert!(validate_3gp(&data, 0));
+    }
+
+    #[test]
+    fn three_g2_brand_accepted() {
+        let data = make_isobmff_ftyp(20, b"3g2a");
+        assert!(validate_3gp(&data, 0));
+    }
+
+    #[test]
+    fn three_gp_wrong_brand_rejected() {
+        let data = make_isobmff_ftyp(20, b"isom");
+        assert!(!validate_3gp(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_3gp_brand() {
+        let data = make_isobmff_ftyp(20, b"3gp5");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    // ── WebM ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn webm_doctype_accepted() {
+        let data = make_mkv_header(b"webm");
+        assert!(validate_webm(&data, 0));
+    }
+
+    #[test]
+    fn webm_rejects_matroska_doctype() {
+        let data = make_mkv_header(b"matroska");
+        assert!(!validate_webm(&data, 0));
+    }
+
+    // ── WMV ───────────────────────────────────────────────────────────────────
+
+    fn make_asf_header(object_size: u64) -> Vec<u8> {
+        let mut data = vec![0u8; 32];
+        // ASF Header Object GUID
+        data[0..16].copy_from_slice(&[
+            0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62,
+            0xCE, 0x6C,
+        ]);
+        data[16..24].copy_from_slice(&object_size.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn wmv_valid_size_accepted() {
+        let data = make_asf_header(1024);
+        assert!(validate_wmv(&data, 0));
+    }
+
+    #[test]
+    fn wmv_tiny_size_rejected() {
+        let data = make_asf_header(10); // size < 30
+        assert!(!validate_wmv(&data, 0));
+    }
+
+    // ── FLV ───────────────────────────────────────────────────────────────────
+
+    fn make_flv_header(flags: u8, data_offset: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 9];
+        data[0..4].copy_from_slice(b"FLV\x01");
+        data[4] = flags;
+        data[5..9].copy_from_slice(&data_offset.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn flv_video_only_accepted() {
+        // TypeFlagsVideo bit (bit 0) set, all reserved bits zero, offset 9.
+        let data = make_flv_header(0x01, 9);
+        assert!(validate_flv(&data, 0));
+    }
+
+    #[test]
+    fn flv_audio_video_accepted() {
+        // TypeFlagsAudio (bit 2) + TypeFlagsVideo (bit 0), offset 9.
+        let data = make_flv_header(0x05, 9);
+        assert!(validate_flv(&data, 0));
+    }
+
+    #[test]
+    fn flv_bad_reserved_bits_rejected() {
+        let data = make_flv_header(0b0000_0010, 9); // reserved bit 1 set
+        assert!(!validate_flv(&data, 0));
+    }
+
+    #[test]
+    fn flv_wrong_offset_rejected() {
+        let data = make_flv_header(0x01, 5); // DataOffset != 9
+        assert!(!validate_flv(&data, 0));
+    }
+
+    // ── MPEG-PS ───────────────────────────────────────────────────────────────
+
+    fn make_mpeg2_pack() -> Vec<u8> {
+        // Minimal valid MPEG-2 PS pack header with all marker bits set.
+        // ISO 13818-1 Table 2-33.
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x44; // 01 000 1 00 — top-2=01, marker(bit2)=1
+                        // data[5] = 0x00; // SCR bytes — no markers required
+        data[6] = 0x04; // SCR_b[19:15] 1 SCR_b[14:13] — marker(bit2)=1
+                        // data[7] = 0x00; // SCR bytes
+        data[8] = 0x04; // SCR_b[4:0] 1 SCR_ext[8:7] — marker(bit2)=1
+        data[9] = 0x01; // SCR_ext[6:0] 1 — marker(bit0)=1
+                        // data[10..12] = mux_rate bytes
+        data[12] = 0x03; // mux_rate[5:0] 1 1 — both marker bits set
+        data[13] = 0xF8; // 11111 stuffing_length — fixed top-5 bits
+        data
+    }
+
+    #[test]
+    fn mpeg2_pack_header_accepted() {
+        assert!(validate_mpeg(&make_mpeg2_pack(), 0));
+    }
+
+    #[test]
+    fn mpeg2_missing_marker_bit_rejected() {
+        // Clear one of the mandatory marker bits — should be rejected.
+        let mut data = make_mpeg2_pack();
+        data[12] = 0x01; // only one marker bit instead of two
+        assert!(!validate_mpeg(&data, 0));
+    }
+
+    #[test]
+    fn mpeg2_h264_annex_b_false_positive_rejected() {
+        // Simulate H.264 Annex-B data that happens to contain 00 00 01 BA.
+        // The bytes following the start code are typical NAL payload — no marker bits.
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x65; // top-2 bits == 01 but marker bit (bit2) == 0  → reject
+        assert!(!validate_mpeg(&data, 0));
+    }
+
+    #[test]
+    fn mpeg1_pack_header_accepted() {
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x21; // 0010_0001 — top-4=0010, marker(bit0)=1
+        assert!(validate_mpeg(&data, 0));
+    }
+
+    #[test]
+    fn mpeg1_missing_marker_bit_rejected() {
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x20; // 0010_0000 — top-4=0010 but marker(bit0)=0
+        assert!(!validate_mpeg(&data, 0));
+    }
+
+    #[test]
+    fn mpeg_unknown_version_rejected() {
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"\x00\x00\x01\xBA");
+        data[4] = 0x00; // neither MPEG-1 nor MPEG-2 pattern
+        assert!(!validate_mpeg(&data, 0));
+    }
+
+    // ── WebP ──────────────────────────────────────────────────────────────────
+
+    fn make_webp(riff_size: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"RIFF");
+        data[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        data[8..12].copy_from_slice(b"WEBP");
+        data
+    }
+
+    #[test]
+    fn webp_valid_accepted() {
+        let data = make_webp(1024);
+        assert!(validate_webp(&data, 0));
+    }
+
+    #[test]
+    fn webp_tiny_riff_size_rejected() {
+        let data = make_webp(0); // size < 4
+        assert!(!validate_webp(&data, 0));
+    }
+
+    #[test]
+    fn webp_wrong_subtype_rejected() {
+        let mut data = make_webp(1024);
+        data[8..12].copy_from_slice(b"WAVE"); // not WEBP
+        assert!(!validate_webp(&data, 0));
+    }
+
+    // ── M4A ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn m4a_valid_box_accepted() {
+        let data = make_isobmff_ftyp(20, b"M4A ");
+        assert!(validate_m4a(&data, 0));
+    }
+
+    #[test]
+    fn m4a_oversized_box_rejected() {
+        let data = make_isobmff_ftyp(1024, b"M4A "); // box_size > 512
+        assert!(!validate_m4a(&data, 0));
+    }
+
+    // ── GZip ──────────────────────────────────────────────────────────────────
+
+    fn make_gz(cm: u8, flg: u8) -> Vec<u8> {
+        let mut data = vec![0u8; 10];
+        data[0] = 0x1F;
+        data[1] = 0x8B;
+        data[2] = cm;
+        data[3] = flg;
+        data
+    }
+
+    #[test]
+    fn gz_deflate_method_accepted() {
+        let data = make_gz(8, 0x00);
+        assert!(validate_gz(&data, 0));
+    }
+
+    #[test]
+    fn gz_wrong_cm_rejected() {
+        let data = make_gz(7, 0x00); // CM != 8
+        assert!(!validate_gz(&data, 0));
+    }
+
+    #[test]
+    fn gz_reserved_flag_bit_rejected() {
+        let data = make_gz(8, 0x20); // bit 5 set — reserved
+        assert!(!validate_gz(&data, 0));
+    }
+
+    // ── EML ───────────────────────────────────────────────────────────────────
+
+    fn make_eml(next_char: u8) -> Vec<u8> {
+        let mut data = vec![0u8; 6];
+        data[0..5].copy_from_slice(b"From ");
+        data[5] = next_char;
+        data
+    }
+
+    #[test]
+    fn eml_printable_char_accepted() {
+        let data = make_eml(b'u'); // "From u..."
+        assert!(validate_eml(&data, 0));
+    }
+
+    #[test]
+    fn eml_control_char_rejected() {
+        let data = make_eml(0x01); // non-printable — binary data
+        assert!(!validate_eml(&data, 0));
+    }
+
+    #[test]
+    fn eml_del_char_rejected() {
+        let data = make_eml(0x7F); // DEL — outside printable range
+        assert!(!validate_eml(&data, 0));
+    }
+
+    // ── ELF ───────────────────────────────────────────────────────────────────
+
+    fn make_elf(ei_class: u8, ei_data: u8, ei_version: u8) -> Vec<u8> {
+        let mut data = vec![0u8; 16];
+        data[0..4].copy_from_slice(b"\x7FELF");
+        data[4] = ei_class;
+        data[5] = ei_data;
+        data[6] = ei_version;
+        data
+    }
+
+    #[test]
+    fn elf_64bit_le_accepted() {
+        let data = make_elf(2, 1, 1);
+        assert!(validate_elf(&data, 0));
+    }
+
+    #[test]
+    fn elf_32bit_be_accepted() {
+        let data = make_elf(1, 2, 1);
+        assert!(validate_elf(&data, 0));
+    }
+
+    #[test]
+    fn elf_invalid_class_rejected() {
+        let data = make_elf(3, 1, 1); // EI_CLASS == 3 is invalid
+        assert!(!validate_elf(&data, 0));
+    }
+
+    #[test]
+    fn elf_wrong_version_rejected() {
+        let data = make_elf(2, 1, 2); // EI_VERSION must be 1
+        assert!(!validate_elf(&data, 0));
+    }
+
+    // ── REGF ──────────────────────────────────────────────────────────────────
+
+    fn make_regf(major: u32, minor: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 28];
+        data[0..4].copy_from_slice(b"regf");
+        data[20..24].copy_from_slice(&major.to_le_bytes());
+        data[24..28].copy_from_slice(&minor.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn regf_valid_accepted() {
+        let data = make_regf(1, 3);
+        assert!(validate_regf(&data, 0));
+    }
+
+    #[test]
+    fn regf_wrong_major_rejected() {
+        let data = make_regf(2, 3); // major must be 1
+        assert!(!validate_regf(&data, 0));
+    }
+
+    #[test]
+    fn regf_minor_out_of_range_rejected() {
+        let data = make_regf(1, 7); // minor must be in [2,6]
+        assert!(!validate_regf(&data, 0));
+    }
+
+    // ── PSD ───────────────────────────────────────────────────────────────────
+
+    fn make_psd(version: u16, channels: u16) -> Vec<u8> {
+        let mut data = vec![0u8; 26];
+        data[0..4].copy_from_slice(b"8BPS");
+        data[4..6].copy_from_slice(&version.to_be_bytes());
+        data[6..8].copy_from_slice(&channels.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn psd_version1_accepted() {
+        let data = make_psd(1, 3); // PSD with 3 channels
+        assert!(validate_psd(&data, 0));
+    }
+
+    #[test]
+    fn psd_version2_psb_accepted() {
+        let data = make_psd(2, 4); // PSB with 4 channels
+        assert!(validate_psd(&data, 0));
+    }
+
+    #[test]
+    fn psd_wrong_version_rejected() {
+        let data = make_psd(3, 3); // version 3 is invalid
+        assert!(!validate_psd(&data, 0));
+    }
+
+    #[test]
+    fn psd_zero_channels_rejected() {
+        let data = make_psd(1, 0); // 0 channels is invalid
+        assert!(!validate_psd(&data, 0));
+    }
+
+    // ── VHD ───────────────────────────────────────────────────────────────────
+
+    fn make_vhd(disk_type: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 68];
+        data[0..8].copy_from_slice(b"conectix");
+        data[60..64].copy_from_slice(&disk_type.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn vhd_fixed_disk_accepted() {
+        let data = make_vhd(2); // fixed
+        assert!(validate_vhd(&data, 0));
+    }
+
+    #[test]
+    fn vhd_dynamic_disk_accepted() {
+        let data = make_vhd(3); // dynamic
+        assert!(validate_vhd(&data, 0));
+    }
+
+    #[test]
+    fn vhd_unknown_disk_type_rejected() {
+        let data = make_vhd(5); // unknown type
+        assert!(!validate_vhd(&data, 0));
+    }
+
+    // ── VHDX ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn vhdx_valid_magic_accepted() {
+        let mut data = vec![0u8; 8];
+        data[0..8].copy_from_slice(b"vhdxfile");
+        assert!(validate_vhdx(&data, 0));
+    }
+
+    #[test]
+    fn vhdx_short_buffer_benefit_of_doubt() {
+        let data = vec![b'v', b'h', b'd', b'x']; // only 4 bytes
+        assert!(validate_vhdx(&data, 0));
+    }
+
+    // ── QCOW2 ─────────────────────────────────────────────────────────────────
+
+    fn make_qcow2(version: u32, cluster_bits: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 24];
+        data[0..4].copy_from_slice(b"QFI\xFB");
+        data[4..8].copy_from_slice(&version.to_be_bytes());
+        data[20..24].copy_from_slice(&cluster_bits.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn qcow2_version2_accepted() {
+        let data = make_qcow2(2, 16);
+        assert!(validate_qcow2(&data, 0));
+    }
+
+    #[test]
+    fn qcow2_version3_accepted() {
+        let data = make_qcow2(3, 12);
+        assert!(validate_qcow2(&data, 0));
+    }
+
+    #[test]
+    fn qcow2_wrong_version_rejected() {
+        let data = make_qcow2(1, 16); // version 1 is QCOW, not QCOW2
+        assert!(!validate_qcow2(&data, 0));
+    }
+
+    #[test]
+    fn qcow2_cluster_bits_too_small_rejected() {
+        let data = make_qcow2(2, 8); // cluster_bits < 9
+        assert!(!validate_qcow2(&data, 0));
+    }
+
+    #[test]
+    fn qcow2_cluster_bits_too_large_rejected() {
+        let data = make_qcow2(2, 22); // cluster_bits > 21
+        assert!(!validate_qcow2(&data, 0));
+    }
+
+    // ── MIDI ──────────────────────────────────────────────────────────────────
+
+    fn make_midi(format: u16) -> Vec<u8> {
+        let mut d = vec![0u8; 20];
+        d[0..4].copy_from_slice(b"MThd");
+        d[4..8].copy_from_slice(&6u32.to_be_bytes());
+        d[8..10].copy_from_slice(&format.to_be_bytes());
+        d[10..12].copy_from_slice(&1u16.to_be_bytes()); // num_tracks
+        d[12..14].copy_from_slice(&480u16.to_be_bytes()); // division
+        d
+    }
+
+    #[test]
+    fn midi_format0_accepted() {
+        assert!(validate_midi(&make_midi(0), 0));
+    }
+
+    #[test]
+    fn midi_format2_accepted() {
+        assert!(validate_midi(&make_midi(2), 0));
+    }
+
+    #[test]
+    fn midi_bad_format_rejected() {
+        assert!(!validate_midi(&make_midi(3), 0));
+    }
+
+    #[test]
+    fn midi_wrong_chunk_len_rejected() {
+        let mut d = make_midi(1);
+        d[4..8].copy_from_slice(&7u32.to_be_bytes()); // must be 6
+        assert!(!validate_midi(&d, 0));
+    }
+
+    // ── AIFF ──────────────────────────────────────────────────────────────────
+
+    fn make_aiff(subtype: u8) -> Vec<u8> {
+        let mut d = vec![0u8; 16];
+        d[0..4].copy_from_slice(b"FORM");
+        d[4..8].copy_from_slice(&100u32.to_be_bytes());
+        d[8..11].copy_from_slice(b"AIF");
+        d[11] = subtype;
+        d
+    }
+
+    #[test]
+    fn aiff_classic_accepted() {
+        assert!(validate_aiff(&make_aiff(b'F'), 0));
+    }
+
+    #[test]
+    fn aifc_accepted() {
+        assert!(validate_aiff(&make_aiff(b'C'), 0));
+    }
+
+    #[test]
+    fn aiff_wrong_subtype_rejected() {
+        assert!(!validate_aiff(&make_aiff(b'X'), 0));
+    }
+
+    // ── XZ ────────────────────────────────────────────────────────────────────
+
+    fn make_xz(reserved: u8, check: u8) -> Vec<u8> {
+        let mut d = vec![0u8; 12];
+        d[0..6].copy_from_slice(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]);
+        d[6] = reserved;
+        d[7] = check;
+        d
+    }
+
+    #[test]
+    fn xz_crc32_accepted() {
+        assert!(validate_xz(&make_xz(0x00, 0x01), 0));
+    }
+
+    #[test]
+    fn xz_sha256_accepted() {
+        assert!(validate_xz(&make_xz(0x00, 0x0A), 0));
+    }
+
+    #[test]
+    fn xz_bad_reserved_rejected() {
+        assert!(!validate_xz(&make_xz(0x01, 0x01), 0));
+    }
+
+    #[test]
+    fn xz_bad_check_type_rejected() {
+        assert!(!validate_xz(&make_xz(0x00, 0x02), 0));
+    }
+
+    // ── BZip2 ─────────────────────────────────────────────────────────────────
+
+    fn make_bzip2(level: u8) -> Vec<u8> {
+        let mut d = vec![0u8; 12];
+        d[0..3].copy_from_slice(b"BZh");
+        d[3] = level;
+        d[4..10].copy_from_slice(&[0x31, 0x41, 0x59, 0x26, 0x53, 0x59]);
+        d
+    }
+
+    #[test]
+    fn bzip2_level1_accepted() {
+        assert!(validate_bzip2(&make_bzip2(b'1'), 0));
+    }
+
+    #[test]
+    fn bzip2_level9_accepted() {
+        assert!(validate_bzip2(&make_bzip2(b'9'), 0));
+    }
+
+    #[test]
+    fn bzip2_bad_level_rejected() {
+        assert!(!validate_bzip2(&make_bzip2(b'0'), 0));
+    }
+
+    #[test]
+    fn bzip2_bad_block_magic_rejected() {
+        let mut d = make_bzip2(b'5');
+        d[4] = 0xFF; // corrupt block magic
+        assert!(!validate_bzip2(&d, 0));
+    }
+
+    // ── RealMedia ─────────────────────────────────────────────────────────────
+
+    fn make_realmedia(version: u16, header_size: u32) -> Vec<u8> {
+        let mut d = vec![0u8; 12];
+        d[0..4].copy_from_slice(b".RMF");
+        d[4..6].copy_from_slice(&version.to_be_bytes());
+        d[6..10].copy_from_slice(&header_size.to_be_bytes());
+        d
+    }
+
+    #[test]
+    fn realmedia_version0_accepted() {
+        assert!(validate_realmedia(&make_realmedia(0, 18), 0));
+    }
+
+    #[test]
+    fn realmedia_version1_accepted() {
+        assert!(validate_realmedia(&make_realmedia(1, 18), 0));
+    }
+
+    #[test]
+    fn realmedia_bad_version_rejected() {
+        assert!(!validate_realmedia(&make_realmedia(2, 18), 0));
+    }
+
+    #[test]
+    fn realmedia_small_header_rejected() {
+        assert!(!validate_realmedia(&make_realmedia(0, 17), 0));
+    }
+
+    // ── ICO ───────────────────────────────────────────────────────────────────
+
+    fn make_ico(count: u16) -> Vec<u8> {
+        let mut d = vec![0u8; 8];
+        d[0..4].copy_from_slice(&[0x00, 0x00, 0x01, 0x00]);
+        d[4..6].copy_from_slice(&count.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn ico_count1_accepted() {
+        assert!(validate_ico(&make_ico(1), 0));
+    }
+
+    #[test]
+    fn ico_count200_accepted() {
+        assert!(validate_ico(&make_ico(200), 0));
+    }
+
+    #[test]
+    fn ico_count0_rejected() {
+        assert!(!validate_ico(&make_ico(0), 0));
+    }
+
+    #[test]
+    fn ico_count201_rejected() {
+        assert!(!validate_ico(&make_ico(201), 0));
+    }
+
+    // ── ORF ───────────────────────────────────────────────────────────────────
+
+    fn make_orf(ifd_offset: u32) -> Vec<u8> {
+        let mut d = vec![0u8; 12];
+        d[0..4].copy_from_slice(&[0x49, 0x49, 0x52, 0x4F]);
+        d[4..8].copy_from_slice(&ifd_offset.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn orf_typical_ifd_offset_accepted() {
+        assert!(validate_orf(&make_orf(8), 0));
+    }
+
+    #[test]
+    fn orf_ifd_offset_zero_rejected() {
+        assert!(!validate_orf(&make_orf(0), 0));
+    }
+
+    #[test]
+    fn orf_ifd_offset_too_large_rejected() {
+        assert!(!validate_orf(&make_orf(8192), 0));
+    }
+
+    // ── PEF ───────────────────────────────────────────────────────────────────
+
+    fn make_pef(ifd_offset: u32, has_pentax: bool) -> Vec<u8> {
+        let mut d = vec![0u8; 512];
+        d[0..4].copy_from_slice(&[0x49, 0x49, 0x2A, 0x00]);
+        d[4..8].copy_from_slice(&ifd_offset.to_le_bytes());
+        if has_pentax {
+            d[100..107].copy_from_slice(b"PENTAX ");
+        }
+        d
+    }
+
+    #[test]
+    fn pef_with_pentax_string_accepted() {
+        assert!(validate_pef(&make_pef(8, true), 0));
+    }
+
+    #[test]
+    fn pef_without_pentax_string_rejected() {
+        assert!(!validate_pef(&make_pef(8, false), 0));
+    }
+
+    #[test]
+    fn pef_bad_ifd_offset_rejected() {
+        assert!(!validate_pef(&make_pef(0, true), 0));
+    }
+
+    // ── Mach-O ────────────────────────────────────────────────────────────────
+
+    fn make_macho(filetype: u32, ncmds: u32) -> Vec<u8> {
+        let mut d = vec![0u8; 24];
+        d[0..4].copy_from_slice(&[0xCF, 0xFA, 0xED, 0xFE]); // 64-bit LE magic
+        d[4..8].copy_from_slice(&0x0100000Cu32.to_le_bytes()); // cputype arm64
+        d[8..12].copy_from_slice(&0u32.to_le_bytes()); // cpusubtype
+        d[12..16].copy_from_slice(&filetype.to_le_bytes());
+        d[16..20].copy_from_slice(&ncmds.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn macho_executable_accepted() {
+        assert!(validate_macho(&make_macho(2, 10), 0)); // filetype=2=MH_EXECUTE
+    }
+
+    #[test]
+    fn macho_dylib_accepted() {
+        assert!(validate_macho(&make_macho(6, 5), 0)); // filetype=6=MH_DYLIB
+    }
+
+    #[test]
+    fn macho_filetype0_rejected() {
+        assert!(!validate_macho(&make_macho(0, 10), 0));
+    }
+
+    #[test]
+    fn macho_filetype_too_large_rejected() {
+        assert!(!validate_macho(&make_macho(13, 10), 0));
+    }
+
+    #[test]
+    fn macho_ncmds0_rejected() {
+        assert!(!validate_macho(&make_macho(2, 0), 0));
+    }
+
+    // ── CR3 ───────────────────────────────────────────────────────────────────
+
+    fn make_cr3(box_size: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 12];
+        buf[0..4].copy_from_slice(&box_size.to_be_bytes());
+        buf[4..8].copy_from_slice(b"ftyp");
+        buf[8..12].copy_from_slice(b"crx ");
+        buf
+    }
+
+    #[test]
+    fn cr3_valid_box_size_accepted() {
+        assert!(validate_cr3(&make_cr3(24), 0));
+    }
+
+    #[test]
+    fn cr3_box_size_too_small_rejected() {
+        assert!(!validate_cr3(&make_cr3(4), 0));
+    }
+
+    #[test]
+    fn cr3_box_size_too_large_rejected() {
+        assert!(!validate_cr3(&make_cr3(1024), 0));
+    }
+
+    // ── SR2 ───────────────────────────────────────────────────────────────────
+
+    fn make_sr2(entry_count: u16, has_sony: bool, has_sr2_tag: bool) -> Vec<u8> {
+        // TIFF LE header: II + 0x2A + IFD offset 8
+        let mut buf = vec![0u8; 10 + (entry_count as usize) * 12 + 20];
+        buf[0..4].copy_from_slice(b"II\x2A\x00");
+        buf[4..8].copy_from_slice(&8u32.to_le_bytes()); // IFD at offset 8
+        buf[8..10].copy_from_slice(&entry_count.to_le_bytes());
+        if has_sony && buf.len() > 20 {
+            buf[12..16].copy_from_slice(b"SONY"); // put "SONY" in header area
+        }
+        if has_sr2_tag && entry_count > 0 {
+            // Write tag 0x7200 as first IFD entry (LE: 0x00 0x72)
+            buf[10] = 0x00;
+            buf[11] = 0x72;
+        }
+        buf
+    }
+
+    #[test]
+    fn sr2_valid_accepted() {
+        assert!(validate_sr2(&make_sr2(8, true, true), 0));
+    }
+
+    #[test]
+    fn sr2_no_sony_rejected() {
+        assert!(!validate_sr2(&make_sr2(8, false, true), 0));
+    }
+
+    #[test]
+    fn sr2_no_sr2_tag_rejected() {
+        assert!(!validate_sr2(&make_sr2(8, true, false), 0));
+    }
+
+    // ── ARW rejects SR2 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn arw_rejects_sr2_tag() {
+        // ARW validator must reject data that has the SR2 private tag 0x7200.
+        let data = make_sr2(8, true, true);
+        assert!(!validate_arw(&data, 0));
+    }
+
+    // ── EPUB ──────────────────────────────────────────────────────────────────
+
+    fn make_epub_lfh(fname: &[u8], content: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 30 + fname.len() + content.len()];
+        buf[0..4].copy_from_slice(b"PK\x03\x04");
+        buf[26..28].copy_from_slice(&(fname.len() as u16).to_le_bytes());
+        buf[28..30].copy_from_slice(&0u16.to_le_bytes()); // no extra
+        buf[30..30 + fname.len()].copy_from_slice(fname);
+        buf[30 + fname.len()..].copy_from_slice(content);
+        buf
+    }
+
+    #[test]
+    fn epub_valid_accepted() {
+        assert!(validate_epub(
+            &make_epub_lfh(b"mimetype", b"application/epub+zip"),
+            0
+        ));
+    }
+
+    #[test]
+    fn epub_wrong_filename_rejected() {
+        assert!(!validate_epub(
+            &make_epub_lfh(b"META-INF", b"application/epub+zip"),
+            0
+        ));
+    }
+
+    // ── ODT ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn odt_valid_accepted() {
+        assert!(validate_odt(
+            &make_epub_lfh(b"mimetype", b"application/vnd.oasis.opendocument.text"),
+            0
+        ));
+    }
+
+    #[test]
+    fn odt_ods_variant_accepted() {
+        assert!(validate_odt(
+            &make_epub_lfh(
+                b"mimetype",
+                b"application/vnd.oasis.opendocument.spreadsheet"
+            ),
+            0
+        ));
+    }
+
+    #[test]
+    fn odt_wrong_content_rejected() {
+        assert!(!validate_odt(
+            &make_epub_lfh(b"mimetype", b"application/epub+zip"),
+            0
+        ));
+    }
+
+    // ── MSG ───────────────────────────────────────────────────────────────────
+
+    fn make_msg(has_byte_order: bool, has_mapi: bool) -> Vec<u8> {
+        let mut buf = vec![0u8; 4096];
+        buf[0..8].copy_from_slice(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1");
+        if has_byte_order {
+            buf[28] = 0xFE;
+            buf[29] = 0xFF;
+        }
+        if has_mapi {
+            let marker = b"__substg1.0_";
+            buf[512..512 + 12].copy_from_slice(marker);
+        }
+        buf
+    }
+
+    #[test]
+    fn msg_valid_accepted() {
+        assert!(validate_msg(&make_msg(true, true), 0));
+    }
+
+    #[test]
+    fn msg_no_mapi_rejected() {
+        assert!(!validate_msg(&make_msg(true, false), 0));
+    }
+
+    #[test]
+    fn msg_wrong_byte_order_rejected() {
+        assert!(!validate_msg(&make_msg(false, true), 0));
+    }
+
+    // ── WavPack ───────────────────────────────────────────────────────────────
+
+    fn make_wavpack(ck_size: u32, version: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 12];
+        buf[0..4].copy_from_slice(b"wvpk");
+        buf[4..8].copy_from_slice(&ck_size.to_le_bytes());
+        buf[8..10].copy_from_slice(&version.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn wavpack_valid_accepted() {
+        assert!(validate_wavpack(&make_wavpack(100, 0x0407), 0));
+    }
+
+    #[test]
+    fn wavpack_zero_size_rejected() {
+        assert!(!validate_wavpack(&make_wavpack(0, 0x0407), 0));
+    }
+
+    #[test]
+    fn wavpack_invalid_version_rejected() {
+        assert!(!validate_wavpack(&make_wavpack(100, 0x0500), 0));
+    }
+
+    // ── CDR ───────────────────────────────────────────────────────────────────
+
+    fn make_cdr(suffix: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 12];
+        buf[0..4].copy_from_slice(b"RIFF");
+        buf[8..11].copy_from_slice(b"CDR");
+        buf[11] = suffix;
+        buf
+    }
+
+    #[test]
+    fn cdr_version5_accepted() {
+        assert!(validate_cdr(&make_cdr(b'5'), 0));
+    }
+
+    #[test]
+    fn cdr_version_v_accepted() {
+        assert!(validate_cdr(&make_cdr(b'V'), 0));
+    }
+
+    #[test]
+    fn cdr_invalid_suffix_rejected() {
+        assert!(!validate_cdr(&make_cdr(0x01), 0));
+    }
+
+    // ── SWF ───────────────────────────────────────────────────────────────────
+
+    fn make_swf(compression: u8, version: u8, file_len: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 8];
+        buf[0] = compression;
+        buf[1] = b'W';
+        buf[2] = b'S';
+        buf[3] = version;
+        buf[4..8].copy_from_slice(&file_len.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn swf_fws_accepted() {
+        assert!(validate_swf(&make_swf(b'F', 10, 200), 0));
+    }
+
+    #[test]
+    fn swf_cws_accepted() {
+        assert!(validate_swf(&make_swf(b'C', 8, 150), 0));
+    }
+
+    #[test]
+    fn swf_zws_accepted() {
+        assert!(validate_swf(&make_swf(b'Z', 13, 80), 0));
+    }
+
+    #[test]
+    fn swf_version_zero_rejected() {
+        assert!(!validate_swf(&make_swf(b'F', 0, 200), 0));
+    }
+
+    #[test]
+    fn swf_version_too_high_rejected() {
+        assert!(!validate_swf(&make_swf(b'F', 60, 200), 0));
+    }
+
+    #[test]
+    fn swf_file_too_short_rejected() {
+        assert!(!validate_swf(&make_swf(b'F', 10, 4), 0));
+    }
+
+    // ── DCR ───────────────────────────────────────────────────────────────────
+
+    fn make_dcr(make_str: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 512];
+        buf[0..4].copy_from_slice(b"II\x2A\x00");
+        buf[4..8].copy_from_slice(&8u32.to_le_bytes());
+        // embed make string at offset 20
+        let end = 20 + make_str.len().min(buf.len() - 20);
+        buf[20..end].copy_from_slice(&make_str[..end - 20]);
+        buf
+    }
+
+    #[test]
+    fn dcr_kodak_accepted() {
+        assert!(validate_dcr(&make_dcr(b"Kodak"), 0));
+    }
+
+    #[test]
+    fn dcr_kodak_upper_accepted() {
+        assert!(validate_dcr(&make_dcr(b"KODAK"), 0));
+    }
+
+    #[test]
+    fn dcr_no_kodak_rejected() {
+        assert!(!validate_dcr(&make_dcr(b"Canon"), 0));
+    }
+
+    #[test]
+    fn dcr_nikon_rejected() {
+        assert!(!validate_dcr(&make_dcr(b"NIKON"), 0));
+    }
+
+    #[test]
+    fn dcr_sony_rejected() {
+        assert!(!validate_dcr(&make_dcr(b"SONY"), 0));
+    }
+
+    // ── CRW ───────────────────────────────────────────────────────────────────
+
+    fn make_crw() -> Vec<u8> {
+        let mut buf = vec![0u8; 14];
+        buf[0..6].copy_from_slice(b"II\x1A\x00\x00\x00");
+        buf[6..14].copy_from_slice(b"HEAPCCDR");
+        buf
+    }
+
+    #[test]
+    fn crw_accepted() {
+        assert!(validate_crw(&make_crw(), 0));
+    }
+
+    #[test]
+    fn crw_wrong_tag_rejected() {
+        let mut buf = make_crw();
+        buf[6..14].copy_from_slice(b"NOTCRWXX");
+        assert!(!validate_crw(&buf, 0));
+    }
+
+    // ── MRW ───────────────────────────────────────────────────────────────────
+
+    fn make_mrw(tag: &[u8; 3]) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[0..4].copy_from_slice(b"\x00MRM");
+        buf[4..8].copy_from_slice(&8u32.to_be_bytes()); // length field
+        buf[8..11].copy_from_slice(tag);
+        buf
+    }
+
+    #[test]
+    fn mrw_prd_accepted() {
+        assert!(validate_mrw(&make_mrw(b"PRD"), 0));
+    }
+
+    #[test]
+    fn mrw_ttw_accepted() {
+        assert!(validate_mrw(&make_mrw(b"TTW"), 0));
+    }
+
+    #[test]
+    fn mrw_wbg_accepted() {
+        assert!(validate_mrw(&make_mrw(b"WBG"), 0));
+    }
+
+    #[test]
+    fn mrw_bad_tag_rejected() {
+        assert!(!validate_mrw(&make_mrw(b"XYZ"), 0));
+    }
+
+    // ── KDBX / KDB ───────────────────────────────────────────────────────────
+
+    fn make_keepass(sig2: &[u8; 4], major: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 12];
+        buf[0..4].copy_from_slice(b"\x03\xD9\xA2\x9A");
+        buf[4..8].copy_from_slice(sig2);
+        buf[8..10].copy_from_slice(&0u16.to_le_bytes()); // minor
+        buf[10..12].copy_from_slice(&major.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn kdbx_major3_accepted() {
+        assert!(validate_kdbx(&make_keepass(b"\x67\xFB\x4B\xB5", 3), 0));
+    }
+
+    #[test]
+    fn kdbx_major4_accepted() {
+        assert!(validate_kdbx(&make_keepass(b"\x67\xFB\x4B\xB5", 4), 0));
+    }
+
+    #[test]
+    fn kdbx_major1_rejected() {
+        assert!(!validate_kdbx(&make_keepass(b"\x67\xFB\x4B\xB5", 1), 0));
+    }
+
+    #[test]
+    fn kdb_major1_accepted() {
+        assert!(validate_kdb(&make_keepass(b"\x65\xFB\x4B\xB5", 1), 0));
+    }
+
+    #[test]
+    fn kdb_major2_accepted() {
+        assert!(validate_kdb(&make_keepass(b"\x65\xFB\x4B\xB5", 2), 0));
+    }
+
+    #[test]
+    fn kdb_major4_rejected() {
+        assert!(!validate_kdb(&make_keepass(b"\x65\xFB\x4B\xB5", 4), 0));
+    }
+
+    // ── E01 ───────────────────────────────────────────────────────────────────
+
+    fn make_e01(segment: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 10];
+        buf[0..8].copy_from_slice(b"EVF\x09\x0D\x0A\xFF\x00");
+        buf[8..10].copy_from_slice(&segment.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn e01_segment1_accepted() {
+        assert!(validate_e01(&make_e01(1), 0));
+    }
+
+    #[test]
+    fn e01_segment2_rejected() {
+        assert!(!validate_e01(&make_e01(2), 0));
+    }
+
+    #[test]
+    fn e01_segment0_rejected() {
+        assert!(!validate_e01(&make_e01(0), 0));
+    }
+
+    // ── PCAP ──────────────────────────────────────────────────────────────────
+
+    fn make_pcap_le() -> Vec<u8> {
+        let mut buf = vec![0u8; 8];
+        buf[0..4].copy_from_slice(&[0xD4, 0xC3, 0xB2, 0xA1]);
+        buf[4..6].copy_from_slice(&2u16.to_le_bytes()); // major
+        buf[6..8].copy_from_slice(&4u16.to_le_bytes()); // minor
+        buf
+    }
+
+    fn make_pcap_be() -> Vec<u8> {
+        let mut buf = vec![0u8; 8];
+        buf[0..4].copy_from_slice(&[0xA1, 0xB2, 0xC3, 0xD4]);
+        buf[4..6].copy_from_slice(&2u16.to_be_bytes()); // major
+        buf[6..8].copy_from_slice(&4u16.to_be_bytes()); // minor
+        buf
+    }
+
+    #[test]
+    fn pcap_le_accepted() {
+        assert!(validate_pcap(&make_pcap_le(), 0));
+    }
+
+    #[test]
+    fn pcap_be_accepted() {
+        assert!(validate_pcap(&make_pcap_be(), 0));
+    }
+
+    #[test]
+    fn pcap_le_wrong_version_rejected() {
+        let mut buf = make_pcap_le();
+        buf[4..6].copy_from_slice(&1u16.to_le_bytes()); // wrong major
+        assert!(!validate_pcap(&buf, 0));
+    }
+
+    // ── DMP ───────────────────────────────────────────────────────────────────
+
+    fn make_dmp(stream_count: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 12];
+        buf[0..6].copy_from_slice(b"MDMP\x93\xA7");
+        buf[8..12].copy_from_slice(&stream_count.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn dmp_streams_accepted() {
+        assert!(validate_dmp(&make_dmp(5), 0));
+    }
+
+    #[test]
+    fn dmp_zero_streams_rejected() {
+        assert!(!validate_dmp(&make_dmp(0), 0));
+    }
+
+    // ── PLIST ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn plist_sufficient_length_accepted() {
+        let buf = vec![0u8; 64];
+        assert!(validate_plist(&buf, 0));
+    }
+
+    #[test]
+    fn plist_too_short_rejected() {
+        let buf = vec![0u8; 10];
+        assert!(!validate_plist(&buf, 0));
+    }
+
+    // ── TS ────────────────────────────────────────────────────────────────────
+
+    fn make_ts() -> Vec<u8> {
+        let mut buf = vec![0u8; 400];
+        buf[0] = 0x47;
+        buf[188] = 0x47;
+        buf[376] = 0x47;
+        buf
+    }
+
+    #[test]
+    fn ts_stride_accepted() {
+        assert!(validate_ts(&make_ts(), 0));
+    }
+
+    #[test]
+    fn ts_missing_second_sync_rejected() {
+        let mut buf = make_ts();
+        buf[188] = 0x00;
+        assert!(!validate_ts(&buf, 0));
+    }
+
+    #[test]
+    fn ts_missing_third_sync_rejected() {
+        let mut buf = make_ts();
+        buf[376] = 0x00;
+        assert!(!validate_ts(&buf, 0));
+    }
+
+    // ── M2TS ──────────────────────────────────────────────────────────────────
+
+    fn make_m2ts() -> Vec<u8> {
+        let mut buf = vec![0u8; 400];
+        buf[4] = 0x47;
+        buf[196] = 0x47;
+        buf[388] = 0x47;
+        buf
+    }
+
+    #[test]
+    fn m2ts_stride_accepted() {
+        assert!(validate_m2ts(&make_m2ts(), 0));
+    }
+
+    #[test]
+    fn m2ts_missing_second_sync_rejected() {
+        let mut buf = make_m2ts();
+        buf[196] = 0x00;
+        assert!(!validate_m2ts(&buf, 0));
+    }
+
+    // ── LUKS ──────────────────────────────────────────────────────────────────
+
+    fn make_luks(version: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 8];
+        buf[0..6].copy_from_slice(b"LUKS\xBA\xBE");
+        buf[6..8].copy_from_slice(&version.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn luks_v1_accepted() {
+        assert!(validate_luks(&make_luks(1), 0));
+    }
+
+    #[test]
+    fn luks_v2_accepted() {
+        assert!(validate_luks(&make_luks(2), 0));
+    }
+
+    #[test]
+    fn luks_v3_rejected() {
+        assert!(!validate_luks(&make_luks(3), 0));
+    }
+
+    // ── X3F ───────────────────────────────────────────────────────────────────
+
+    fn make_x3f(major: u8, minor: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 8];
+        buf[0..4].copy_from_slice(b"FOVb");
+        buf[4] = minor; // u32 LE: byte 4 = minor
+        buf[5] = major; // byte 5 = major
+        buf
+    }
+
+    #[test]
+    fn x3f_v2_accepted() {
+        assert!(validate_x3f(&make_x3f(2, 0), 0));
+    }
+
+    #[test]
+    fn x3f_v3_accepted() {
+        assert!(validate_x3f(&make_x3f(3, 1), 0));
+    }
+
+    #[test]
+    fn x3f_v1_rejected() {
+        assert!(!validate_x3f(&make_x3f(1, 0), 0));
+    }
+
+    #[test]
+    fn x3f_v4_rejected() {
+        assert!(!validate_x3f(&make_x3f(4, 0), 0));
+    }
+
+    // ── ISO ───────────────────────────────────────────────────────────────────
+
+    fn make_iso_pvd() -> Vec<u8> {
+        // Magic "CD001" + version byte 0x01 (6 bytes total).
+        let mut buf = vec![0u8; 8];
+        buf[0..5].copy_from_slice(b"CD001");
+        buf[5] = 0x01; // version
+        buf
+    }
+
+    #[test]
+    fn iso_pvd_accepted() {
+        assert!(validate_iso(&make_iso_pvd(), 0));
+    }
+
+    #[test]
+    fn iso_bad_version_rejected() {
+        let mut buf = make_iso_pvd();
+        buf[5] = 0x02;
+        assert!(!validate_iso(&buf, 0));
+    }
+
+    // ── DICOM ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn dicom_sufficient_data_accepted() {
+        let buf = vec![0u8; 16];
+        assert!(validate_dicom(&buf, 0));
+    }
+
+    #[test]
+    fn dicom_too_short_rejected() {
+        let buf = vec![0u8; 5];
+        assert!(!validate_dicom(&buf, 0));
+    }
+
+    // ── TAR ───────────────────────────────────────────────────────────────────
+
+    fn make_tar(version: &[u8; 2]) -> Vec<u8> {
+        let mut buf = vec![0u8; 10];
+        buf[0..6].copy_from_slice(b"ustar\x00");
+        buf[6..8].copy_from_slice(version);
+        buf
+    }
+
+    #[test]
+    fn tar_posix_version_accepted() {
+        assert!(validate_tar(&make_tar(b"00"), 0));
+    }
+
+    #[test]
+    fn tar_gnu_version_accepted() {
+        assert!(validate_tar(&make_tar(b"  "), 0));
+    }
+
+    #[test]
+    fn tar_bad_version_rejected() {
+        assert!(!validate_tar(&make_tar(b"01"), 0));
+    }
+
+    // ── APE ───────────────────────────────────────────────────────────────────
+
+    fn make_ape(version: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 8];
+        buf[0..4].copy_from_slice(b"MAC ");
+        buf[6..8].copy_from_slice(&version.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn ape_version_3990_accepted() {
+        assert!(validate_ape(&make_ape(3990), 0));
+    }
+
+    #[test]
+    fn ape_version_4000_accepted() {
+        assert!(validate_ape(&make_ape(4000), 0));
+    }
+
+    #[test]
+    fn ape_version_too_old_rejected() {
+        assert!(!validate_ape(&make_ape(3000), 0));
+    }
+
+    #[test]
+    fn ape_version_too_new_rejected() {
+        assert!(!validate_ape(&make_ape(5000), 0));
+    }
+
+    // ── AU ────────────────────────────────────────────────────────────────────
+
+    fn make_au(data_offset: u32, encoding: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[0..4].copy_from_slice(b".snd");
+        buf[4..8].copy_from_slice(&data_offset.to_be_bytes());
+        buf[12..16].copy_from_slice(&encoding.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn au_mulaw_accepted() {
+        assert!(validate_au(&make_au(24, 1), 0));
+    }
+
+    #[test]
+    fn au_pcm16_accepted() {
+        assert!(validate_au(&make_au(24, 3), 0));
+    }
+
+    #[test]
+    fn au_small_offset_rejected() {
+        assert!(!validate_au(&make_au(8, 1), 0));
+    }
+
+    #[test]
+    fn au_unknown_encoding_rejected() {
+        assert!(!validate_au(&make_au(24, 99), 0));
+    }
+
+    // ── TTF ───────────────────────────────────────────────────────────────────
+
+    fn make_ttf(num_tables: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 6];
+        buf[0..4].copy_from_slice(&[0x00, 0x01, 0x00, 0x00]);
+        buf[4..6].copy_from_slice(&num_tables.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn ttf_16_tables_accepted() {
+        assert!(validate_ttf(&make_ttf(16), 0));
+    }
+
+    #[test]
+    fn ttf_too_few_tables_rejected() {
+        assert!(!validate_ttf(&make_ttf(2), 0));
+    }
+
+    #[test]
+    fn ttf_too_many_tables_rejected() {
+        assert!(!validate_ttf(&make_ttf(100), 0));
+    }
+
+    // ── WOFF ──────────────────────────────────────────────────────────────────
+
+    fn make_woff(flavor: u32, length: u32, num_tables: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 14];
+        buf[0..4].copy_from_slice(b"wOFF");
+        buf[4..8].copy_from_slice(&flavor.to_be_bytes());
+        buf[8..12].copy_from_slice(&length.to_be_bytes());
+        buf[12..14].copy_from_slice(&num_tables.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn woff_ttf_flavor_accepted() {
+        assert!(validate_woff(&make_woff(0x0001_0000, 1024, 10), 0));
+    }
+
+    #[test]
+    fn woff_otf_flavor_accepted() {
+        assert!(validate_woff(&make_woff(0x4F54_544F, 512, 8), 0));
+    }
+
+    #[test]
+    fn woff_bad_flavor_rejected() {
+        assert!(!validate_woff(&make_woff(0xDEAD_BEEF, 1024, 10), 0));
+    }
+
+    #[test]
+    fn woff_length_too_small_rejected() {
+        assert!(!validate_woff(&make_woff(0x0001_0000, 10, 10), 0));
+    }
+
+    // ── CHM ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn chm_full_magic_accepted() {
+        let buf = vec![0u8; 16];
+        assert!(validate_chm(&buf, 0));
+    }
+
+    #[test]
+    fn chm_too_short_rejected() {
+        let buf = vec![0u8; 5];
+        assert!(!validate_chm(&buf, 0));
+    }
+
+    // ── BLEND ─────────────────────────────────────────────────────────────────
+
+    fn make_blend(ptr_size: u8, endian: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 12];
+        buf[0..7].copy_from_slice(b"BLENDER");
+        buf[7] = ptr_size;
+        buf[8] = endian;
+        buf
+    }
+
+    #[test]
+    fn blend_32bit_le_accepted() {
+        assert!(validate_blend(&make_blend(b'-', b'v'), 0));
+    }
+
+    #[test]
+    fn blend_64bit_be_accepted() {
+        assert!(validate_blend(&make_blend(b'_', b'V'), 0));
+    }
+
+    #[test]
+    fn blend_bad_ptr_rejected() {
+        assert!(!validate_blend(&make_blend(b'X', b'v'), 0));
+    }
+
+    #[test]
+    fn blend_bad_endian_rejected() {
+        assert!(!validate_blend(&make_blend(b'-', b'X'), 0));
+    }
+
+    // ── INDD / WTV ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn indd_sufficient_data_accepted() {
+        assert!(validate_indd(&[0u8; 16], 0));
+    }
+
+    #[test]
+    fn indd_too_short_rejected() {
+        assert!(!validate_indd(&[0u8; 10], 0));
+    }
+
+    #[test]
+    fn wtv_sufficient_data_accepted() {
+        assert!(validate_wtv(&[0u8; 16], 0));
+    }
+
+    #[test]
+    fn wtv_too_short_rejected() {
+        assert!(!validate_wtv(&[0u8; 10], 0));
+    }
+
+    // ── PHP ───────────────────────────────────────────────────────────────────
+
+    fn make_php(byte5: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[0..5].copy_from_slice(b"<?php");
+        buf[5] = byte5;
+        buf
+    }
+
+    #[test]
+    fn php_space_after_tag_accepted() {
+        assert!(validate_php(&make_php(b' '), 0));
+    }
+
+    #[test]
+    fn php_newline_after_tag_accepted() {
+        assert!(validate_php(&make_php(b'\n'), 0));
+    }
+
+    #[test]
+    fn php_cr_after_tag_accepted() {
+        assert!(validate_php(&make_php(b'\r'), 0));
+    }
+
+    #[test]
+    fn php_tab_after_tag_accepted() {
+        assert!(validate_php(&make_php(b'\t'), 0));
+    }
+
+    #[test]
+    fn php_no_space_rejected() {
+        assert!(!validate_php(&make_php(b'i'), 0)); // "<?phpinfo" pattern
+    }
+
+    #[test]
+    fn php_too_short_passes() {
+        // Only 5 bytes — benefit of doubt.
+        assert!(validate_php(b"<?php", 0));
+    }
+
+    // ── Shebang ───────────────────────────────────────────────────────────────
+
+    fn make_shebang(byte2: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[0] = b'#';
+        buf[1] = b'!';
+        buf[2] = byte2;
+        buf
+    }
+
+    #[test]
+    fn shebang_slash_accepted() {
+        assert!(validate_shebang(&make_shebang(b'/'), 0));
+    }
+
+    #[test]
+    fn shebang_no_slash_rejected() {
+        assert!(!validate_shebang(&make_shebang(b'e'), 0)); // "#!/" not present
+    }
+
+    #[test]
+    fn shebang_too_short_passes() {
+        // Only 2 bytes — benefit of doubt.
+        assert!(validate_shebang(b"#!", 0));
     }
 }

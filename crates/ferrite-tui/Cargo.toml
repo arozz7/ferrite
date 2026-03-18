@@ -14,6 +14,8 @@ ferrite-imaging    = { workspace = true }
 ferrite-partition  = { workspace = true }
 ferrite-filesystem = { workspace = true }
 ferrite-carver     = { workspace = true }
+ferrite-artifact     = { workspace = true }
+ferrite-textcarver   = { workspace = true }
 ratatui            = { workspace = true }
 crossterm          = { workspace = true }
 image              = { workspace = true }
@@ -23,6 +25,7 @@ sha2               = { workspace = true }
 chrono             = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
+toml               = { workspace = true }
 fs2                = { workspace = true }
 filetime           = { workspace = true }
 

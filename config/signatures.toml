@@ -108,6 +108,8 @@ min_size        = 4096
 max_size        = 4_294_967_296  # 4 GiB fallback when box-walk fails
 size_hint_kind  = "mp4"
 # Validates ftyp box size in [12, 512] and brand bytes are printable ASCII.
+# Rejects "qt  " (→ .mov), "M4V " (→ .m4v), and "3gp*"/"3g2*" (→ .3gp)
+# brands which have their own dedicated signatures.
 pre_validate    = "mp4"
 
 [[signature]]
@@ -295,3 +297,914 @@ max_size       = 2_147_483_648  # 2 GiB hard cap
 size_hint_kind = "ole2"
 # Validates ByteOrder field (u16 LE @28) == 0xFFFE (mandatory in all OLE2 files).
 pre_validate   = "ole2"
+
+[[signature]]
+name           = "Sony ARW Raw Photo"
+extension      = "arw"
+# TIFF LE magic + IFD offset fixed at 8 (universal for Sony ARW).
+# The 8-byte anchor filters generic TIFF files; the pre-validator confirms
+# a plausible IFD entry count and the "SONY" Make string in the header area.
+header         = "49 49 2A 00 08 00 00 00"
+footer         = ""
+min_size       = 1_000_000    # 1 MB — RAW files are never tiny
+max_size       = 200_000_000  # 200 MB — covers A7R V, A1, and future sensors
+# TIFF IFD walker derives true size from SubIFD strip extents.
+size_hint_kind = "tiff"
+# Validates IFD entry count in [5,50] and "SONY" string within first 512 bytes.
+pre_validate   = "arw"
+
+[[signature]]
+name           = "Canon CR2 Raw Photo"
+extension      = "cr2"
+# TIFF LE magic + wildcard IFD offset + Canon marker CR\x02\x00 at offset 8.
+# The 12-byte pattern (4 exact + 4 wildcard + 4 exact) is highly distinctive.
+header         = "49 49 2A 00 ?? ?? ?? ?? 43 52 02 00"
+footer         = ""
+min_size       = 1_000_000    # 1 MB
+max_size       = 120_000_000  # 120 MB — covers 5DS R (50 MP) and newer
+# TIFF IFD walker derives true size from SubIFD strip extents.
+size_hint_kind = "tiff"
+# Validates IFD offset at +4 is in [8, 4096].
+pre_validate   = "cr2"
+
+[[signature]]
+name           = "Panasonic RW2 Raw Photo"
+extension      = "rw2"
+# Panasonic TIFF variant: II + 0x55 0x00 (0x0055 instead of standard 0x002A).
+# This single byte difference from standard TIFF is already highly selective.
+header         = "49 49 55 00"
+footer         = ""
+min_size       = 1_000_000    # 1 MB
+max_size       = 150_000_000  # 150 MB — covers S1R (47 MP)
+# TIFF IFD walker derives true size; handles RW2's non-standard 0x55 magic.
+size_hint_kind = "tiff"
+# Validates IFD offset in [8,4096] and entry count in [3,50].
+pre_validate   = "rw2"
+
+[[signature]]
+name           = "Fujifilm RAF Raw Photo"
+extension      = "raf"
+# "FUJIFILMCCD-RAW" — 15 unique ASCII bytes, one of the most distinctive
+# RAW signatures.  False-positive probability is essentially zero.
+header         = "46 55 4A 49 46 49 4C 4D 43 43 44 2D 52 41 57"
+footer         = ""
+min_size       = 1_000_000    # 1 MB
+max_size       = 300_000_000  # 300 MB — covers GFX 100 / GFX 100S (102 MP)
+# RAF header stores JPEG and CFA extents at fixed offsets 84–99 (BE u32 pairs).
+size_hint_kind = "raf"
+# Validates space at offset 15 and 4-digit ASCII version string at offset 16.
+pre_validate   = "raf"
+
+[[signature]]
+name           = "TIFF Image (Little-Endian)"
+extension      = "tif"
+# Standard TIFF LE magic: "II" byte order + 0x2A TIFF marker.
+# Covers plain TIFF, Adobe DNG (Digital Negative), and any other TIFF-based
+# format not covered by the dedicated ARW / CR2 / RW2 / NEF signatures.
+header         = "49 49 2A 00"
+footer         = ""
+max_size       = 1_073_741_824  # 1 GiB — large scans and multi-layer PSD-style TIFFs
+# TIFF IFD walker derives true size from strip/tile offset+length pairs.
+size_hint_kind = "tiff"
+# Rejects Sony ARW ("SONY" marker), Canon CR2 (CR\x02\x00 at +8), and
+# Nikon NEF ("NIKON" marker) — each has a dedicated signature with the
+# correct extension.
+pre_validate   = "tiff_le"
+
+[[signature]]
+name           = "TIFF Image (Big-Endian)"
+extension      = "tif"
+# Big-endian TIFF: "MM" byte order + 0x2A marker.  Less common than LE but
+# produced by some scanners, older Mac software, and certain cameras.
+header         = "4D 4D 00 2A"
+footer         = ""
+max_size       = 1_073_741_824  # 1 GiB
+# TIFF IFD walker derives true size.
+size_hint_kind = "tiff"
+# Validates IFD offset and entry count are plausible.
+pre_validate   = "tiff_be"
+
+[[signature]]
+name           = "Nikon NEF Raw Photo"
+extension      = "nef"
+# TIFF LE magic — same as standard TIFF.  The pre-validator distinguishes
+# Nikon NEF files by requiring the "NIKON" manufacturer string within the
+# first 512 bytes of the header.
+header         = "49 49 2A 00"
+footer         = ""
+min_size       = 1_000_000    # 1 MB — RAW files are never tiny
+max_size       = 200_000_000  # 200 MB — covers Z9 (45 MP) and future sensors
+# TIFF IFD walker derives true size from SubIFD strip extents.
+size_hint_kind = "tiff"
+# Validates IFD offset in [8,4096] and "NIKON" string in first 512 bytes.
+pre_validate   = "nef"
+
+[[signature]]
+name           = "Apple HEIC Photo (heic)"
+extension      = "heic"
+# ISOBMFF ftyp box with "heic" major brand — standard iPhone HEIC photo.
+# First 4 bytes are the variable box size (wildcarded); bytes 4-7 are "ftyp";
+# bytes 8-11 are the "heic" brand.
+header         = "?? ?? ?? ?? 66 74 79 70 68 65 69 63"
+footer         = ""
+min_size       = 16384         # 16 KiB
+max_size       = 100_000_000   # 100 MB — HEIC is highly compressed
+# ISOBMFF box walker derives true file size.
+size_hint_kind = "mp4"
+# Validates ftyp box size in [12, 512].
+pre_validate   = "heic"
+
+[[signature]]
+name           = "Apple HEIC Photo (heix)"
+extension      = "heic"
+# ISOBMFF ftyp box with "heix" major brand — HEIC with extended feature set,
+# used by newer iPhone models and iOS versions.
+header         = "?? ?? ?? ?? 66 74 79 70 68 65 69 78"
+footer         = ""
+min_size       = 16384
+max_size       = 100_000_000
+size_hint_kind = "mp4"
+pre_validate   = "heic"
+
+[[signature]]
+name           = "QuickTime MOV Video"
+extension      = "mov"
+# ISOBMFF ftyp box with "qt  " (QuickTime) major brand — used by macOS/iPhone
+# recorded videos and Final Cut Pro exports.
+# First 4 bytes are the variable box size (wildcarded); bytes 4-7 are "ftyp";
+# bytes 8-11 are the "qt  " brand (two trailing spaces).
+header         = "?? ?? ?? ?? 66 74 79 70 71 74 20 20"
+footer         = ""
+min_size       = 4096
+max_size       = 4_294_967_296   # 4 GiB
+size_hint_kind = "mp4"
+# Validates ftyp box size in [12, 512].
+pre_validate   = "mov"
+
+[[signature]]
+name           = "iTunes M4V Video"
+extension      = "m4v"
+# ISOBMFF ftyp box with "M4V " major brand — iTunes purchased / rented video.
+header         = "?? ?? ?? ?? 66 74 79 70 4D 34 56 20"
+footer         = ""
+min_size       = 4096
+max_size       = 4_294_967_296   # 4 GiB
+size_hint_kind = "mp4"
+# Validates ftyp box size in [12, 512].
+pre_validate   = "m4v"
+
+[[signature]]
+name           = "3GPP / 3GPP2 Mobile Video"
+extension      = "3gp"
+# ISOBMFF ftyp box whose major brand starts with "3g" (e.g. 3gp5, 3gp6, 3g2a).
+# 10-byte header anchors on ftyp + first two brand bytes "3g"; pre-validator
+# confirms the full brand is "3gp*" or "3g2*".
+header         = "?? ?? ?? ?? 66 74 79 70 33 67"
+footer         = ""
+min_size       = 4096
+max_size       = 536_870_912     # 512 MiB — mobile clips are small
+size_hint_kind = "mp4"
+# Validates full brand starts with "3gp" or "3g2"; box size in [12, 512].
+pre_validate   = "3gp"
+
+[[signature]]
+name         = "WebM Video"
+extension    = "webm"
+# EBML container with DocType "webm" — VP8/VP9/AV1 video, Vorbis/Opus audio.
+# Shares the same 4-byte EBML magic as MKV; the pre-validator checks the
+# DocType element to distinguish WebM from Matroska.
+header       = "1A 45 DF A3"
+footer       = ""
+max_size     = 8_589_934_592  # 8 GiB
+# Validates EBML VINT leading byte non-zero and DocType element == "webm".
+pre_validate = "webm"
+
+[[signature]]
+name         = "Windows Media Video / ASF"
+extension    = "wmv"
+# ASF (Advanced Systems Format) Header Object — used by WMV, WMA, and ASF
+# files.  The 16-byte GUID is globally unique; no other format shares it.
+header       = "30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C"
+footer       = ""
+min_size     = 4096
+max_size     = 4_294_967_296  # 4 GiB
+# Validates ASF object size (u64 LE @16) is ≥ 30 bytes.
+pre_validate = "wmv"
+
+[[signature]]
+name         = "Flash Video (FLV)"
+extension    = "flv"
+# FLV file header: "FLV" magic + version byte 0x01.
+# Reserved flag bits must be zero; DataOffset must be 9.
+header       = "46 4C 56 01"
+footer       = ""
+min_size     = 4096
+max_size     = 4_294_967_296  # 4 GiB
+# Validates reserved type-flag bits are zero and DataOffset (u32 BE @5) == 9.
+pre_validate = "flv"
+
+[[signature]]
+name         = "MPEG-2 / MPEG-1 Program Stream"
+extension    = "mpg"
+# MPEG Program Stream pack header: 00 00 01 BA.
+# Byte @+4: top-2-bits == 01 → MPEG-2; top-4-bits == 0010 → MPEG-1.
+header       = "00 00 01 BA"
+footer       = ""
+min_size     = 4096
+max_size     = 4_294_967_296  # 4 GiB
+# Validates MPEG-2 (0x40–0x7F) or MPEG-1 (0x20–0x2F) pack-byte pattern.
+pre_validate = "mpeg"
+# Pack start code appears at every pack boundary within the stream (~every 2KB
+# on DVD), so suppress hits within 16 MiB of each other to avoid flooding the
+# hit list with intra-file duplicates.
+min_hit_gap  = 16_777_216     # 16 MiB
+
+[[signature]]
+name         = "WebP Image"
+extension    = "webp"
+# RIFF container with "WEBP" subtype at bytes 8-11.
+# Shares the RIFF 4-byte size field pattern with WAV and AVI.
+header       = "52 49 46 46 ?? ?? ?? ?? 57 45 42 50"
+footer       = ""
+max_size     = 52_428_800  # 50 MiB
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 8
+pre_validate = "webp"
+
+[[signature]]
+name           = "AAC / M4A Audio"
+extension      = "m4a"
+# ISOBMFF ftyp box with "M4A " major brand.
+# Same box walker as MP4; rejects video brands.
+header         = "?? ?? ?? ?? 66 74 79 70 4D 34 41 20"
+footer         = ""
+min_size       = 4096
+max_size       = 524_288_000  # 500 MiB
+size_hint_kind = "mp4"
+pre_validate   = "m4a"
+
+[[signature]]
+name         = "GZip Compressed"
+extension    = "gz"
+# ID1=0x1F ID2=0x8B — universally identifies gzip.  Byte @2 must be
+# compression method 8 (DEFLATE); byte @3 is flags (bit 5 reserved=0).
+header       = "1F 8B"
+footer       = ""
+min_size     = 20
+max_size     = 2_147_483_648  # 2 GiB hard cap
+pre_validate = "gz"
+
+[[signature]]
+name         = "Email Message (EML)"
+extension    = "eml"
+# RFC 2822 mbox/standalone email — starts with "From " followed by sender
+# address or "MIME-Version:" header.  Text-based; size capped conservatively.
+header       = "46 72 6F 6D 20"
+footer       = ""
+min_size     = 64
+max_size     = 52_428_800  # 50 MiB
+pre_validate = "eml"
+
+[[signature]]
+name         = "ELF Executable / Shared Library"
+extension    = "elf"
+# ELF magic: 0x7F "ELF" — Linux/Unix executables and shared objects.
+header       = "7F 45 4C 46"
+footer       = ""
+min_size     = 64
+max_size     = 104_857_600  # 100 MiB
+pre_validate = "elf"
+
+[[signature]]
+name           = "Windows Registry Hive (REGF)"
+extension      = "dat"
+# "regf" magic — NTUSER.DAT, SAM, SYSTEM, SOFTWARE registry files.
+# Size is stored at offset 40 as a u32 LE (hive length in bytes).
+header         = "72 65 67 66"
+footer         = ""
+min_size       = 4096
+max_size       = 524_288_000  # 500 MiB
+size_hint_offset = 40
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 0
+pre_validate   = "regf"
+
+[[signature]]
+name         = "Adobe Photoshop Document (PSD/PSB)"
+extension    = "psd"
+# "8BPS" magic — PSD (version 1, max 30000px) or PSB (version 2, max 300000px).
+header       = "38 42 50 53"
+footer       = ""
+min_size     = 512
+max_size     = 2_147_483_648  # 2 GiB (large multi-layer PSBs can be huge)
+pre_validate = "psd"
+
+[[signature]]
+name         = "VHD Virtual Hard Disk"
+extension    = "vhd"
+# "conectix" creator ID in the VHD footer — present at byte 0 in fixed
+# images and at the last 512 bytes in dynamic/differencing images.
+# Ferrite scans from byte 0 so this catches fixed VHDs; dynamic VHDs
+# are identified by the footer copy at offset 512.
+header       = "63 6F 6E 65 63 74 69 78"
+footer       = ""
+min_size     = 512
+max_size     = 68_719_476_736  # 64 GiB hard cap
+pre_validate = "vhd"
+
+[[signature]]
+name         = "VHDX Virtual Hard Disk"
+extension    = "vhdx"
+# "vhdxfile" file identifier signature — Microsoft Hyper-V VHDX format.
+# Replaces VHD on Windows Server 2012+; supports up to 64 TiB.
+header       = "76 68 64 78 66 69 6C 65"
+footer       = ""
+min_size     = 1_048_576  # 1 MiB minimum for a valid VHDX
+max_size     = 68_719_476_736  # 64 GiB hard cap
+pre_validate = "vhdx"
+
+[[signature]]
+name         = "QCOW2 Virtual Disk (QEMU)"
+extension    = "qcow2"
+# QCOW2 magic: 0x514649FB ("QFI\xFB") — QEMU Copy-On-Write version 2/3.
+# Version u32 BE @4 must be 2 or 3; cluster_bits u32 BE @20 in [9,21].
+header       = "51 46 49 FB"
+footer       = ""
+min_size     = 65536
+max_size     = 68_719_476_736  # 64 GiB hard cap
+pre_validate = "qcow2"
+
+[[signature]]
+name         = "MIDI Audio"
+extension    = "mid"
+# "MThd" — Standard MIDI File header chunk.  Immediately followed by
+# chunk length (u32 BE = 6) and format type (u16 BE) in {0,1,2}.
+header       = "4D 54 68 64"
+footer       = ""
+min_size     = 32
+max_size     = 10_485_760   # 10 MiB
+# Validates chunk length @4 == 6 and format @8 in {0,1,2}.
+pre_validate = "midi"
+
+[[signature]]
+name             = "AIFF Audio"
+extension        = "aif"
+# IFF FORM chunk with "AIFF" or "AIFC" sub-type.
+# Bytes 0-3: "FORM"; bytes 4-7: chunk length (u32 BE); bytes 8-11: "AIFF" or "AIFC".
+header           = "46 4F 52 4D ?? ?? ?? ?? 41 49 46 ??"
+footer           = ""
+max_size         = 2_147_483_648  # 2 GiB
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "be"
+size_hint_add    = 8
+# Validates byte @11 is 'F' (AIFF) or 'C' (AIFC), and size field > 4.
+pre_validate     = "aiff"
+
+[[signature]]
+name         = "XZ Compressed"
+extension    = "xz"
+# 6-byte XZ stream magic: FD 37 7A 58 5A 00.  Followed by stream flags
+# (2 bytes): byte @6 == 0x00 (reserved); byte @7 encodes the check type.
+header       = "FD 37 7A 58 5A 00"
+footer       = ""
+min_size     = 32
+max_size     = 2_147_483_648  # 2 GiB
+# Validates byte @6 == 0x00 and byte @7 check type in {0x00,0x01,0x04,0x0A}.
+pre_validate = "xz"
+
+[[signature]]
+name         = "BZip2 Compressed"
+extension    = "bz2"
+# "BZh" + compression level digit '1'-'9', followed by the block magic
+# constant 0x314159265359 (pi, as a bit-stream header for BWT blocks).
+header       = "42 5A 68 ??"
+footer       = ""
+min_size     = 14
+max_size     = 2_147_483_648  # 2 GiB
+# Validates byte @3 is '1'-'9' (0x31-0x39) and block magic @4-9 == pi constant.
+pre_validate = "bzip2"
+
+[[signature]]
+name         = "RealMedia / RealVideo"
+extension    = "rm"
+# ".RMF" — RealMedia File Format magic.  Object version (u16 BE @4) in {0,1};
+# header size (u32 BE @6) is typically 18.
+header       = "2E 52 4D 46"
+footer       = ""
+min_size     = 18
+max_size     = 2_147_483_648  # 2 GiB
+# Validates object version @4 in {0,1} and header size @6 >= 18.
+pre_validate = "realmedia"
+
+[[signature]]
+name         = "Windows Icon (ICO)"
+extension    = "ico"
+# ICO header: reserved (00 00) + type (01 00 LE = 1 for icon, 2 for cursor).
+# Image count (u16 LE @4) must be in [1, 200].
+header       = "00 00 01 00"
+footer       = ""
+min_size     = 22
+max_size     = 1_048_576   # 1 MiB — ICO files are always small
+# Validates image count @4 (u16 LE) in [1, 200].
+pre_validate = "ico"
+
+[[signature]]
+name           = "Olympus ORF Raw Photo"
+extension      = "orf"
+# Olympus TIFF variant: "II" byte-order + 0x524F (RO) magic instead of standard
+# 0x002A.  Highly selective — no other format shares this 4-byte sequence.
+header         = "49 49 52 4F"
+footer         = ""
+min_size       = 1_000_000    # 1 MB — RAW files are never tiny
+max_size       = 150_000_000  # 150 MB — covers OM-1 (20 MP)
+# TIFF IFD walker derives true size.
+size_hint_kind = "tiff"
+# Validates IFD offset (u32 LE @4) in [8, 4096].
+pre_validate   = "orf"
+
+[[signature]]
+name           = "Pentax PEF Raw Photo"
+extension      = "pef"
+# Standard TIFF LE magic — same header as TIFF/NEF/ARW.  Identified by
+# the "PENTAX " manufacturer string within the first 512 bytes.
+header         = "49 49 2A 00"
+footer         = ""
+min_size       = 1_000_000    # 1 MB — RAW files are never tiny
+max_size       = 100_000_000  # 100 MB — covers 645Z (51 MP)
+# TIFF IFD walker derives true size.
+size_hint_kind = "tiff"
+# Validates IFD offset in [8,4096] and "PENTAX " in first 512 bytes.
+pre_validate   = "pef"
+
+[[signature]]
+name         = "Mach-O 64-bit Executable"
+extension    = "macho"
+# 64-bit little-endian Mach-O magic: CF FA ED FE.
+# filetype (u32 LE @12) must be in [1, 12] (object, execute, dylib, bundle, …).
+# cputype (u32 LE @4): 0x0100000C = arm64, 0x01000007 = x86_64, etc.
+header       = "CF FA ED FE"
+footer       = ""
+min_size     = 64
+max_size     = 104_857_600  # 100 MiB
+# Validates filetype @12 in [1, 12] and ncmds @16 in [1, 512].
+pre_validate = "macho"
+
+[[signature]]
+name           = "Canon CR3 Raw Photo"
+extension      = "cr3"
+# ISOBMFF ftyp box with "crx " (Canon RAW extended) major brand.
+# First 4 bytes are the variable box size (wildcarded); bytes 4-7 are "ftyp";
+# bytes 8-11 are "crx " brand identifier.
+header         = "?? ?? ?? ?? 66 74 79 70 63 72 78 20"
+footer         = ""
+min_size       = 1_000_000    # 1 MB — RAW files are never tiny
+max_size       = 200_000_000  # 200 MB — covers EOS R5 (45 MP)
+# ISOBMFF box walker derives true file size.
+size_hint_kind = "mp4"
+# Validates ftyp box size (u32 BE @0) in [12, 512].
+pre_validate   = "cr3"
+
+[[signature]]
+name           = "Sony SR2 Raw Photo"
+extension      = "sr2"
+# TIFF LE magic + IFD offset fixed at 8 — same anchor as ARW.
+# Pre-validator requires "SONY" in first 512 bytes AND the SR2 private tag
+# 0x7200 in IFD0 entries, distinguishing early Sony Cyber-shot SR2 from ARW.
+header         = "49 49 2A 00 08 00 00 00"
+footer         = ""
+min_size       = 1_000_000    # 1 MB — RAW files are never tiny
+max_size       = 50_000_000   # 50 MB — Cyber-shot / R1 sensors (6-14 MP)
+# TIFF IFD walker derives true file size.
+size_hint_kind = "tiff"
+# Validates IFD entry count in [3, 50], "SONY" in first 512 bytes, and
+# private tag 0x7200 (SR2Private) present in IFD0 entries.
+pre_validate   = "sr2"
+
+[[signature]]
+name         = "EPUB e-Book"
+extension    = "epub"
+# ZIP container — same 4-byte magic as DOCX/XLSX/PPTX/ODT.
+# Pre-validator checks the first local file entry is named "mimetype"
+# (8 bytes, uncompressed) with content "application/epub+zip".
+header       = "50 4B 03 04"
+footer       = "50 4B 05 06"
+min_size     = 1024
+max_size     = 104_857_600  # 100 MiB
+# Validates ZIP LFH fname_len == 8, fname == "mimetype", content contains "epub+zip".
+pre_validate = "epub"
+
+[[signature]]
+name         = "OpenDocument (ODT/ODS/ODP)"
+extension    = "odt"
+# ZIP container — same 4-byte magic as EPUB and Office OOXML.
+# Pre-validator checks the first local file entry is named "mimetype"
+# with content beginning "application/vnd.oasis.opendocument." (all ODF types).
+header       = "50 4B 03 04"
+footer       = "50 4B 05 06"
+min_size     = 1024
+max_size     = 104_857_600  # 100 MiB
+# Validates ZIP LFH fname_len == 8, fname == "mimetype", content contains "opendocument".
+pre_validate = "odt"
+
+[[signature]]
+name           = "Outlook Message (MSG)"
+extension      = "msg"
+# OLE2 Compound Document — same magic as DOC/XLS/PPT.
+# Pre-validator checks ByteOrder @28 == 0xFFFE and scans the first 4 KiB
+# for the MAPI stream name "__substg1.0_" present in all MSG files.
+header         = "D0 CF 11 E0 A1 B1 1A E1"
+footer         = ""
+max_size       = 104_857_600  # 100 MiB — large emails with attachments
+# OLE2 sector-count size hint.
+size_hint_kind = "ole2"
+# Validates ByteOrder == 0xFFFE and MAPI stream "__substg1.0_" in first 4 KiB.
+pre_validate   = "msg"
+
+[[signature]]
+name         = "WavPack Audio"
+extension    = "wv"
+# "wvpk" — WavPack block header magic, unique to this format.
+# ck_size (u32 LE @4) is the block size minus 8; must be > 0.
+# version (u16 LE @8) is the format version; valid range [0x0402, 0x0410].
+header       = "77 76 70 6B"
+footer       = ""
+min_size     = 32
+max_size     = 2_147_483_648  # 2 GiB
+# Validates ck_size > 0 and version in [0x0402, 0x0410].
+pre_validate = "wavpack"
+
+[[signature]]
+name             = "CorelDRAW Drawing"
+extension        = "cdr"
+# RIFF container with "CDR" subtype identifier at bytes 8-10 and a version
+# suffix at byte 11 (e.g. '4'-'9' for CDR4-CDR9, 'V' for CDRv10, 'X' for CDR11+).
+# Wildcards the 4-byte RIFF size field and the version suffix byte.
+header           = "52 49 46 46 ?? ?? ?? ?? 43 44 52 ??"
+footer           = ""
+min_size         = 512
+max_size         = 524_288_000  # 500 MiB — large vector art files
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 8
+# Validates byte @11 is a valid version suffix in {'4'-'9', 'A'-'Z', ' '}.
+pre_validate     = "cdr"
+
+[[signature]]
+name         = "Shockwave Flash (FWS — uncompressed)"
+extension    = "swf"
+# FWS header: "FWS" + version byte.  Body is raw ActionScript bytecode.
+# Version @3 in [1, 50]; file length (u32 LE @4) >= 8.
+header       = "46 57 53"
+footer       = ""
+min_size     = 8
+max_size     = 104_857_600  # 100 MiB
+# Validates version byte @3 in [1, 50] and file length @4 >= 8.
+pre_validate = "swf"
+
+[[signature]]
+name         = "Shockwave Flash (CWS — zlib)"
+extension    = "swf"
+# CWS header: "CWS" — zlib-compressed SWF (Flash Player 6+).
+# Same structure as FWS; the body after the 8-byte header is DEFLATE-compressed.
+header       = "43 57 53"
+footer       = ""
+min_size     = 8
+max_size     = 104_857_600  # 100 MiB
+# Validates version byte @3 in [1, 50] and file length @4 >= 8.
+pre_validate = "swf"
+
+[[signature]]
+name         = "Shockwave Flash (ZWS — LZMA)"
+extension    = "swf"
+# ZWS header: "ZWS" — LZMA-compressed SWF (Flash Player 13+).
+# Same header structure as FWS/CWS; body is LZMA-compressed.
+header       = "5A 57 53"
+footer       = ""
+min_size     = 8
+max_size     = 104_857_600  # 100 MiB
+# Validates version byte @3 in [1, 50] and file length @4 >= 8.
+pre_validate = "swf"
+
+[[signature]]
+name           = "Kodak DCR Raw Photo"
+extension      = "dcr"
+# TIFF LE magic — same 4-byte header as generic TIFF/NEF/ARW/PEF.
+# Pre-validator requires "Kodak" or "KODAK" in the first 512 bytes (the Make
+# IFD string) and rejects other TIFF-based RAW formats to avoid duplicates.
+header         = "49 49 2A 00"
+footer         = ""
+min_size       = 1_000_000    # 1 MB — RAW files are never tiny
+max_size       = 30_000_000   # 30 MB — early Kodak sensors (6-14 MP)
+# TIFF IFD walker derives true file size.
+size_hint_kind = "tiff"
+# Validates IFD offset in [8, 65536], "Kodak"/"KODAK" in first 512 bytes,
+# and rejects CR2/NEF/ARW/SR2/PEF markers.
+pre_validate   = "dcr"
+
+[[signature]]
+name         = "Canon CRW Raw Photo"
+extension    = "crw"
+# CIFF-based Canon RAW.  Full 14-byte magic: II + \x1A\x00\x00\x00 + HEAPCCDR.
+header       = "49 49 1A 00 00 00 48 45 41 50 43 43 44 52"
+footer       = ""
+min_size     = 100_000      # 100 KB — RAW files are not tiny
+max_size     = 30_000_000   # 30 MB — early Canon sensors
+# Validates "HEAPCCDR" string at offset 6.
+pre_validate = "crw"
+
+[[signature]]
+name         = "Minolta MRW Raw Photo"
+extension    = "mrw"
+# Minolta MRW: \x00MRM header magic (4 bytes).
+header       = "00 4D 52 4D"
+footer       = ""
+min_size     = 100_000      # 100 KB
+max_size     = 30_000_000   # 30 MB
+# Validates first block tag at offset 8 is PRD, TTW, or WBG.
+pre_validate = "mrw"
+
+[[signature]]
+name         = "KeePass 2.x Database (KDBX)"
+extension    = "kdbx"
+# KeePass 2.x: sig1 + sig2 magic (8 bytes).
+header       = "03 D9 A2 9A 67 FB 4B B5"
+footer       = ""
+min_size     = 256           # Minimum header size
+max_size     = 536_870_912   # 512 MiB — large databases
+# Validates major version (u16 LE @10) in {3, 4}.
+pre_validate = "kdbx"
+
+[[signature]]
+name         = "KeePass 1.x Database (KDB)"
+extension    = "kdb"
+# KeePass 1.x: sig1 + sig2 magic (8 bytes, differs at byte 4 from KDBX).
+header       = "03 D9 A2 9A 65 FB 4B B5"
+footer       = ""
+min_size     = 256
+max_size     = 536_870_912   # 512 MiB
+# Validates major version (u16 LE @10) in {1, 2}.
+pre_validate = "kdb"
+
+[[signature]]
+name         = "EnCase Evidence File (E01)"
+extension    = "e01"
+# EnCase EVF format: `EVF\x09\x0D\x0A\xFF\x00` 8-byte signature.
+header       = "45 56 46 09 0D 0A FF 00"
+footer       = ""
+min_size     = 1_048_576     # 1 MiB — evidence files are large
+max_size     = 2_147_483_648 # 2 GiB — single segment limit
+# Validates segment number (u16 LE @8) == 1 (first segment only).
+pre_validate = "e01"
+
+[[signature]]
+name         = "PCAP Network Capture (little-endian)"
+extension    = "pcap"
+# libpcap LE: magic number D4 C3 B2 A1 (byte-swapped from the canonical value).
+header       = "D4 C3 B2 A1"
+footer       = ""
+min_size     = 24            # Minimum: file header only
+max_size     = 2_147_483_648 # 2 GiB
+# Validates major version == 2, minor version == 4 (LE byte order).
+pre_validate = "pcap"
+
+[[signature]]
+name         = "PCAP Network Capture (big-endian)"
+extension    = "pcap"
+# libpcap BE: canonical magic A1 B2 C3 D4.
+header       = "A1 B2 C3 D4"
+footer       = ""
+min_size     = 24
+max_size     = 2_147_483_648 # 2 GiB
+# Validates major version == 2, minor version == 4 (BE byte order).
+pre_validate = "pcap"
+
+[[signature]]
+name         = "Windows Minidump"
+extension    = "dmp"
+# Windows Minidump: "MDMP\x93\xA7" 6-byte magic.
+header       = "4D 44 4D 50 93 A7"
+footer       = ""
+min_size     = 1_024         # Minimum valid minidump
+max_size     = 536_870_912   # 512 MiB
+# Validates stream count (u32 LE @8) > 0.
+pre_validate = "dmp"
+
+[[signature]]
+name         = "Apple Binary Property List (bplist)"
+extension    = "plist"
+# Apple binary plist: "bplist00" 8-byte ASCII magic.
+header       = "62 70 6C 69 73 74 30 30"
+footer       = ""
+min_size     = 34            # 8 magic + some data + 26-byte trailer
+max_size     = 104_857_600   # 100 MiB
+# Validates minimum data length of 34 bytes.
+pre_validate = "plist"
+
+[[signature]]
+name         = "MPEG Transport Stream (TS)"
+extension    = "ts"
+# MPEG-TS: sync byte 0x47 at the start of each 188-byte packet.
+# Single-byte magic is noisy; the pre-validator confirms the stride pattern.
+header       = "47"
+footer       = ""
+min_size     = 377           # At least 3 complete 188-byte packets (+ 1 byte)
+max_size     = 2_147_483_648 # 2 GiB
+# Validates sync bytes at offsets 0, 188, and 376 (stride-188 pattern).
+pre_validate = "ts"
+# The stride-3 check still passes at every 188-byte boundary inside a TS file.
+# Suppress hits within 4 MiB of each other to avoid intra-file duplicates.
+min_hit_gap  = 4_194_304     # 4 MiB
+
+[[signature]]
+name         = "Blu-ray M2TS Video"
+extension    = "m2ts"
+# Blu-ray M2TS: 4-byte timestamp + 188-byte MPEG-TS packet (0x47 at offset 4).
+# Using a 5-byte magic with wildcard prefix to anchor on the first sync byte.
+header       = "?? ?? ?? ?? 47"
+footer       = ""
+min_size     = 389           # At least 3 complete 192-byte packets
+max_size     = 2_147_483_648 # 2 GiB
+# Validates sync bytes at offsets 4, 196, and 388 (stride-192 pattern).
+pre_validate = "m2ts"
+# Same stride-duplication issue as TS; suppress within 4 MiB.
+min_hit_gap  = 4_194_304     # 4 MiB
+
+[[signature]]
+name         = "LUKS Encrypted Disk Image"
+extension    = "luks"
+# LUKS: "LUKS\xBA\xBE" 6-byte magic (the last 2 bytes are the LUKS magic suffix,
+# not a version number — version is at offset 6).
+header       = "4C 55 4B 53 BA BE"
+footer       = ""
+min_size     = 4_096         # LUKS header is always sector-aligned (512 or 4096 bytes)
+max_size     = 2_147_483_648 # 2 GiB
+# Validates version (u16 BE @6) in {1, 2}.
+pre_validate = "luks"
+
+[[signature]]
+name         = "Sigma X3F Raw Photo"
+extension    = "x3f"
+# Sigma X3F: "FOVb" 4-byte ASCII magic (Foveon brand signature).
+header       = "46 4F 56 62"
+footer       = ""
+min_size     = 100_000       # 100 KB — RAW files are not tiny
+max_size     = 50_000_000    # 50 MB — Sigma high-res sensors
+# Validates version major byte (LE @5) in {2, 3}.
+pre_validate = "x3f"
+
+[[signature]]
+name         = "Monkey's Audio (APE)"
+extension    = "ape"
+# APE lossless audio: "MAC " 4-byte ASCII magic.
+header       = "4D 41 43 20"
+footer       = ""
+min_size     = 512
+max_size     = 524_288_000  # 500 MiB
+# Validates version (u16 LE @6) in [3930, 4100].
+pre_validate = "ape"
+
+[[signature]]
+name         = "Sun AU Audio"
+extension    = "au"
+# Sun/NeXT audio: ".snd" 4-byte ASCII magic.
+header       = "2E 73 6E 64"
+footer       = ""
+min_size     = 24           # Minimum: header only (no audio data)
+max_size     = 524_288_000  # 500 MiB
+# Validates data_offset @4 (u32 BE) >= 24 and encoding @12 in known set.
+pre_validate = "au"
+
+[[signature]]
+name         = "TrueType Font (TTF)"
+extension    = "ttf"
+# TrueType: sfVersion 0x00010000 + high byte of numTables (must be 0x00).
+header       = "00 01 00 00 00"
+footer       = ""
+min_size     = 64           # Minimum valid font
+max_size     = 52_428_800   # 50 MiB — large CJK fonts
+# Validates numTables (u16 BE @4) in [4, 50].
+pre_validate = "ttf"
+
+[[signature]]
+name         = "WOFF Web Font"
+extension    = "woff"
+# Web Open Font Format: "wOFF" 4-byte ASCII magic.
+header       = "77 4F 46 46"
+footer       = ""
+min_size     = 44           # Minimum WOFF header + 1 table directory entry
+max_size     = 52_428_800   # 50 MiB
+# Validates flavor in {TTF, OTF, true}, length >= 44, numTables in [1, 50].
+pre_validate = "woff"
+
+[[signature]]
+name         = "Microsoft Compiled HTML Help (CHM)"
+extension    = "chm"
+# ITSF format: 12-byte fully deterministic header.
+# "ITSF" + version (LE u32 = 3) + header_length (LE u32 = 0x60 = 96).
+header       = "49 54 53 46 03 00 00 00 60 00 00 00"
+footer       = ""
+min_size     = 96           # ITSF header size
+max_size     = 524_288_000  # 500 MiB — large documentation sets
+# Magic is fully deterministic; validator confirms minimum data presence.
+pre_validate = "chm"
+
+[[signature]]
+name         = "Blender 3D File"
+extension    = "blend"
+# Blender native format: "BLENDER" 7-byte ASCII magic.
+header       = "42 4C 45 4E 44 45 52"
+footer       = ""
+min_size     = 12           # Minimum header
+max_size     = 2_147_483_648 # 2 GiB — large scenes
+# Validates pointer-size byte @7 in {'-', '_'} and endian byte @8 in {'v', 'V'}.
+pre_validate = "blend"
+
+[[signature]]
+name         = "Adobe InDesign Document"
+extension    = "indd"
+# InDesign format: 16-byte globally unique GUID at offset 0.
+header       = "06 06 ED F5 D8 1D 46 E5 BD 31 EF E7 FE 74 B7 1D"
+footer       = ""
+min_size     = 16
+max_size     = 2_147_483_648 # 2 GiB — large publication files
+# GUID is globally unique; validator confirms minimum data presence.
+pre_validate = "indd"
+
+[[signature]]
+name         = "Windows WTV Television Recording"
+extension    = "wtv"
+# WTV format: 16-byte globally unique GUID at offset 0.
+header       = "B7 D8 00 20 37 49 DA 11 A6 4E 00 07 E9 5E AD 8D"
+footer       = ""
+min_size     = 16
+max_size     = 4_294_967_295 # 4 GiB — TV recordings are large
+# GUID is globally unique; validator confirms minimum data presence.
+pre_validate = "wtv"
+
+[[signature]]
+name          = "ISO 9660 Disc Image"
+extension     = "iso"
+# ISO 9660 Primary Volume Descriptor identifier "CD001" at offset 32769 within the file
+# (sector 16, byte 1 of the 2048-byte sector).  The scanner finds this magic and shifts
+# back by header_offset to emit the hit at the true file start (offset 0).
+header        = "43 44 30 30 31"
+footer        = ""
+min_size      = 32769        # At least sector 16 + PVD signature
+max_size      = 9_395_240_960 # 8.75 GiB — dual-layer DVD
+header_offset = 32769
+# Validates version byte @5 == 1.
+pre_validate  = "iso"
+
+[[signature]]
+name          = "DICOM Medical Image"
+extension     = "dcm"
+# DICOM "DICM" preamble tag at offset 128 within the file.  The 128-byte preamble
+# precedes the tag and can contain anything (typically zeros).
+header        = "44 49 43 4D"
+footer        = ""
+min_size      = 256          # Preamble + magic + at least one data element
+max_size      = 2_147_483_648 # 2 GiB — large radiology images
+header_offset = 128
+# Validates that at least 8 bytes are present at the magic position.
+pre_validate  = "dicom"
+
+[[signature]]
+name          = "TAR Archive (POSIX ustar)"
+extension     = "tar"
+# POSIX ustar magic "ustar\0" at offset 257 within the first 512-byte header block.
+# Version string "00" or "  " at offset 263 (6 bytes after the magic).
+header        = "75 73 74 61 72 00"
+footer        = ""
+min_size      = 512          # Minimum: one 512-byte header block
+max_size      = 2_147_483_648 # 2 GiB
+header_offset = 257
+# Validates version string at offset 6 from magic is "00" or "  ".
+pre_validate  = "tar"
+
+[[signature]]
+name         = "PHP Script"
+extension    = "php"
+# PHP opening tag: "<?php" — 5 ASCII bytes (3C 3F 70 68 70).
+header       = "3C 3F 70 68 70"
+footer       = ""
+min_size     = 6             # At least one byte after the tag
+max_size     = 10_485_760    # 10 MiB — scripts are not huge
+# Validates byte @5 is whitespace (space, tab, CR, or LF) to reject
+# obfuscated forms like "<?phpinfo()".
+pre_validate = "php"
+
+[[signature]]
+name         = "Shell / Script File (Shebang)"
+extension    = "sh"
+# Unix shebang: "#!" — 2 ASCII bytes (23 21).
+header       = "23 21"
+footer       = ""
+min_size     = 3             # At least the interpreter path start
+max_size     = 10_485_760    # 10 MiB
+# Validates byte @2 is '/' — interpreter path must be absolute (e.g. /bin/sh).
+pre_validate = "shebang"

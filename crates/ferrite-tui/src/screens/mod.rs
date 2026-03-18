@@ -1,3 +1,4 @@
+pub mod artifacts;
 pub mod carving;
 pub mod drive_select;
 pub mod file_browser;
@@ -6,5 +7,7 @@ pub mod health;
 pub mod hex_viewer;
 pub mod imaging;
 pub mod partition;
+pub mod quick_recover;
 pub mod report;
 pub mod session_manager;
+pub mod text_scan;

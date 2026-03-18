@@ -2,12 +2,14 @@
 //! file sizes under the project hard limit (600 lines).
 
 use std::collections::VecDeque;
-use std::io::Write;
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Seek, Write};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use ferrite_carver::{CarveHit, Carver, CarvingConfig};
+use ferrite_blockdev::AlignedBuffer;
+use ferrite_carver::{post_validate, CarveHit, CarveQuality, Carver, CarvingConfig};
 use ferrite_filesystem::MetadataIndex;
 
 use super::{
@@ -64,16 +66,73 @@ fn apply_timestamps(path: &str, byte_offset: u64, index: &MetadataIndex) {
     }
 }
 
+// ── Integrity helpers ─────────────────────────────────────────────────────────
+
+/// Read up to `max_bytes` from the **tail** of `path`.
+///
+/// Used for post-extraction structural validation.  If the file is shorter
+/// than `max_bytes`, the entire file is returned.  Errors return an empty Vec.
+fn read_file_tail(path: &str, max_bytes: u64) -> Vec<u8> {
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let file_len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let skip = file_len.saturating_sub(max_bytes);
+    if skip > 0 && f.seek(std::io::SeekFrom::Start(skip)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    let _ = f.read_to_end(&mut buf);
+    buf
+}
+
+/// Compute a fast u64 fingerprint from the first 4 KiB of a hit on `device`.
+///
+/// Uses `std::hash::DefaultHasher` — sufficient for probabilistic duplicate
+/// detection; not a cryptographic hash.  Returns `None` when the device read
+/// fails (the hit will NOT be treated as a duplicate in that case).
+fn hit_fingerprint(device: &dyn ferrite_blockdev::BlockDevice, byte_offset: u64) -> Option<u64> {
+    const FP_BYTES: usize = 4096;
+    let mut buf = AlignedBuffer::new(FP_BYTES, 512);
+    let n = device.read_at(byte_offset, &mut buf).ok()?;
+    if n == 0 {
+        return None;
+    }
+    let data = &buf.as_slice()[..n];
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
 // ── Extraction impl ────────────────────────────────────────────────────────────
 
 impl CarvingState {
     /// Build an output path for `hit` inside `dir`.
     ///
-    /// If the metadata index contains the original filename for this offset,
-    /// uses it.  Otherwise falls back to `ferrite_<ext>_<offset>.<ext>`.
+    /// When the metadata index resolves the byte offset to a filesystem entry,
+    /// the original relative path is preserved: `<dir>/<original/sub/path>`.
+    /// This recreates the original folder structure under the output directory.
+    /// Falls back to `ferrite_<ext>_<offset>.<ext>` when no metadata exists.
     pub(super) fn filename_for_hit(&self, hit: &CarveHit, dir: &str) -> String {
         if let Some(idx) = &self.meta_index {
             if let Some(meta) = idx.lookup(hit.byte_offset) {
+                // Build a safe relative path from the original filesystem path,
+                // stripping leading separators and rejecting `..` traversal.
+                let rel: std::path::PathBuf = meta
+                    .path
+                    .trim_start_matches('/')
+                    .trim_start_matches('\\')
+                    .split(['/', '\\'])
+                    .filter(|s| !s.is_empty() && *s != "..")
+                    .collect();
+                if rel.components().count() > 0 {
+                    return std::path::Path::new(dir)
+                        .join(rel)
+                        .to_string_lossy()
+                        .into_owned();
+                }
+                // Fallback: sanitised bare name when path is unusable.
                 let safe = meta
                     .name
                     .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
@@ -113,6 +172,7 @@ impl CarvingState {
         };
         let filename = self.filename_for_hit(&hit, &dir);
         let meta_index = self.meta_index.clone();
+        let seen_fingerprints = Arc::clone(&self.seen_fingerprints);
         let config = CarvingConfig {
             signatures: vec![hit.signature.clone()],
             scan_chunk_size: 4 * 1024 * 1024,
@@ -120,8 +180,22 @@ impl CarvingState {
             end_byte: None,
         };
         std::thread::spawn(move || {
-            // Ensure output directory exists before writing.
-            if let Err(e) = std::fs::create_dir_all(&dir) {
+            // Duplicate check: fingerprint the first 4 KiB at the hit offset.
+            if let Some(fp) = hit_fingerprint(device.as_ref(), hit.byte_offset) {
+                let mut set = seen_fingerprints.lock().unwrap();
+                if !set.insert(fp) {
+                    // Already seen — skip extraction.
+                    let _ = tx.send(CarveMsg::Duplicate { idx });
+                    return;
+                }
+            }
+
+            // Ensure the output directory (and any metadata-derived subdir) exists.
+            let file_parent = std::path::Path::new(&filename)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from(&dir));
+            if let Err(e) = std::fs::create_dir_all(&file_parent) {
                 tracing::warn!(dir = %dir, error = %e, "failed to create output directory");
                 return;
             }
@@ -129,19 +203,22 @@ impl CarvingState {
             if let Ok(mut f) = std::fs::File::create(&filename) {
                 match carver.extract(&hit, &mut f) {
                     Ok(bytes) => {
-                        // Truncated when we hit the cap regardless of whether the
-                        // format uses a footer.  For footer-less formats with a
-                        // size hint (e.g. MP4), hitting max_size means the box
-                        // walker failed and we fell back to the hard cap.
                         let truncated = bytes >= hit.signature.max_size;
-                        if let Some(ref idx) = meta_index {
-                            apply_timestamps(&filename, hit.byte_offset, idx);
+                        if let Some(ref meta_idx) = meta_index {
+                            apply_timestamps(&filename, hit.byte_offset, meta_idx);
                         }
+                        let tail = read_file_tail(&filename, 65536);
+                        let quality = post_validate::validate_extracted(
+                            &hit.signature.extension,
+                            &tail,
+                            truncated,
+                        );
                         tracing::info!(path = %filename, bytes, "extracted file");
                         let _ = tx.send(CarveMsg::Extracted {
                             idx,
                             bytes,
                             truncated,
+                            quality,
                         });
                     }
                     Err(e) => {
@@ -247,10 +324,17 @@ impl CarvingState {
 
         self.extract_cancel.store(false, Ordering::Relaxed);
         self.extract_pause.store(false, Ordering::Relaxed);
-        self.extract_summary = None;
+        // In auto-extract mode the summary accumulates across all batches so the
+        // user sees a running total rather than rapid per-file flicker.  For
+        // manual batch extractions we reset each time so the summary reflects
+        // only the files the user explicitly requested.
+        if !self.auto_extract {
+            self.extract_summary = None;
+        }
         let cancel = Arc::clone(&self.extract_cancel);
         let pause = Arc::clone(&self.extract_pause);
         let meta_index = self.meta_index.clone();
+        let seen_fingerprints = Arc::clone(&self.seen_fingerprints);
 
         self.extract_progress = Some(ExtractProgress {
             done: 0,
@@ -282,6 +366,7 @@ impl CarvingState {
                     succeeded: 0,
                     truncated: 0,
                     failed: 0,
+                    duplicates: 0,
                     total_bytes: 0,
                     elapsed_secs: extract_start.elapsed().as_secs_f64(),
                 });
@@ -292,11 +377,15 @@ impl CarvingState {
                 Started {
                     idx: usize,
                 },
+                Duplicate {
+                    idx: usize,
+                },
                 Completed {
                     idx: usize,
                     hit: Box<CarveHit>,
                     path: String,
                     result: Result<u64, String>,
+                    quality: CarveQuality,
                 },
             }
             let (done_tx, done_rx) = std::sync::mpsc::channel::<WorkerMsg>();
@@ -308,6 +397,7 @@ impl CarvingState {
                 let cancel = Arc::clone(&cancel);
                 let pause = Arc::clone(&pause);
                 let meta_index = meta_index.clone();
+                let seen_fingerprints = Arc::clone(&seen_fingerprints);
 
                 std::thread::spawn(move || loop {
                     while pause.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
@@ -321,7 +411,21 @@ impl CarvingState {
                         None => break,
                         Some(i) => i,
                     };
+
+                    // Duplicate check: fingerprint first 4 KiB at hit offset.
+                    if let Some(fp) = hit_fingerprint(device.as_ref(), hit.byte_offset) {
+                        let mut set = seen_fingerprints.lock().unwrap();
+                        if !set.insert(fp) {
+                            let _ = done_tx.send(WorkerMsg::Duplicate { idx });
+                            continue;
+                        }
+                    }
+
                     let _ = done_tx.send(WorkerMsg::Started { idx });
+                    // Create metadata-derived subdirectories if needed.
+                    if let Some(parent) = std::path::Path::new(&path).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
                     let config = CarvingConfig {
                         signatures: vec![hit.signature.clone()],
                         scan_chunk_size: 4 * 1024 * 1024,
@@ -343,11 +447,26 @@ impl CarvingState {
                             apply_timestamps(&path, hit.byte_offset, meta_idx);
                         }
                     }
+                    // Post-extraction quality check: read file tail, run structural
+                    // validator for known formats.
+                    let quality = match &result {
+                        Ok(bytes) => {
+                            let truncated = *bytes >= hit.signature.max_size;
+                            let tail = read_file_tail(&path, 65536);
+                            post_validate::validate_extracted(
+                                &hit.signature.extension,
+                                &tail,
+                                truncated,
+                            )
+                        }
+                        Err(_) => CarveQuality::Unknown,
+                    };
                     let _ = done_tx.send(WorkerMsg::Completed {
                         idx,
                         hit: Box::new(hit),
                         path,
                         result,
+                        quality,
                     });
                 });
             }
@@ -357,6 +476,7 @@ impl CarvingState {
             let mut succeeded = 0usize;
             let mut truncated_count = 0usize;
             let mut failed = 0usize;
+            let mut duplicates = 0usize;
             let mut total_bytes = 0u64;
             let mut last_name = String::new();
 
@@ -365,11 +485,23 @@ impl CarvingState {
                     WorkerMsg::Started { idx } => {
                         let _ = tx.send(CarveMsg::ExtractionStarted { idx });
                     }
+                    WorkerMsg::Duplicate { idx } => {
+                        duplicates += 1;
+                        completed += 1;
+                        let _ = tx.send(CarveMsg::Duplicate { idx });
+                        let _ = tx.send(CarveMsg::ExtractionProgress {
+                            done: completed,
+                            total,
+                            total_bytes,
+                            last_name: last_name.clone(),
+                        });
+                    }
                     WorkerMsg::Completed {
                         idx,
                         hit,
                         path,
                         result,
+                        quality,
                     } => {
                         completed += 1;
                         match result {
@@ -391,6 +523,7 @@ impl CarvingState {
                                     idx,
                                     bytes,
                                     truncated,
+                                    quality,
                                 });
                             }
                             Err(e) => {
@@ -415,6 +548,7 @@ impl CarvingState {
                 succeeded,
                 truncated: truncated_count,
                 failed,
+                duplicates,
                 total_bytes,
                 elapsed_secs: extract_start.elapsed().as_secs_f64(),
             });

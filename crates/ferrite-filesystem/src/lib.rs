@@ -14,8 +14,10 @@
 //! let entries = parser.root_directory()?;
 //! ```
 
+mod apfs;
 mod detect;
 mod error;
+mod exfat;
 mod ext4;
 mod ext4_dir;
 mod fat32;
@@ -24,7 +26,9 @@ mod ntfs;
 mod ntfs_helpers;
 mod offset_device;
 
+pub use apfs::ApfsParser;
 pub use error::{FilesystemError, Result};
+pub use exfat::ExFatParser;
 pub use ext4::Ext4Parser;
 pub use fat32::Fat32Parser;
 pub use ntfs::NtfsParser;
@@ -45,8 +49,8 @@ pub enum FilesystemType {
     Ntfs,
     Fat32,
     Ext4,
-    /// exFAT — detected but no parser implemented (detect-only).
     ExFat,
+    Apfs,
     /// HFS+ or HFSX — detected but no parser implemented (detect-only).
     HfsPlus,
     Unknown,
@@ -59,10 +63,24 @@ impl std::fmt::Display for FilesystemType {
             FilesystemType::Fat32 => write!(f, "FAT32"),
             FilesystemType::Ext4 => write!(f, "ext4"),
             FilesystemType::ExFat => write!(f, "exFAT"),
+            FilesystemType::Apfs => write!(f, "APFS"),
             FilesystemType::HfsPlus => write!(f, "HFS+"),
             FilesystemType::Unknown => write!(f, "Unknown"),
         }
     }
+}
+
+/// Estimated probability that a deleted file's data is still intact on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecoveryChance {
+    /// Cluster/block pointers are intact and data appears unallocated — very likely recoverable.
+    High,
+    /// Partial information available — recovery may be incomplete.
+    Medium,
+    /// Clusters reallocated or no block info — recovery unlikely.
+    Low,
+    /// Not assessed (live files, directories, or unsupported filesystem).
+    Unknown,
 }
 
 /// A single file or directory entry returned by a [`FilesystemParser`].
@@ -99,6 +117,10 @@ pub struct FileEntry {
     /// can be compared directly against [`ferrite_carver::CarveHit::byte_offset`]
     /// after adjusting for the partition's position on the raw device.
     pub data_byte_offset: Option<u64>,
+
+    /// Estimated probability that a deleted file's data is still intact.
+    /// Always [`RecoveryChance::Unknown`] for live (non-deleted) files.
+    pub recovery_chance: RecoveryChance,
 }
 
 // ── Core trait ────────────────────────────────────────────────────────────────
@@ -228,6 +250,14 @@ pub fn build_metadata_index(device: Arc<dyn BlockDevice>) -> MetadataIndex {
                 Err(_) => continue,
             },
             FilesystemType::Ext4 => match Ext4Parser::new(Arc::clone(&vol)) {
+                Ok(p) => Box::new(p),
+                Err(_) => continue,
+            },
+            FilesystemType::ExFat => match ExFatParser::new(Arc::clone(&vol)) {
+                Ok(p) => Box::new(p),
+                Err(_) => continue,
+            },
+            FilesystemType::Apfs => match ApfsParser::new(Arc::clone(&vol)) {
                 Ok(p) => Box::new(p),
                 Err(_) => continue,
             },
@@ -363,7 +393,9 @@ pub fn open_filesystem(device: Arc<dyn BlockDevice>) -> Result<Box<dyn Filesyste
         FilesystemType::Ntfs => Ok(Box::new(NtfsParser::new(vol)?)),
         FilesystemType::Fat32 => Ok(Box::new(Fat32Parser::new(vol)?)),
         FilesystemType::Ext4 => Ok(Box::new(Ext4Parser::new(vol)?)),
-        FilesystemType::ExFat | FilesystemType::HfsPlus | FilesystemType::Unknown => {
+        FilesystemType::ExFat => Ok(Box::new(ExFatParser::new(vol)?)),
+        FilesystemType::Apfs => Ok(Box::new(ApfsParser::new(vol)?)),
+        FilesystemType::HfsPlus | FilesystemType::Unknown => {
             Err(FilesystemError::UnknownFilesystem)
         }
     }
@@ -424,14 +456,23 @@ mod tests {
     }
 
     #[test]
-    fn open_exfat_returns_unknown_filesystem_error() {
+    fn open_exfat_returns_err_on_truncated_device() {
+        // A 512-byte device with the exFAT OEM name but no valid VBR fields
+        // should produce a parse error (BufferTooSmall or InvalidStructure),
+        // not UnknownFilesystem, now that ExFatParser is wired in.
         let mut data = vec![0u8; 512];
         data[3..11].copy_from_slice(b"EXFAT   ");
+        // BytesPerSectorShift=9 (valid), but FatOffset/ClusterHeapOffset point
+        // beyond the 512-byte device, so reading the FAT/directory will fail.
+        data[108] = 9; // BytesPerSectorShift
         let dev = Arc::new(MockBlockDevice::new(data, 512));
-        assert!(matches!(
-            open_filesystem(dev),
-            Err(FilesystemError::UnknownFilesystem)
-        ));
+        // Parser construction itself succeeds; errors happen on first I/O.
+        // We just verify open_filesystem no longer returns UnknownFilesystem.
+        let result = open_filesystem(dev);
+        assert!(
+            !matches!(result, Err(FilesystemError::UnknownFilesystem)),
+            "exFAT should now be handled by ExFatParser, not return UnknownFilesystem"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ferrite_blockdev::BlockDevice;
-use ferrite_carver::{CarveHit, ScanProgress, Signature};
+use ferrite_carver::{CarveHit, CarveQuality, ScanProgress, Signature};
 use ferrite_filesystem::MetadataIndex;
 
 mod checkpoint;
@@ -21,6 +21,8 @@ mod preview_more;
 mod render;
 mod render_progress;
 mod session_ops;
+mod user_sig_panel;
+mod user_sigs;
 pub(crate) use helpers::fmt_bytes;
 pub(crate) use preview::ColorCap;
 
@@ -64,6 +66,12 @@ enum CarveMsg {
         idx: usize,
         bytes: u64,
         truncated: bool,
+        /// Structural integrity tag assigned immediately after extraction.
+        quality: CarveQuality,
+    },
+    /// Content fingerprint matched a previously extracted hit — extraction skipped.
+    Duplicate {
+        idx: usize,
     },
     ExtractionStarted {
         idx: usize,
@@ -78,6 +86,8 @@ enum CarveMsg {
         succeeded: usize,
         truncated: usize,
         failed: usize,
+        /// Hits skipped due to duplicate content fingerprint.
+        duplicates: usize,
         total_bytes: u64,
         elapsed_secs: f64,
     },
@@ -98,6 +108,8 @@ struct ExtractionSummary {
     succeeded: usize,
     truncated: usize,
     failed: usize,
+    /// Hits skipped because their content fingerprint was already seen.
+    duplicates: usize,
     total_bytes: u64,
     elapsed_secs: f64,
 }
@@ -127,6 +139,26 @@ pub struct SigEntry {
     pub enabled: bool,
 }
 
+/// A named group of related signatures shown as a collapsible tree node.
+pub struct SigGroup {
+    /// Display label for the group header row.
+    pub label: &'static str,
+    /// Whether the group's entries are visible in the list.
+    pub expanded: bool,
+    pub entries: Vec<SigEntry>,
+}
+
+/// One visible row in the signature panel's flat navigation list.
+///
+/// Rebuilt from `groups` whenever a group is expanded or collapsed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CursorRow {
+    /// A group header row.  Index is into `CarvingState::groups`.
+    Group(usize),
+    /// An individual signature row.  Indices are (group, entry-within-group).
+    Sig(usize, usize),
+}
+
 /// Per-hit extraction status.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum HitStatus {
@@ -142,6 +174,30 @@ pub enum HitStatus {
     Truncated {
         bytes: u64,
     },
+    /// Skipped — content fingerprint matches a previously extracted file.
+    Duplicate,
+}
+
+/// Whether the user-signature form is adding a new entry or editing an existing one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum FormMode {
+    Add,
+    /// The `usize` is the index into `CarvingState::user_sigs`.
+    Edit(usize),
+}
+
+/// State for the add/edit form shown inside the custom-signature panel.
+pub(crate) struct UserSigForm {
+    pub mode: FormMode,
+    /// Index of the currently focused input field (0–4).
+    pub field: usize,
+    pub name: String,
+    pub extension: String,
+    pub header: String,
+    pub footer: String,
+    pub max_size_str: String,
+    /// Validation error shown below the form until the next key press.
+    pub error: Option<String>,
 }
 
 /// A carve hit paired with its extraction status and selection flag.
@@ -149,13 +205,18 @@ pub struct HitEntry {
     pub hit: CarveHit,
     pub status: HitStatus,
     pub selected: bool,
+    /// Structural quality tag assigned immediately after extraction.
+    pub quality: Option<CarveQuality>,
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
 pub struct CarvingState {
     device: Option<Arc<dyn BlockDevice>>,
-    pub sig_list: Vec<SigEntry>,
+    /// Signature groups shown in the left panel as a collapsible tree.
+    pub(crate) groups: Vec<SigGroup>,
+    /// Flat list of visible rows derived from `groups` (rebuilt on expand/collapse).
+    pub(crate) cursor_rows: Vec<CursorRow>,
     sig_sel: usize,
     hits: Vec<HitEntry>,
     hit_sel: usize,
@@ -236,6 +297,24 @@ pub struct CarvingState {
     pub(crate) disk_avail_bytes: Option<u64>,
     /// Tick counter used to throttle the disk-space poll (checked every ~5 s).
     disk_space_tick: u32,
+    // ── User-defined signatures ───────────────────────────────────────────────
+    /// Path to the user signatures TOML file.
+    pub(crate) user_sig_path: String,
+    /// In-memory list of user-defined signatures (source of truth for CRUD).
+    pub(crate) user_sigs: Vec<user_sigs::UserSigDef>,
+    /// Whether the custom-signature overlay panel is visible.
+    pub(crate) show_user_panel: bool,
+    /// Selected row in the user-signature panel list.
+    pub(crate) user_panel_sel: usize,
+    /// Active add/edit form.  `None` = list view.
+    pub(crate) user_sig_form: Option<UserSigForm>,
+    /// `true` while awaiting y/n confirmation before deleting a signature.
+    pub(crate) user_confirm_delete: bool,
+    /// Path string being typed for the import prompt.
+    pub(crate) user_import_path: String,
+    /// `true` while the import-path text field is active.
+    pub(crate) editing_import: bool,
+
     /// `true` when the scan has been automatically paused because the
     /// auto-extract queue exceeded `AUTO_EXTRACT_HIGH_WATER`.  Cleared when
     /// the queue drains below `AUTO_EXTRACT_LOW_WATER`, or when the user
@@ -245,6 +324,17 @@ pub struct CarvingState {
     /// Set by `restore_from_session`; consumed (and cleared to 0) when the next
     /// scan starts.  0 means "start from the configured LBA range beginning".
     pub(crate) resume_from_byte: u64,
+    /// Absolute byte offset of the *configured* scan window start (from the
+    /// start-LBA field, not the resume point).  Set in `start_scan` so the
+    /// progress bar can show overall completion even on a resumed scan.
+    pub(crate) scan_window_start: u64,
+    /// SHA-256–truncated fingerprints (first 4 KiB of each hit, hashed to u64)
+    /// accumulated across the current extraction session.  Shared with the
+    /// extraction worker thread to detect and suppress duplicate content.
+    pub(crate) seen_fingerprints: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u64>>>,
+    /// Number of hits skipped during extraction because their content fingerprint
+    /// matched a previously extracted file.
+    pub(crate) duplicates_suppressed: usize,
 }
 
 impl Default for CarvingState {
@@ -255,10 +345,11 @@ impl Default for CarvingState {
 
 impl CarvingState {
     pub fn new() -> Self {
-        let sig_list = helpers::load_builtin_signatures();
-        Self {
+        let groups = helpers::load_builtin_sig_groups();
+        let mut s = Self {
             device: None,
-            sig_list,
+            groups,
+            cursor_rows: Vec::new(),
             sig_sel: 0,
             hits: Vec::new(),
             hit_sel: 0,
@@ -300,7 +391,44 @@ impl CarvingState {
             disk_space_tick: 0,
             backpressure_paused: false,
             resume_from_byte: 0,
+            scan_window_start: 0,
+            seen_fingerprints: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
+            duplicates_suppressed: 0,
+            user_sig_path: "./ferrite-user-signatures.toml".to_string(),
+            user_sigs: Vec::new(),
+            show_user_panel: false,
+            user_panel_sel: 0,
+            user_sig_form: None,
+            user_confirm_delete: false,
+            user_import_path: String::new(),
+            editing_import: false,
+        };
+        // Load user sigs and append as "Custom" group if any are present.
+        s.user_sigs = user_sigs::load_user_sigs(&s.user_sig_path);
+        if let Some(group) = helpers::build_user_sig_group(&s.user_sigs) {
+            s.groups.push(group);
         }
+        s.rebuild_cursor_rows();
+        s
+    }
+
+    /// Rebuild the flat `cursor_rows` navigation list from the current group
+    /// state.  Must be called after any expand/collapse operation.
+    pub(crate) fn rebuild_cursor_rows(&mut self) {
+        self.cursor_rows.clear();
+        for (gi, group) in self.groups.iter().enumerate() {
+            self.cursor_rows.push(CursorRow::Group(gi));
+            if group.expanded {
+                for si in 0..group.entries.len() {
+                    self.cursor_rows.push(CursorRow::Sig(gi, si));
+                }
+            }
+        }
+        // Keep sig_sel in bounds after a collapse may have removed rows.
+        let max = self.cursor_rows.len().saturating_sub(1);
+        self.sig_sel = self.sig_sel.min(max);
     }
 
     /// Returns the current number of carve hits.
@@ -313,6 +441,35 @@ impl CarvingState {
         !self.hits.is_empty()
     }
 
+    /// Remove intra-file duplicate hits from the current list using each
+    /// signature's `min_hit_gap`.  Useful for cleaning up sessions that were
+    /// started before the gap suppressor existed (e.g. MPG flood hits).
+    ///
+    /// Hits are processed in offset order; any hit within `min_hit_gap` bytes
+    /// of the last kept hit for the same signature is removed.  Returns the
+    /// number of hits removed.
+    pub fn dedup_hits_by_gap(&mut self) -> usize {
+        use std::collections::HashMap;
+        let before = self.hits.len();
+        let mut last_by_sig: HashMap<String, u64> = HashMap::new();
+        self.hits.retain(|e| {
+            let gap = e.hit.signature.min_hit_gap;
+            if gap == 0 {
+                return true;
+            }
+            let accept = match last_by_sig.get(&e.hit.signature.name) {
+                None => true,
+                Some(&last) => e.hit.byte_offset >= last.saturating_add(gap),
+            };
+            if accept {
+                last_by_sig.insert(e.hit.signature.name.clone(), e.hit.byte_offset);
+            }
+            accept
+        });
+        self.hit_sel = self.hit_sel.min(self.hits.len().saturating_sub(1));
+        before - self.hits.len()
+    }
+
     /// Returns the checkpoint path if one is set.
     pub fn checkpoint_path(&self) -> Option<&str> {
         self.checkpoint_path.as_deref()
@@ -320,7 +477,7 @@ impl CarvingState {
 
     /// Returns `true` while any text-input field is being edited (so `q` won't quit).
     pub fn is_editing(&self) -> bool {
-        self.editing_dir || self.scan_range_field != ScanRangeField::None
+        self.editing_dir || self.scan_range_field != ScanRangeField::None || self.show_user_panel
     }
 
     /// Returns the byte offset of the currently selected hit when focus is on
@@ -331,6 +488,109 @@ impl CarvingState {
         } else {
             None
         }
+    }
+
+    // ── User signature CRUD ───────────────────────────────────────────────────
+
+    /// Rebuild the "Custom" group in `self.groups` from `self.user_sigs`.
+    ///
+    /// - If `user_sigs` is empty the Custom group is removed (if present).
+    /// - If `user_sigs` is non-empty the Custom group is updated in-place or
+    ///   appended to the end of the groups list.
+    pub(crate) fn refresh_custom_group(&mut self) {
+        let custom_idx = self.groups.iter().position(|g| g.label == "Custom");
+        match helpers::build_user_sig_group(&self.user_sigs) {
+            Some(group) => match custom_idx {
+                Some(idx) => self.groups[idx] = group,
+                None => self.groups.push(group),
+            },
+            None => {
+                if let Some(idx) = custom_idx {
+                    self.groups.remove(idx);
+                }
+            }
+        }
+        self.rebuild_cursor_rows();
+    }
+
+    /// Validate the form contents and, on success, persist and refresh.
+    /// On validation failure the form is returned to `self.user_sig_form`
+    /// with an error message set.
+    pub(crate) fn submit_user_form(&mut self, mut form: UserSigForm) {
+        // Pre-validate individual fields for targeted error messages.
+        if !user_sigs::validate_header(&form.header) {
+            form.error = Some(
+                "invalid header — use space-separated uppercase hex (e.g. FF D8 FF) with ?? for wildcards"
+                    .to_string(),
+            );
+            self.user_sig_form = Some(form);
+            return;
+        }
+        if !user_sigs::validate_footer(&form.footer) {
+            form.error = Some(
+                "invalid footer — use space-separated uppercase hex (e.g. FF D9), or leave blank"
+                    .to_string(),
+            );
+            self.user_sig_form = Some(form);
+            return;
+        }
+        let max_size = form.max_size_str.trim().parse::<u64>().unwrap_or(0);
+        let def = user_sigs::UserSigDef {
+            name: form.name.trim().to_string(),
+            extension: form.extension.trim().trim_start_matches('.').to_string(),
+            header: form.header.trim().to_uppercase(),
+            footer: form.footer.trim().to_uppercase(),
+            max_size,
+        };
+        match def.to_signature() {
+            Err(e) => {
+                form.error = Some(e);
+                self.user_sig_form = Some(form);
+            }
+            Ok(_) => {
+                match form.mode {
+                    FormMode::Add => self.user_sigs.push(def),
+                    FormMode::Edit(idx) => {
+                        if idx < self.user_sigs.len() {
+                            self.user_sigs[idx] = def;
+                        }
+                    }
+                }
+                let _ = user_sigs::save_user_sigs(&self.user_sig_path, &self.user_sigs);
+                self.refresh_custom_group();
+                self.user_sig_form = None;
+                // Keep selection in bounds after potential re-index.
+                let max = self.user_sigs.len().saturating_sub(1);
+                self.user_panel_sel = self.user_panel_sel.min(max);
+            }
+        }
+    }
+
+    /// Load sigs from `self.user_import_path`, merge with `self.user_sigs`,
+    /// persist, and refresh.  Silently does nothing if the path is invalid or
+    /// the file is empty.
+    pub(crate) fn do_import(&mut self) {
+        self.editing_import = false;
+        let path = self.user_import_path.trim().to_string();
+        self.user_import_path.clear();
+        if path.is_empty() {
+            return;
+        }
+        let new_sigs = user_sigs::load_user_sigs(&path);
+        if new_sigs.is_empty() {
+            return;
+        }
+        for sig in new_sigs {
+            let exists = self
+                .user_sigs
+                .iter()
+                .any(|s| s.name == sig.name && s.extension == sig.extension);
+            if !exists {
+                self.user_sigs.push(sig);
+            }
+        }
+        let _ = user_sigs::save_user_sigs(&self.user_sig_path, &self.user_sigs);
+        self.refresh_custom_group();
     }
 
     /// Suggest an output directory derived from the imaging destination path.
@@ -379,6 +639,8 @@ impl CarvingState {
         self.disk_avail_bytes = None;
         self.disk_space_tick = 0;
         self.backpressure_paused = false;
+        self.seen_fingerprints.lock().unwrap().clear();
+        self.duplicates_suppressed = 0;
     }
 }
 
@@ -390,11 +652,19 @@ mod tests {
 
     use super::*;
 
+    fn all_entries(s: &CarvingState) -> impl Iterator<Item = &SigEntry> {
+        s.groups.iter().flat_map(|g| g.entries.iter())
+    }
+
     #[test]
     fn builtin_signatures_load() {
         let s = CarvingState::new();
         assert!(
-            !s.sig_list.is_empty(),
+            !s.groups.is_empty(),
+            "expected at least one built-in signature group"
+        );
+        assert!(
+            s.groups.iter().any(|g| !g.entries.is_empty()),
             "expected at least one built-in signature"
         );
     }
@@ -402,17 +672,55 @@ mod tests {
     #[test]
     fn all_signatures_enabled_by_default() {
         let s = CarvingState::new();
-        assert!(s.sig_list.iter().all(|e| e.enabled));
+        assert!(all_entries(&s).all(|e| e.enabled));
     }
 
     #[test]
-    fn space_toggles_signature() {
+    fn space_on_group_header_toggles_all_in_group() {
         let mut s = CarvingState::new();
-        assert!(s.sig_list[0].enabled);
+        // sig_sel == 0 → CursorRow::Group(0): the first group header.
+        assert!(matches!(s.cursor_rows[0], CursorRow::Group(0)));
+        let group_len = s.groups[0].entries.len();
+        assert!(group_len > 0);
+        // All enabled initially.
+        assert!(s.groups[0].entries.iter().all(|e| e.enabled));
+        // Space on group header disables all entries in that group.
         s.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert!(!s.sig_list[0].enabled);
+        assert!(s.groups[0].entries.iter().all(|e| !e.enabled));
+        // Space again re-enables all.
         s.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert!(s.sig_list[0].enabled);
+        assert!(s.groups[0].entries.iter().all(|e| e.enabled));
+    }
+
+    #[test]
+    fn enter_expands_and_collapses_group() {
+        let mut s = CarvingState::new();
+        // All groups start collapsed → cursor_rows has one row per group.
+        let group_count = s.groups.len();
+        assert_eq!(s.cursor_rows.len(), group_count);
+        // Enter on group 0 expands it.
+        s.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(s.groups[0].expanded);
+        let expanded_rows = s.cursor_rows.len();
+        assert!(expanded_rows > group_count);
+        // Enter again collapses it.
+        s.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!s.groups[0].expanded);
+        assert_eq!(s.cursor_rows.len(), group_count);
+    }
+
+    #[test]
+    fn space_on_sig_row_toggles_individual() {
+        let mut s = CarvingState::new();
+        // Expand the first group so sig rows are visible.
+        s.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        // Move down to the first sig row (index 1).
+        s.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(s.sig_sel, 1);
+        assert!(matches!(s.cursor_rows[1], CursorRow::Sig(0, 0)));
+        let was_enabled = s.groups[0].entries[0].enabled;
+        s.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_ne!(s.groups[0].entries[0].enabled, was_enabled);
     }
 
     #[test]
@@ -426,7 +734,7 @@ mod tests {
     fn signatures_include_sqlite() {
         let s = CarvingState::new();
         assert!(
-            s.sig_list.iter().any(|e| e.sig.extension == "db"),
+            all_entries(&s).any(|e| e.sig.extension == "db"),
             "expected SQLite signature (extension 'db') in built-in list"
         );
     }
@@ -435,7 +743,7 @@ mod tests {
     fn signatures_include_flac() {
         let s = CarvingState::new();
         assert!(
-            s.sig_list.iter().any(|e| e.sig.extension == "flac"),
+            all_entries(&s).any(|e| e.sig.extension == "flac"),
             "expected FLAC signature in built-in list"
         );
     }
@@ -444,9 +752,28 @@ mod tests {
     fn signatures_include_mkv() {
         let s = CarvingState::new();
         assert!(
-            s.sig_list.iter().any(|e| e.sig.extension == "mkv"),
+            all_entries(&s).any(|e| e.sig.extension == "mkv"),
             "expected MKV/Matroska signature in built-in list"
         );
+    }
+
+    #[test]
+    fn groups_cover_all_signatures() {
+        let s = CarvingState::new();
+        // Total entries across all groups must equal the built-in signature count.
+        let total: usize = s.groups.iter().map(|g| g.entries.len()).sum();
+        assert_eq!(
+            total, 99,
+            "expected 99 built-in signatures across all groups"
+        );
+    }
+
+    #[test]
+    fn video_group_contains_mov_and_webm() {
+        let s = CarvingState::new();
+        let video = s.groups.iter().find(|g| g.label == "Video").unwrap();
+        assert!(video.entries.iter().any(|e| e.sig.extension == "mov"));
+        assert!(video.entries.iter().any(|e| e.sig.extension == "webm"));
     }
 
     #[test]
@@ -462,6 +789,8 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 0,
         };
         let hit = CarveHit {
             byte_offset: 0,
@@ -471,6 +800,7 @@ mod tests {
             hit,
             status: HitStatus::Unextracted,
             selected: false,
+            quality: None,
         };
         assert_eq!(entry.status, HitStatus::Unextracted);
     }

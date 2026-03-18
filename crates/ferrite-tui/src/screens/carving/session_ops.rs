@@ -12,6 +12,7 @@ impl CarvingState {
                     hit: e.hit,
                     status: e.status,
                     selected: false,
+                    quality: None,
                 })
                 .collect();
             self.checkpoint_path = Some(path.to_string());

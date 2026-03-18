@@ -1,9 +1,12 @@
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod hash;
 pub mod mapfile;
 pub mod mapfile_io;
 pub mod progress;
+pub mod thermal;
+pub mod write_blocker;
 
 mod passes;
 

@@ -414,6 +414,7 @@ fn double_indirect_file_read() {
         mft_record: None,
         inode_number: Some(3),
         data_byte_offset: None,
+        recovery_chance: RecoveryChance::Unknown,
     };
 
     let mut buf = Vec::new();
@@ -564,6 +565,7 @@ fn triple_indirect_file_read() {
         mft_record: None,
         inode_number: Some(3),
         data_byte_offset: None,
+        recovery_chance: RecoveryChance::Unknown,
     };
 
     let mut buf = Vec::new();

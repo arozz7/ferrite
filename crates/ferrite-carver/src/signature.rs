@@ -110,6 +110,29 @@ pub enum SizeHint {
     /// cap.  Returns `None` when no valid boxes are found (falls back to
     /// `max_size`).
     Isobmff,
+
+    /// TIFF IFD chain walker (Sony ARW, Canon CR2, Panasonic RW2, standard TIFF).
+    ///
+    /// Determines true file size by walking the IFD chain and finding the
+    /// maximum byte extent referenced by any external data pointer, strip/tile
+    /// offset+bytecount pair, or SubIFD (tag `0x014A`) link.  Supports both
+    /// little-endian (`II`) and big-endian (`MM`) byte orders, and the
+    /// Panasonic RW2 variant magic (`0x55` instead of `0x2A`).
+    Tiff,
+
+    /// Fujifilm RAF size hint.
+    ///
+    /// The RAF header encodes two data extents at fixed big-endian u32 offsets:
+    ///
+    /// ```text
+    /// offset  84: JPEG preview offset
+    /// offset  88: JPEG preview length
+    /// offset  92: CFA raw sensor data offset
+    /// offset  96: CFA raw sensor data length
+    /// ```
+    ///
+    /// Returns `max(jpeg_offset + jpeg_length, cfa_offset + cfa_length)`.
+    Raf,
 }
 
 impl SizeHint {
@@ -123,6 +146,8 @@ impl SizeHint {
             SizeHint::SevenZip => "seven_zip",
             SizeHint::OggStream => "ogg_stream",
             SizeHint::Isobmff => "mp4",
+            SizeHint::Tiff => "tiff",
+            SizeHint::Raf => "raf",
         }
     }
 }
@@ -166,6 +191,25 @@ pub struct Signature {
     /// `pre_validate = "<kind>"` in `signatures.toml`.
     #[serde(default)]
     pub pre_validate: Option<PreValidate>,
+    /// Byte offset within the file where `header` magic appears.
+    ///
+    /// Most formats have their magic at byte 0 (default `0`).  Formats like
+    /// ISO 9660 ("CD001" at 32769), DICOM ("DICM" at 128), and TAR ("ustar"
+    /// at 257) carry their identifying magic at a non-zero position.  When
+    /// `header_offset > 0` the scanner finds the magic at the usual position
+    /// and then shifts the reported `CarveHit.byte_offset` back by this
+    /// amount so extraction begins at the true file start.
+    #[serde(default)]
+    pub header_offset: u64,
+    /// Minimum byte distance between consecutive hits of this signature (0 = disabled).
+    ///
+    /// Formats like MPEG Program Stream embed their magic (`00 00 01 BA`) at
+    /// every pack boundary throughout the file — not just at the true start.
+    /// Setting `min_hit_gap` to a value larger than the typical file size
+    /// (e.g. 16 MiB for MPG) suppresses the flood of intra-file false hits
+    /// while still detecting multiple distinct files that are far apart.
+    #[serde(default)]
+    pub min_hit_gap: u64,
 }
 
 /// Configuration passed to [`crate::Carver`].
@@ -217,6 +261,12 @@ impl CarvingConfig {
             size_hint_kind: Option<String>,
             // Named pre-validator (e.g. "zip").
             pre_validate: Option<String>,
+            // Offset of the magic bytes within the file (0 for most formats).
+            #[serde(default)]
+            header_offset: u64,
+            // Minimum gap between consecutive hits of this signature (0 = disabled).
+            #[serde(default)]
+            min_hit_gap: u64,
         }
 
         #[derive(Deserialize)]
@@ -252,6 +302,8 @@ impl CarvingConfig {
                     {
                         Some(SizeHint::Isobmff)
                     }
+                    Some(k) if k.eq_ignore_ascii_case("tiff") => Some(SizeHint::Tiff),
+                    Some(k) if k.eq_ignore_ascii_case("raf") => Some(SizeHint::Raf),
                     Some(k) if k.eq_ignore_ascii_case("linear_scaled") => {
                         match (r.size_hint_offset, r.size_hint_len, r.size_hint_scale) {
                             (Some(offset), Some(len), Some(scale)) => {
@@ -289,6 +341,8 @@ impl CarvingConfig {
                     size_hint,
                     min_size: r.min_size,
                     pre_validate,
+                    header_offset: r.header_offset,
+                    min_hit_gap: r.min_hit_gap,
                 })
             })
             .collect();
@@ -590,6 +644,36 @@ size_hint_kind = "ogg_stream"
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
         let sig = &cfg.signatures[0];
         assert_eq!(sig.size_hint, Some(SizeHint::OggStream));
+    }
+
+    #[test]
+    fn load_toml_header_offset() {
+        let toml = r#"
+[[signature]]
+name          = "ISO 9660"
+extension     = "iso"
+header        = "43 44 30 30 31"
+footer        = ""
+max_size      = 9395240960
+header_offset = 32769
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        let sig = &cfg.signatures[0];
+        assert_eq!(sig.header_offset, 32769);
+    }
+
+    #[test]
+    fn load_toml_header_offset_defaults_zero() {
+        let toml = r#"
+[[signature]]
+name      = "JPEG Image"
+extension = "jpg"
+header    = "FF D8 FF"
+footer    = "FF D9"
+max_size  = 10485760
+"#;
+        let cfg = CarvingConfig::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.signatures[0].header_offset, 0);
     }
 
     #[test]

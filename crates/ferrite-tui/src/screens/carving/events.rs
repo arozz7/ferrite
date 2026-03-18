@@ -75,6 +75,7 @@ impl CarvingState {
                                 hit,
                                 status: HitStatus::Unextracted,
                                 selected: false,
+                                quality: None,
                             });
                         }
                     }
@@ -142,6 +143,7 @@ impl CarvingState {
                     idx,
                     bytes,
                     truncated,
+                    quality,
                 }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
                         entry.status = if truncated {
@@ -149,7 +151,14 @@ impl CarvingState {
                         } else {
                             HitStatus::Ok { bytes }
                         };
+                        entry.quality = Some(quality);
                     }
+                }
+                Ok(CarveMsg::Duplicate { idx }) => {
+                    if let Some(entry) = self.hits.get_mut(idx) {
+                        entry.status = HitStatus::Duplicate;
+                    }
+                    self.duplicates_suppressed += 1;
                 }
                 Ok(CarveMsg::ExtractionStarted { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
@@ -173,6 +182,7 @@ impl CarvingState {
                     succeeded,
                     truncated,
                     failed,
+                    duplicates,
                     total_bytes,
                     elapsed_secs,
                 }) => {
@@ -186,14 +196,37 @@ impl CarvingState {
                         self.pause.store(false, Ordering::Relaxed);
                     }
                     // Only show summary when at least one file was attempted.
-                    if succeeded + truncated + failed > 0 {
-                        self.extract_summary = Some(ExtractionSummary {
-                            succeeded,
-                            truncated,
-                            failed,
-                            total_bytes,
-                            elapsed_secs,
-                        });
+                    if succeeded + truncated + failed + duplicates > 0 {
+                        if self.auto_extract {
+                            // Accumulate into the running session total so rapid
+                            // per-file completions don't cause visible flicker.
+                            if let Some(existing) = &mut self.extract_summary {
+                                existing.succeeded += succeeded;
+                                existing.truncated += truncated;
+                                existing.failed += failed;
+                                existing.duplicates += duplicates;
+                                existing.total_bytes += total_bytes;
+                                existing.elapsed_secs += elapsed_secs;
+                            } else {
+                                self.extract_summary = Some(ExtractionSummary {
+                                    succeeded,
+                                    truncated,
+                                    failed,
+                                    duplicates,
+                                    total_bytes,
+                                    elapsed_secs,
+                                });
+                            }
+                        } else {
+                            self.extract_summary = Some(ExtractionSummary {
+                                succeeded,
+                                truncated,
+                                failed,
+                                duplicates,
+                                total_bytes,
+                                elapsed_secs,
+                            });
+                        }
                     }
                     // Continue draining the auto-extract queue if enabled.
                     if self.auto_extract {

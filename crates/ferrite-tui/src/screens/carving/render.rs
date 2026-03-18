@@ -8,9 +8,11 @@ use ratatui::{
     Frame,
 };
 
+use ferrite_carver::CarveQuality;
+
 use super::{
-    fmt_bytes, preview, CarveFocus, CarveStatus, CarvingState, ExtractProgress, ExtractionSummary,
-    HitStatus, ScanRangeField,
+    fmt_bytes, preview, CarveFocus, CarveStatus, CarvingState, CursorRow, ExtractProgress,
+    ExtractionSummary, HitStatus, ScanRangeField,
 };
 
 impl CarvingState {
@@ -36,16 +38,17 @@ impl CarvingState {
         };
 
         let title = format!(
-            " Carving [{status_label}] — Space: toggle  s: scan  e: extract  v: preview  ←/→: switch panel "
+            " Carving [{status_label}] — Space: toggle  s: scan  e: extract  v: preview  u: custom sigs  ←/→: switch panel "
         );
         let outer = Block::default().borders(Borders::ALL).title(title);
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 
-        // Split vertically: output dir (1) + scan range (1) + disk/auto-extract (1) + main panels.
+        // Split vertically: output dir + scan range + disk/auto-extract + FS index + main panels.
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -56,14 +59,23 @@ impl CarvingState {
         self.render_output_dir_bar(frame, rows[0]);
         self.render_scan_range_bar(frame, rows[1]);
         self.render_disk_auto_bar(frame, rows[2]);
+        self.render_fs_index_bar(frame, rows[3]);
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(rows[3]);
+            .split(rows[4]);
 
         self.render_sig_panel(frame, cols[0]);
         self.render_hits_panel(frame, cols[1]);
+
+        // Overlay panels (drawn last so they appear on top).
+        if self.show_user_panel {
+            self.render_user_panel(frame, area);
+            if self.user_sig_form.is_some() {
+                self.render_user_form(frame, area);
+            }
+        }
     }
 
     fn render_output_dir_bar(&self, frame: &mut Frame, area: Rect) {
@@ -147,21 +159,46 @@ impl CarvingState {
         } else {
             Style::default()
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" Signatures (Space=toggle) ", title_style));
+        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+            " Signatures (Space=toggle  Enter=expand) ",
+            title_style,
+        ));
 
         let items: Vec<ListItem> = self
-            .sig_list
+            .cursor_rows
             .iter()
-            .map(|e| {
-                let check = if e.enabled { "[✓]" } else { "[ ]" };
-                let style = if e.enabled {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                ListItem::new(format!("{check} {}", e.sig.name)).style(style)
+            .map(|row| match row {
+                CursorRow::Group(gi) => {
+                    let group = &self.groups[*gi];
+                    let enabled = group.entries.iter().filter(|e| e.enabled).count();
+                    let total = group.entries.len();
+                    let arrow = if group.expanded { "▼" } else { "▶" };
+                    let text = format!("{arrow} {} ({enabled}/{total})", group.label);
+                    let style = if enabled == total {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else if enabled == 0 {
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    ListItem::new(text).style(style)
+                }
+                CursorRow::Sig(gi, si) => {
+                    let entry = &self.groups[*gi].entries[*si];
+                    let check = if entry.enabled { "[✓]" } else { "[ ]" };
+                    let style = if entry.enabled {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    ListItem::new(format!("  {check} {}", entry.sig.name)).style(style)
+                }
             })
             .collect();
 
@@ -207,7 +244,7 @@ impl CarvingState {
             format!(" Hits ({hits_label}){auto_str}  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected  PgUp/Dn: page  Home/End: jump ")
         } else {
             format!(
-                " Hits ({hits_label}){auto_str} — Space: select  a: all  E: extract selected  x: auto-extract  PgUp/Dn: page  Home/End: jump "
+                " Hits ({hits_label}){auto_str} — Space: select  a: all  E: extract selected  x: auto-extract  D: dedup  PgUp/Dn: page  Home/End: jump "
             )
         };
         let block = Block::default()
@@ -331,8 +368,23 @@ impl CarvingState {
                     ),
                     HitStatus::Truncated { bytes } => Span::styled(
                         format!(" [TRUNC {}]", fmt_bytes(*bytes)),
-                        Style::default().fg(Color::Red),
+                        Style::default().fg(Color::Yellow),
                     ),
+                    HitStatus::Duplicate => {
+                        Span::styled(" [DUP]", Style::default().fg(Color::DarkGray))
+                    }
+                };
+                let quality_span = match &entry.quality {
+                    Some(CarveQuality::Complete) => {
+                        Span::styled(" ✓", Style::default().fg(Color::Green))
+                    }
+                    Some(CarveQuality::Corrupt) => {
+                        Span::styled(" ✗", Style::default().fg(Color::Red))
+                    }
+                    Some(CarveQuality::Truncated) => {
+                        Span::styled(" ~", Style::default().fg(Color::Yellow))
+                    }
+                    Some(CarveQuality::Unknown) | None => Span::raw(""),
                 };
                 let orig_name = self
                     .meta_index
@@ -345,7 +397,12 @@ impl CarvingState {
                     entry.hit.byte_offset,
                     orig_name.as_deref().unwrap_or("")
                 );
-                ListItem::new(Line::from(vec![check, Span::raw(label), status_span]))
+                ListItem::new(Line::from(vec![
+                    check,
+                    Span::raw(label),
+                    status_span,
+                    quality_span,
+                ]))
             })
             .collect();
 
@@ -506,14 +563,32 @@ impl CarvingState {
             ),
             Style::default().fg(Color::DarkGray),
         );
+        let dup_span = if s.duplicates > 0 {
+            Span::styled(
+                format!("   ⊘ {} skipped", s.duplicates),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
         let dismiss_span = Span::styled("   (d to dismiss)", Style::default().fg(Color::DarkGray));
 
         let title_style = Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD);
+        // In auto-extract mode the summary accumulates across all batches;
+        // label it accordingly so the running total is not mistaken for a
+        // one-shot result.
+        let title = if self.auto_extract {
+            " Auto-Extract Session Total "
+        } else {
+            " Extraction Complete "
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Extraction Complete ", title_style))
+            .title(Span::styled(title, title_style))
             .border_style(Style::default().fg(Color::Green));
 
         let inner = block.inner(area);
@@ -523,6 +598,7 @@ impl CarvingState {
                 ok_span,
                 trunc_span,
                 fail_span,
+                dup_span,
                 meta_span,
                 dismiss_span,
             ])),

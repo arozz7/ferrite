@@ -314,10 +314,18 @@ impl ImagingState {
             ImagingStatus::ConfirmDriveMismatch { .. } => String::new(), // handled above
         };
 
+        // Detect low read rate (> 0 but < 5 MB/s) for amber indicator.
+        let is_low_rate = self
+            .latest
+            .as_ref()
+            .map(|u| u.read_rate_bps > 0 && u.read_rate_bps < 5 * 1024 * 1024)
+            .unwrap_or(false);
+
         let bar_style = match &self.status {
             ImagingStatus::Running if self.user_paused || self.thermal_paused => {
                 Style::default().fg(Color::Yellow)
             }
+            ImagingStatus::Running if is_low_rate => Style::default().fg(Color::Yellow),
             ImagingStatus::Running => Style::default().fg(Color::Green),
             ImagingStatus::Complete => Style::default().fg(Color::Green),
             ImagingStatus::Error(_) => Style::default().fg(Color::Red),
@@ -328,6 +336,8 @@ impl ImagingState {
             " Progress [⚠ THERMAL PAUSE] "
         } else if self.user_paused {
             " Progress [⏸ PAUSED — p to resume] "
+        } else if is_low_rate {
+            " Progress [⚠ LOW RATE] "
         } else {
             " Progress "
         };
@@ -366,13 +376,6 @@ impl ImagingState {
         if let Some(u) = &self.latest {
             let elapsed = u.elapsed.as_secs();
             let rate_mbps = u.read_rate_bps as f64 / (1024.0 * 1024.0);
-            let rate_str = if u.read_rate_bps == 0 {
-                " Rate: —".to_string()
-            } else if rate_mbps < 5.0 {
-                format!(" Rate: {rate_mbps:.1} MB/s ⚠ SLOW")
-            } else {
-                format!(" Rate: {rate_mbps:.1} MB/s")
-            };
 
             let eta_str = if u.read_rate_bps > 0 && u.bytes_finished < u.device_size {
                 let remaining = u.device_size - u.bytes_finished;
@@ -398,36 +401,60 @@ impl ImagingState {
                 (None, _) => String::new(),
             };
 
-            let mut stats = format!(
-                " Finished: {}  Bad: {}  Non-tried: {}  Elapsed: {:02}:{:02}:{:02}\n{}{}{}",
+            // Rate line — amber with warning suffix when below 5 MB/s.
+            let rate_line = if u.read_rate_bps == 0 {
+                Line::from(format!(" Rate: —{eta_str}{temp_str}"))
+            } else if is_low_rate {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" Rate: {rate_mbps:.1} MB/s ⚠ SLOW"),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(format!("{eta_str}{temp_str}")),
+                ])
+            } else {
+                Line::from(format!(" Rate: {rate_mbps:.1} MB/s{eta_str}{temp_str}"))
+            };
+
+            let stats = format!(
+                " Finished: {}  Bad: {}  Non-tried: {}  Elapsed: {:02}:{:02}:{:02}",
                 fmt_bytes(u.bytes_finished),
                 fmt_bytes(u.bytes_bad),
                 fmt_bytes(u.bytes_non_tried),
                 elapsed / 3600,
                 (elapsed % 3600) / 60,
                 elapsed % 60,
-                rate_str,
-                eta_str,
-                temp_str,
             );
-            if let Some(hash) = &self.image_sha256 {
-                stats.push_str(&format!("\n SHA-256: {hash}"));
+            let hash_line: Option<Line> = self.image_sha256.as_ref().map(|hash| {
+                if self.imaging_resumed {
+                    Line::from(vec![
+                        Span::styled(" SHA-256: ", Style::default().fg(Color::Yellow)),
+                        Span::styled(hash.as_str(), Style::default().fg(Color::Yellow)),
+                        Span::styled(
+                            "  ⚠ resumed — hash covers new data only",
+                            Style::default().fg(Color::Yellow),
+                        ),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled(" SHA-256: ", Style::default().fg(Color::Green)),
+                        Span::raw(hash.as_str()),
+                    ])
+                }
+            });
+            let mut text = Text::from(stats);
+            text.push_line(rate_line);
+            if let Some(hl) = hash_line {
+                text.push_line(hl);
             }
             if let Some(wbl) = wb_line {
-                let mut text = Text::from(stats);
                 text.push_line(wbl);
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
-                    chunks[3],
-                );
-            } else {
-                frame.render_widget(
-                    Paragraph::new(stats)
-                        .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
-                    chunks[3],
-                );
             }
+            frame.render_widget(
+                Paragraph::new(text)
+                    .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
+                chunks[3],
+            );
         } else {
             let base_msg = " Press s to start imaging, d to set destination path.";
             if let Some(wbl) = wb_line {

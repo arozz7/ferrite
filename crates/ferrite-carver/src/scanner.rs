@@ -5,6 +5,7 @@
 //! within each chunk.  Streaming I/O and footer detection live in
 //! [`crate::carver_io`]; signature-search helpers live in [`crate::scan_search`].
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -156,6 +157,8 @@ impl Carver {
 
         let mut total_hits = 0usize;
         let mut offset = scan_start;
+        // Track the last reported hit offset per signature name for min_hit_gap suppression.
+        let mut last_hit_by_sig: HashMap<String, u64> = HashMap::new();
 
         while offset < scan_end {
             let remaining = (scan_end - offset) as usize;
@@ -196,6 +199,28 @@ impl Carver {
 
             // Sort within chunk so callers receive hits in ascending offset order.
             chunk_hits.sort_by_key(|h| h.byte_offset);
+
+            // Apply min_hit_gap: suppress hits that fall within the gap window
+            // of the last reported hit for the same signature.  Must run after
+            // sorting so offsets are processed in order.
+            if self.config.signatures.iter().any(|s| s.min_hit_gap > 0) {
+                chunk_hits.retain(|h| {
+                    if h.signature.min_hit_gap == 0 {
+                        return true;
+                    }
+                    let accept = match last_hit_by_sig.get(&h.signature.name) {
+                        None => true, // first hit for this signature — always accept
+                        Some(&last) => {
+                            h.byte_offset >= last.saturating_add(h.signature.min_hit_gap)
+                        }
+                    };
+                    if accept {
+                        last_hit_by_sig.insert(h.signature.name.clone(), h.byte_offset);
+                    }
+                    accept
+                });
+            }
+
             total_hits += chunk_hits.len();
 
             trace!(
@@ -318,6 +343,8 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 0,
         }
     }
 
@@ -485,6 +512,8 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 0,
         };
         let wav_sig = Signature {
             name: "WAV".into(),
@@ -509,6 +538,8 @@ mod tests {
             size_hint: None,
             min_size: 0,
             pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![avi_sig, wav_sig],
@@ -545,6 +576,8 @@ mod tests {
             size_hint: None,
             min_size: 100,
             pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![sig],
@@ -555,6 +588,92 @@ mod tests {
             hits.is_empty(),
             "hit near device end should be filtered by min_size"
         );
+    }
+
+    #[test]
+    fn min_hit_gap_suppresses_nearby_hits() {
+        // Three occurrences of the magic at offsets 0, 100, and 2000.
+        // With min_hit_gap = 512, the hit at 100 is suppressed (100 < 0+512)
+        // but the hit at 2000 is kept (2000 >= 0+512).
+        let mut data = vec![0u8; 4096];
+        data[0] = 0xAB;
+        data[100] = 0xAB;
+        data[2000] = 0xAB;
+
+        let dev = device_from(data);
+        let gapped_sig = Signature {
+            name: "GapTest".into(),
+            extension: "tst".into(),
+            header: vec![Some(0xAB)],
+            footer: vec![],
+            footer_last: false,
+            max_size: 1_000_000,
+            size_hint: None,
+            min_size: 0,
+            pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 512,
+        };
+        let cfg = CarvingConfig {
+            signatures: vec![gapped_sig],
+            scan_chunk_size: 4096,
+            start_byte: 0,
+            end_byte: None,
+        };
+        let hits = Carver::new(dev, cfg).scan().unwrap();
+
+        assert_eq!(hits.len(), 2, "expected hits at 0 and 2000, got: {hits:?}");
+        assert_eq!(hits[0].byte_offset, 0);
+        assert_eq!(hits[1].byte_offset, 2000);
+    }
+
+    #[test]
+    fn min_hit_gap_zero_does_not_suppress() {
+        // With min_hit_gap = 0, all three hits should be reported.
+        let mut data = vec![0u8; 512];
+        data[0] = 0xAB;
+        data[10] = 0xAB;
+        data[20] = 0xAB;
+
+        let dev = device_from(data);
+        let cfg = config_with(vec![sig(&[0xAB], &[], 100)], 512);
+        let hits = Carver::new(dev, cfg).scan().unwrap();
+
+        assert_eq!(hits.len(), 3, "min_hit_gap=0 should not suppress any hits");
+    }
+
+    #[test]
+    fn min_hit_gap_tracks_across_chunks() {
+        // Two chunks of 512 bytes each. Hit at offset 0 (chunk 0) and offset 600 (chunk 1).
+        // With min_hit_gap = 1024, the second hit at 600 is suppressed (600 < 0+1024).
+        let mut data = vec![0u8; 1024];
+        data[0] = 0xCC;
+        data[600] = 0xCC;
+
+        let dev = device_from(data);
+        let gapped_sig = Signature {
+            name: "CrossChunk".into(),
+            extension: "bin".into(),
+            header: vec![Some(0xCC)],
+            footer: vec![],
+            footer_last: false,
+            max_size: 1_000_000,
+            size_hint: None,
+            min_size: 0,
+            pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 1024,
+        };
+        let cfg = CarvingConfig {
+            signatures: vec![gapped_sig],
+            scan_chunk_size: 512,
+            start_byte: 0,
+            end_byte: None,
+        };
+        let hits = Carver::new(dev, cfg).scan().unwrap();
+
+        assert_eq!(hits.len(), 1, "cross-chunk gap should suppress second hit");
+        assert_eq!(hits[0].byte_offset, 0);
     }
 
     #[test]
@@ -577,6 +696,8 @@ mod tests {
             size_hint: None,
             min_size: 100,
             pre_validate: None,
+            header_offset: 0,
+            min_hit_gap: 0,
         };
         let cfg = CarvingConfig {
             signatures: vec![sig],
