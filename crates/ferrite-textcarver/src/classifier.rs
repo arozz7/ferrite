@@ -119,7 +119,9 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 /// Count occurrences of the JSON key pattern `":` (quote followed by colon)
 /// in the first 1 KiB.  Every JSON key-value pair produces at least one.
 fn count_json_key_patterns(data: &[u8]) -> usize {
-    data.windows(2).filter(|w| w[0] == b'"' && w[1] == b':').count()
+    data.windows(2)
+        .filter(|w| w[0] == b'"' && w[1] == b':')
+        .count()
 }
 
 /// Count distinct SQL keywords present in `data` (case-insensitive).
@@ -135,7 +137,12 @@ fn count_distinct_sql_keywords(data: &[u8]) -> usize {
 /// Count distinct C/C++ keywords/directives present in `data`.
 fn count_distinct_c_keywords(data: &[u8]) -> usize {
     const KWS: &[&[u8]] = &[
-        b"#include", b"#define", b"typedef", b"struct", b"void", b"int",
+        b"#include",
+        b"#define",
+        b"typedef",
+        b"struct",
+        b"void",
+        b"int",
     ];
     KWS.iter()
         .filter(|&&kw| contains_subslice(data, kw))

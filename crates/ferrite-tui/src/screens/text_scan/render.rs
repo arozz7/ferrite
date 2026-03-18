@@ -110,7 +110,9 @@ impl TextScanState {
         let (text, style) = if self.editing_dir {
             (
                 format!(" Output dir: {}\u{2588}", self.output_dir),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )
         } else if self.output_dir.is_empty() {
             (
@@ -153,10 +155,7 @@ impl TextScanState {
                 let (count, color) = if self.blocks.is_empty() {
                     (" No blocks found yet".to_string(), Color::DarkGray)
                 } else {
-                    (
-                        format!(" {} total blocks", self.blocks.len()),
-                        Color::White,
-                    )
+                    (format!(" {} total blocks", self.blocks.len()), Color::White)
                 };
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(count, Style::default().fg(color)))),
@@ -167,7 +166,9 @@ impl TextScanState {
     }
 
     fn render_block_list(&mut self, frame: &mut Frame, area: Rect) {
-        let focused_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let focused_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
         let normal_style = Style::default().fg(Color::White);
 
         let items: Vec<ListItem> = self
@@ -179,10 +180,18 @@ impl TextScanState {
                 let sel = display_idx == self.block_sel;
                 let kind_style = Style::default()
                     .fg(kind_color(block.kind))
-                    .add_modifier(if sel { Modifier::BOLD } else { Modifier::empty() });
+                    .add_modifier(if sel {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    });
                 let qual_style = Style::default()
                     .fg(quality_color(block.quality))
-                    .add_modifier(if sel { Modifier::BOLD } else { Modifier::empty() });
+                    .add_modifier(if sel {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    });
                 let row_style = if sel { focused_style } else { normal_style };
 
                 let size_str = format_size(block.length);
@@ -219,7 +228,9 @@ impl TextScanState {
         self.blocks_page_size = area.height.saturating_sub(1) as usize;
 
         let mut list_state = ListState::default();
-        list_state.select(Some(self.block_sel.min(self.filtered.len().saturating_sub(1))));
+        list_state.select(Some(
+            self.block_sel.min(self.filtered.len().saturating_sub(1)),
+        ));
 
         frame.render_stateful_widget(
             List::new(items)
@@ -254,7 +265,11 @@ impl TextScanState {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Text Block Scanner — Consent ")
-            .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
             .border_style(Style::default().fg(Color::Yellow));
 
         let inner = block.inner(popup_area);

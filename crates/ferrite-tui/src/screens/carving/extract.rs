@@ -92,10 +92,7 @@ fn read_file_tail(path: &str, max_bytes: u64) -> Vec<u8> {
 /// Uses `std::hash::DefaultHasher` — sufficient for probabilistic duplicate
 /// detection; not a cryptographic hash.  Returns `None` when the device read
 /// fails (the hit will NOT be treated as a duplicate in that case).
-fn hit_fingerprint(
-    device: &dyn ferrite_blockdev::BlockDevice,
-    byte_offset: u64,
-) -> Option<u64> {
+fn hit_fingerprint(device: &dyn ferrite_blockdev::BlockDevice, byte_offset: u64) -> Option<u64> {
     const FP_BYTES: usize = 4096;
     let mut buf = AlignedBuffer::new(FP_BYTES, 512);
     let n = device.read_at(byte_offset, &mut buf).ok()?;

@@ -176,8 +176,7 @@ impl ApfsParser {
             }
         })?;
 
-        let vol_block =
-            read_bytes(device.as_ref(), vol_paddr * block_size, block_size as usize)?;
+        let vol_block = read_bytes(device.as_ref(), vol_paddr * block_size, block_size as usize)?;
 
         let apfs_magic = read_u32_le(&vol_block, APFS_MAGIC_OFF)?;
         if apfs_magic != APFS_MAGIC {
@@ -366,9 +365,9 @@ impl ApfsParser {
         let (inodes, dirents, _) = self.collect_fs_records()?;
         let mut cur_ino = APFS_ROOT_DIR_INO;
         for part in &parts {
-            let found = dirents.iter().find(|d| {
-                d.parent_ino == cur_ino && d.name.eq_ignore_ascii_case(part)
-            });
+            let found = dirents
+                .iter()
+                .find(|d| d.parent_ino == cur_ino && d.name.eq_ignore_ascii_case(part));
             match found {
                 Some(d) => {
                     // Verify the child is a directory.
@@ -444,12 +443,12 @@ impl FilesystemParser for ApfsParser {
     }
 
     fn read_file(&self, entry: &FileEntry, writer: &mut dyn Write) -> Result<u64> {
-        let ino = entry.inode_number.ok_or_else(|| {
-            FilesystemError::InvalidStructure {
+        let ino = entry
+            .inode_number
+            .ok_or_else(|| FilesystemError::InvalidStructure {
                 context: "APFS read_file",
                 reason: "FileEntry has no inode number".to_string(),
-            }
-        })? as u64;
+            })? as u64;
 
         let (_, _, mut extents) = self.collect_fs_records()?;
         extents.retain(|e| e.ino == ino);
@@ -501,7 +500,10 @@ fn walk_omap_tree(
 ) -> Result<HashMap<u64, u64>> {
     let mut map: HashMap<u64, (u64, u64)> = HashMap::new();
     walk_omap_node(device, block, block_size, &mut map)?;
-    Ok(map.into_iter().map(|(oid, (_, paddr))| (oid, paddr)).collect())
+    Ok(map
+        .into_iter()
+        .map(|(oid, (_, paddr))| (oid, paddr))
+        .collect())
 }
 
 fn walk_omap_node(
@@ -584,16 +586,39 @@ fn parse_inode(ino: u64, val: &[u8]) -> Option<InodeRecord> {
     if val.len() < INO_UNCOMPRESSED_SIZE_OFF + 8 {
         return None;
     }
-    let parent_id = u64::from_le_bytes(val[INO_PARENT_ID_OFF..INO_PARENT_ID_OFF + 8].try_into().ok()?);
-    let create_ns = i64::from_le_bytes(val[INO_CREATE_TIME_OFF..INO_CREATE_TIME_OFF + 8].try_into().ok()?);
-    let mod_ns = i64::from_le_bytes(val[INO_MOD_TIME_OFF..INO_MOD_TIME_OFF + 8].try_into().ok()?);
+    let parent_id = u64::from_le_bytes(
+        val[INO_PARENT_ID_OFF..INO_PARENT_ID_OFF + 8]
+            .try_into()
+            .ok()?,
+    );
+    let create_ns = i64::from_le_bytes(
+        val[INO_CREATE_TIME_OFF..INO_CREATE_TIME_OFF + 8]
+            .try_into()
+            .ok()?,
+    );
+    let mod_ns = i64::from_le_bytes(
+        val[INO_MOD_TIME_OFF..INO_MOD_TIME_OFF + 8]
+            .try_into()
+            .ok()?,
+    );
     let mode = u16::from_le_bytes(val[INO_MODE_OFF..INO_MODE_OFF + 2].try_into().ok()?);
-    let size = u64::from_le_bytes(val[INO_UNCOMPRESSED_SIZE_OFF..INO_UNCOMPRESSED_SIZE_OFF + 8].try_into().ok()?);
+    let size = u64::from_le_bytes(
+        val[INO_UNCOMPRESSED_SIZE_OFF..INO_UNCOMPRESSED_SIZE_OFF + 8]
+            .try_into()
+            .ok()?,
+    );
 
     let created = apfs_ts_to_unix(create_ns);
     let modified = apfs_ts_to_unix(mod_ns);
 
-    Some(InodeRecord { ino, parent_id, mode, size, created, modified })
+    Some(InodeRecord {
+        ino,
+        parent_id,
+        mode,
+        size,
+        created,
+        modified,
+    })
 }
 
 fn parse_dirent(parent_ino: u64, key: &[u8], val: &[u8]) -> Option<DirentRecord> {
@@ -610,8 +635,16 @@ fn parse_dirent(parent_ino: u64, key: &[u8], val: &[u8]) -> Option<DirentRecord>
     let name = String::from_utf8_lossy(name_bytes)
         .trim_end_matches('\0')
         .to_string();
-    let child_ino = u64::from_le_bytes(val[DREC_FILE_ID_OFF..DREC_FILE_ID_OFF + 8].try_into().ok()?);
-    Some(DirentRecord { parent_ino, name, child_ino })
+    let child_ino = u64::from_le_bytes(
+        val[DREC_FILE_ID_OFF..DREC_FILE_ID_OFF + 8]
+            .try_into()
+            .ok()?,
+    );
+    Some(DirentRecord {
+        parent_ino,
+        name,
+        child_ino,
+    })
 }
 
 fn parse_extent(ino: u64, key: &[u8], val: &[u8]) -> Option<ExtentRecord> {
@@ -620,14 +653,27 @@ fn parse_extent(ino: u64, key: &[u8], val: &[u8]) -> Option<ExtentRecord> {
         return None;
     }
     let logical_offset = u64::from_le_bytes(key[8..16].try_into().ok()?);
-    let len_and_flags = u64::from_le_bytes(val[FEXT_LEN_FLAGS_OFF..FEXT_LEN_FLAGS_OFF + 8].try_into().ok()?);
-    let phys_block = u64::from_le_bytes(val[FEXT_PHYS_BLOCK_OFF..FEXT_PHYS_BLOCK_OFF + 8].try_into().ok()?);
+    let len_and_flags = u64::from_le_bytes(
+        val[FEXT_LEN_FLAGS_OFF..FEXT_LEN_FLAGS_OFF + 8]
+            .try_into()
+            .ok()?,
+    );
+    let phys_block = u64::from_le_bytes(
+        val[FEXT_PHYS_BLOCK_OFF..FEXT_PHYS_BLOCK_OFF + 8]
+            .try_into()
+            .ok()?,
+    );
     // Lower 56 bits = byte length; upper 8 bits = flags.
     let byte_length = len_and_flags & 0x00FF_FFFF_FFFF_FFFF;
     if byte_length == 0 {
         return None;
     }
-    Some(ExtentRecord { ino, logical_offset, byte_length, phys_block })
+    Some(ExtentRecord {
+        ino,
+        logical_offset,
+        byte_length,
+        phys_block,
+    })
 }
 
 // ── Timestamp helper ──────────────────────────────────────────────────────────
@@ -819,49 +865,49 @@ mod tests {
 
         // ── toc entries at [56..80] ────────────────────────────────────────────
         // toc[0]: {k:{off=0,len=8}, v:{off=92,len=92}}
-        b[56..58].copy_from_slice(&0u16.to_le_bytes());  // k.off
-        b[58..60].copy_from_slice(&8u16.to_le_bytes());  // k.len
+        b[56..58].copy_from_slice(&0u16.to_le_bytes()); // k.off
+        b[58..60].copy_from_slice(&8u16.to_le_bytes()); // k.len
         b[60..62].copy_from_slice(&92u16.to_le_bytes()); // v.off
         b[62..64].copy_from_slice(&92u16.to_le_bytes()); // v.len
-        // toc[1]: {k:{off=8,len=20}, v:{off=110,len=18}}
-        b[64..66].copy_from_slice(&8u16.to_le_bytes());   // k.off
-        b[66..68].copy_from_slice(&20u16.to_le_bytes());  // k.len
+                                                         // toc[1]: {k:{off=8,len=20}, v:{off=110,len=18}}
+        b[64..66].copy_from_slice(&8u16.to_le_bytes()); // k.off
+        b[66..68].copy_from_slice(&20u16.to_le_bytes()); // k.len
         b[68..70].copy_from_slice(&110u16.to_le_bytes()); // v.off
-        b[70..72].copy_from_slice(&18u16.to_le_bytes());  // v.len
-        // toc[2]: {k:{off=28,len=16}, v:{off=134,len=24}}
-        b[72..74].copy_from_slice(&28u16.to_le_bytes());  // k.off
-        b[74..76].copy_from_slice(&16u16.to_le_bytes());  // k.len
+        b[70..72].copy_from_slice(&18u16.to_le_bytes()); // v.len
+                                                         // toc[2]: {k:{off=28,len=16}, v:{off=134,len=24}}
+        b[72..74].copy_from_slice(&28u16.to_le_bytes()); // k.off
+        b[74..76].copy_from_slice(&16u16.to_le_bytes()); // k.len
         b[76..78].copy_from_slice(&134u16.to_le_bytes()); // v.off
-        b[78..80].copy_from_slice(&24u16.to_le_bytes());  // v.len
+        b[78..80].copy_from_slice(&24u16.to_le_bytes()); // v.len
 
         // ── val0: j_inode_val_t at [3964..4056] (92 bytes) ───────────────────
         let v0 = 3964usize;
-        b[v0..v0+8].copy_from_slice(&parent_ino.to_le_bytes()); // parent_id
-        b[v0+8..v0+16].copy_from_slice(&inode_ino.to_le_bytes()); // private_id
-        // timestamps @ 16,24,32,40 = 0 (None)
-        // internal_flags @ 48 = 0
-        // nlink @ 56 = 1
-        b[v0+56..v0+60].copy_from_slice(&1u32.to_le_bytes());
+        b[v0..v0 + 8].copy_from_slice(&parent_ino.to_le_bytes()); // parent_id
+        b[v0 + 8..v0 + 16].copy_from_slice(&inode_ino.to_le_bytes()); // private_id
+                                                                      // timestamps @ 16,24,32,40 = 0 (None)
+                                                                      // internal_flags @ 48 = 0
+                                                                      // nlink @ 56 = 1
+        b[v0 + 56..v0 + 60].copy_from_slice(&1u32.to_le_bytes());
         // cp_key_class @ 60, write_gen @ 64, bsd_flags @ 68 = 0
         // owner @ 72, group @ 76 = 0
         // mode @ 80: S_IFREG | 0o644 = 0o100644 = 0x81A4
-        b[v0+80..v0+82].copy_from_slice(&0x81A4u16.to_le_bytes());
+        b[v0 + 80..v0 + 82].copy_from_slice(&0x81A4u16.to_le_bytes());
         // pad1 @ 82 = 0
         // uncompressed_size @ 84 = 13
-        b[v0+84..v0+92].copy_from_slice(&13u64.to_le_bytes());
+        b[v0 + 84..v0 + 92].copy_from_slice(&13u64.to_le_bytes());
 
         // ── val1: j_drec_val_t at [3946..3964] (18 bytes) ────────────────────
         let v1 = 3946usize;
-        b[v1..v1+8].copy_from_slice(&inode_ino.to_le_bytes()); // file_id
-        // date_added @ 8 = 0
-        // flags @ 16: DT_REG = 4
-        b[v1+16..v1+18].copy_from_slice(&4u16.to_le_bytes());
+        b[v1..v1 + 8].copy_from_slice(&inode_ino.to_le_bytes()); // file_id
+                                                                 // date_added @ 8 = 0
+                                                                 // flags @ 16: DT_REG = 4
+        b[v1 + 16..v1 + 18].copy_from_slice(&4u16.to_le_bytes());
 
         // ── val2: j_file_extent_val_t at [3922..3946] (24 bytes) ─────────────
         let v2 = 3922usize;
-        b[v2..v2+8].copy_from_slice(&13u64.to_le_bytes()); // len_and_flags (len=13, flags=0)
-        b[v2+8..v2+16].copy_from_slice(&5u64.to_le_bytes()); // phys_block_num = 5
-        // crypto_id @ 16 = 0
+        b[v2..v2 + 8].copy_from_slice(&13u64.to_le_bytes()); // len_and_flags (len=13, flags=0)
+        b[v2 + 8..v2 + 16].copy_from_slice(&5u64.to_le_bytes()); // phys_block_num = 5
+                                                                 // crypto_id @ 16 = 0
 
         // ── btree_info at [4056..4096] ────────────────────────────────────────
         b[4056..4060].copy_from_slice(&0u32.to_le_bytes()); // bt_flags

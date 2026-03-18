@@ -566,7 +566,9 @@ impl CarvingState {
         let dup_span = if s.duplicates > 0 {
             Span::styled(
                 format!("   ⊘ {} skipped", s.duplicates),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
             )
         } else {
             Span::raw("")

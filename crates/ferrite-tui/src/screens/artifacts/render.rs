@@ -98,7 +98,9 @@ impl ArtifactsState {
         let (text, style) = if self.editing_dir {
             (
                 format!(" Output dir: {}\u{2588}", self.output_dir),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )
         } else if self.output_dir.is_empty() {
             (
@@ -141,10 +143,7 @@ impl ArtifactsState {
                 let (count, color) = if self.hits.is_empty() {
                     (" No hits yet".to_string(), Color::DarkGray)
                 } else {
-                    (
-                        format!(" {} total hits", self.hits.len()),
-                        Color::White,
-                    )
+                    (format!(" {} total hits", self.hits.len()), Color::White)
                 };
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(count, Style::default().fg(color)))),
@@ -155,7 +154,9 @@ impl ArtifactsState {
     }
 
     fn render_hit_list(&mut self, frame: &mut Frame, area: Rect) {
-        let focused_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let focused_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
         let normal_style = Style::default().fg(Color::White);
 
         let items: Vec<ListItem> = self
@@ -167,7 +168,11 @@ impl ArtifactsState {
                 let sel = display_idx == self.hit_sel;
                 let kind_style = Style::default()
                     .fg(kind_color(hit.kind))
-                    .add_modifier(if sel { Modifier::BOLD } else { Modifier::empty() });
+                    .add_modifier(if sel {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    });
                 let row_style = if sel { focused_style } else { normal_style };
 
                 let line = Line::from(vec![

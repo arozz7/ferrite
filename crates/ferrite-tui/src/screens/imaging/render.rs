@@ -428,14 +428,8 @@ impl ImagingState {
             let hash_line: Option<Line> = self.image_sha256.as_ref().map(|hash| {
                 if self.imaging_resumed {
                     Line::from(vec![
-                        Span::styled(
-                            " SHA-256: ",
-                            Style::default().fg(Color::Yellow),
-                        ),
-                        Span::styled(
-                            hash.as_str(),
-                            Style::default().fg(Color::Yellow),
-                        ),
+                        Span::styled(" SHA-256: ", Style::default().fg(Color::Yellow)),
+                        Span::styled(hash.as_str(), Style::default().fg(Color::Yellow)),
                         Span::styled(
                             "  ⚠ resumed — hash covers new data only",
                             Style::default().fg(Color::Yellow),

@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_blockdev::BlockDevice;
+use ferrite_imaging::write_blocker;
 use ferrite_imaging::{
     thermal::{ThermalEvent, ThermalGuard, ThermalGuardConfig},
     ImagingConfig, ImagingEngine, ProgressReporter, ProgressUpdate, Signal,
 };
-use ferrite_imaging::write_blocker;
 
 mod render;
 
@@ -592,6 +592,9 @@ mod tests {
         s.wb_rx = Some(wb_rx);
         wb_tx.send(true).unwrap();
         s.tick();
-        assert!(s.wb_rx.is_none(), "wb_rx should be cleared after result received");
+        assert!(
+            s.wb_rx.is_none(),
+            "wb_rx should be cleared after result received"
+        );
     }
 }

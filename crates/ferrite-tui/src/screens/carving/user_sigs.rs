@@ -36,8 +36,7 @@ impl UserSigDef {
         if ext.is_empty() {
             return Err("extension must not be empty".to_string());
         }
-        let header = parse_hex_pattern(&self.header)
-            .map_err(|e| format!("invalid header: {e}"))?;
+        let header = parse_hex_pattern(&self.header).map_err(|e| format!("invalid header: {e}"))?;
         if header.is_empty() {
             return Err("header must not be empty".to_string());
         }

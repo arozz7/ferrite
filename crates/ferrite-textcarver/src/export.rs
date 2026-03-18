@@ -27,11 +27,7 @@ pub fn write_files(output_dir: &str, blocks: &[TextBlock]) -> (usize, Vec<String
     let mut errors: Vec<String> = Vec::new();
 
     for block in blocks {
-        let filename = format!(
-            "text_{:08X}.{}",
-            block.byte_offset,
-            block.extension
-        );
+        let filename = format!("text_{:08X}.{}", block.byte_offset, block.extension);
         let path = dir.join(&filename);
 
         // Re-read the block content from the device is not available here;

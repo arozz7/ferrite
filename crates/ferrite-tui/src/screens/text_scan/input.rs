@@ -29,9 +29,7 @@ impl TextScanState {
                 KeyCode::Backspace => {
                     self.output_dir.pop();
                 }
-                KeyCode::Char(c)
-                    if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
-                {
+                KeyCode::Char(c) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
                     self.output_dir.push(c);
                 }
                 _ => {}
@@ -57,8 +55,7 @@ impl TextScanState {
             KeyCode::PageDown => {
                 if !self.filtered.is_empty() {
                     let max = self.filtered.len() - 1;
-                    self.block_sel =
-                        (self.block_sel + self.blocks_page_size.max(1)).min(max);
+                    self.block_sel = (self.block_sel + self.blocks_page_size.max(1)).min(max);
                 }
             }
             KeyCode::Home => self.block_sel = 0,

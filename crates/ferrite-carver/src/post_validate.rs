@@ -87,10 +87,7 @@ fn validate_gif(tail: &[u8]) -> CarveQuality {
 /// PDF: `%%EOF` must appear within the last 1 KiB.
 fn validate_pdf(tail: &[u8]) -> CarveQuality {
     let search_start = tail.len().saturating_sub(1024);
-    if tail[search_start..]
-        .windows(5)
-        .any(|w| w == b"%%EOF")
-    {
+    if tail[search_start..].windows(5).any(|w| w == b"%%EOF") {
         CarveQuality::Complete
     } else {
         CarveQuality::Corrupt
@@ -119,7 +116,7 @@ mod tests {
     #[test]
     fn truncated_flag_returns_truncated_regardless_of_ext() {
         assert_eq!(
-            validate_extracted("jpg", &[0xFF, 0xD9],  true),
+            validate_extracted("jpg", &[0xFF, 0xD9], true),
             CarveQuality::Truncated
         );
         assert_eq!(
@@ -133,13 +130,19 @@ mod tests {
     #[test]
     fn jpeg_complete_with_eoi_marker() {
         let tail = &[0x00u8, 0x01, 0xFF, 0xD9];
-        assert_eq!(validate_extracted("jpg", tail, false), CarveQuality::Complete);
+        assert_eq!(
+            validate_extracted("jpg", tail, false),
+            CarveQuality::Complete
+        );
     }
 
     #[test]
     fn jpeg_corrupt_without_eoi() {
         let tail = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00];
-        assert_eq!(validate_extracted("jpg", tail, false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("jpg", tail, false),
+            CarveQuality::Corrupt
+        );
     }
 
     #[test]
@@ -149,7 +152,10 @@ mod tests {
 
     #[test]
     fn jpeg_corrupt_when_only_one_byte() {
-        assert_eq!(validate_extracted("jpg", &[0xD9], false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("jpg", &[0xD9], false),
+            CarveQuality::Corrupt
+        );
     }
 
     // ── PNG ──────────────────────────────────────────────────────────────────
@@ -158,17 +164,23 @@ mod tests {
     fn png_complete_with_iend() {
         let mut tail = vec![0u8; 4];
         tail.extend_from_slice(&[
-            0x00, 0x00, 0x00, 0x00,
-            0x49, 0x45, 0x4E, 0x44,
-            0xAE, 0x42, 0x60, 0x82,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ]);
-        assert_eq!(validate_extracted("png", &tail, false), CarveQuality::Complete);
+        assert_eq!(
+            validate_extracted("png", &tail, false),
+            CarveQuality::Complete
+        );
     }
 
     #[test]
     fn png_corrupt_missing_iend() {
-        let tail = &[0x89u8, 0x50, 0x4E, 0x47, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(validate_extracted("png", tail, false), CarveQuality::Corrupt);
+        let tail = &[
+            0x89u8, 0x50, 0x4E, 0x47, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(
+            validate_extracted("png", tail, false),
+            CarveQuality::Corrupt
+        );
     }
 
     #[test]
@@ -181,13 +193,19 @@ mod tests {
     #[test]
     fn gif_complete_with_trailer() {
         let tail = b"GIF89a\x3B";
-        assert_eq!(validate_extracted("gif", tail, false), CarveQuality::Complete);
+        assert_eq!(
+            validate_extracted("gif", tail, false),
+            CarveQuality::Complete
+        );
     }
 
     #[test]
     fn gif_corrupt_missing_trailer() {
         let tail = b"GIF89a";
-        assert_eq!(validate_extracted("gif", tail, false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("gif", tail, false),
+            CarveQuality::Corrupt
+        );
     }
 
     #[test]
@@ -200,13 +218,19 @@ mod tests {
     #[test]
     fn pdf_complete_with_eof_marker() {
         let tail = b"%PDF-1.4\n...content...\n%%EOF\n";
-        assert_eq!(validate_extracted("pdf", tail, false), CarveQuality::Complete);
+        assert_eq!(
+            validate_extracted("pdf", tail, false),
+            CarveQuality::Complete
+        );
     }
 
     #[test]
     fn pdf_corrupt_without_eof() {
         let tail = b"%PDF-1.4\n...content...";
-        assert_eq!(validate_extracted("pdf", tail, false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("pdf", tail, false),
+            CarveQuality::Corrupt
+        );
     }
 
     #[test]
@@ -214,7 +238,10 @@ mod tests {
         let mut tail = vec![0u8; 2000];
         // Put %%EOF at byte 1800 (within last 1 KiB of the 2000-byte tail).
         tail[1800..1805].copy_from_slice(b"%%EOF");
-        assert_eq!(validate_extracted("pdf", &tail, false), CarveQuality::Complete);
+        assert_eq!(
+            validate_extracted("pdf", &tail, false),
+            CarveQuality::Complete
+        );
     }
 
     #[test]
@@ -222,7 +249,10 @@ mod tests {
         let mut tail = vec![0u8; 2000];
         // Put %%EOF at byte 100 (more than 1 KiB from the end — not searched).
         tail[100..105].copy_from_slice(b"%%EOF");
-        assert_eq!(validate_extracted("pdf", &tail, false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("pdf", &tail, false),
+            CarveQuality::Corrupt
+        );
     }
 
     // ── ZIP / EOCD ────────────────────────────────────────────────────────────
@@ -231,28 +261,46 @@ mod tests {
     fn zip_complete_with_eocd() {
         let mut tail = vec![0u8; 32];
         tail[10..14].copy_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
-        assert_eq!(validate_extracted("zip", &tail, false), CarveQuality::Complete);
+        assert_eq!(
+            validate_extracted("zip", &tail, false),
+            CarveQuality::Complete
+        );
     }
 
     #[test]
     fn zip_corrupt_missing_eocd() {
         let tail = b"PK\x03\x04some zip content without central dir";
-        assert_eq!(validate_extracted("zip", tail, false), CarveQuality::Corrupt);
+        assert_eq!(
+            validate_extracted("zip", tail, false),
+            CarveQuality::Corrupt
+        );
     }
 
     #[test]
     fn zip_complete_on_ole_extension() {
         let mut tail = vec![0u8; 32];
         tail[0..4].copy_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
-        assert_eq!(validate_extracted("ole", &tail, false), CarveQuality::Complete);
+        assert_eq!(
+            validate_extracted("ole", &tail, false),
+            CarveQuality::Complete
+        );
     }
 
     // ── Unknown formats ──────────────────────────────────────────────────────
 
     #[test]
     fn unknown_format_returns_unknown() {
-        assert_eq!(validate_extracted("mp4", &[0u8; 32], false), CarveQuality::Unknown);
-        assert_eq!(validate_extracted("mkv", &[0u8; 32], false), CarveQuality::Unknown);
-        assert_eq!(validate_extracted("avi", &[0u8; 32], false), CarveQuality::Unknown);
+        assert_eq!(
+            validate_extracted("mp4", &[0u8; 32], false),
+            CarveQuality::Unknown
+        );
+        assert_eq!(
+            validate_extracted("mkv", &[0u8; 32], false),
+            CarveQuality::Unknown
+        );
+        assert_eq!(
+            validate_extracted("avi", &[0u8; 32], false),
+            CarveQuality::Unknown
+        );
     }
 }

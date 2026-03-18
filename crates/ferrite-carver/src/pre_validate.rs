@@ -1522,12 +1522,8 @@ fn validate_midi(data: &[u8], pos: usize) -> bool {
     if data.len() < end {
         return true;
     }
-    let chunk_len = u32::from_be_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]);
+    let chunk_len =
+        u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
     if chunk_len != 6 {
         return false;
     }
@@ -1546,12 +1542,8 @@ fn validate_aiff(data: &[u8], pos: usize) -> bool {
     if subtype != b'F' && subtype != b'C' {
         return false;
     }
-    let form_size = u32::from_be_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]);
+    let form_size =
+        u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
     form_size > 4
 }
 
@@ -1598,12 +1590,8 @@ fn validate_realmedia(data: &[u8], pos: usize) -> bool {
     if obj_version > 1 {
         return false;
     }
-    let header_size = u32::from_be_bytes([
-        data[pos + 6],
-        data[pos + 7],
-        data[pos + 8],
-        data[pos + 9],
-    ]);
+    let header_size =
+        u32::from_be_bytes([data[pos + 6], data[pos + 7], data[pos + 8], data[pos + 9]]);
     header_size >= 18
 }
 
@@ -1625,12 +1613,8 @@ fn validate_orf(data: &[u8], pos: usize) -> bool {
     if data.len() < end {
         return true;
     }
-    let ifd_offset = u32::from_le_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]);
+    let ifd_offset =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
     (8..=4096).contains(&ifd_offset)
 }
 
@@ -1641,19 +1625,13 @@ fn validate_pef(data: &[u8], pos: usize) -> bool {
     if data.len() < end {
         return true;
     }
-    let ifd_offset = u32::from_le_bytes([
-        data[pos + 4],
-        data[pos + 5],
-        data[pos + 6],
-        data[pos + 7],
-    ]);
+    let ifd_offset =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
     if !(8..=4096).contains(&ifd_offset) {
         return false;
     }
     let scan_end = (pos + 512).min(data.len());
-    data[pos..scan_end]
-        .windows(7)
-        .any(|w| w == b"PENTAX ")
+    data[pos..scan_end].windows(7).any(|w| w == b"PENTAX ")
 }
 
 /// Mach-O 64-bit little-endian executable.
@@ -1789,8 +1767,7 @@ fn validate_wavpack(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 10) {
         return true;
     }
-    let ck_size =
-        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    let ck_size = u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
     if ck_size == 0 {
         return false;
     }
@@ -1819,8 +1796,7 @@ fn validate_swf(data: &[u8], pos: usize) -> bool {
     if !(1..=50).contains(&version) {
         return false;
     }
-    let file_len =
-        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    let file_len = u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
     file_len >= 8
 }
 
@@ -1833,8 +1809,7 @@ fn validate_dcr(data: &[u8], pos: usize) -> bool {
         return true;
     }
     let ifd_off =
-        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]])
-            as usize;
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize;
     if !(8..=65536).contains(&ifd_off) {
         return false;
     }
@@ -1907,8 +1882,12 @@ fn validate_au(data: &[u8], pos: usize) -> bool {
     if data_offset < 24 {
         return false;
     }
-    let encoding =
-        u32::from_be_bytes([data[pos + 12], data[pos + 13], data[pos + 14], data[pos + 15]]);
+    let encoding = u32::from_be_bytes([
+        data[pos + 12],
+        data[pos + 13],
+        data[pos + 14],
+        data[pos + 15],
+    ]);
     // Known encodings: 1=MULAW, 2-7=PCM/float variants, 23-27=G.7xx
     matches!(encoding, 1..=7 | 23..=27)
 }
@@ -1930,13 +1909,11 @@ fn validate_woff(data: &[u8], pos: usize) -> bool {
     if need(data, pos, 14) {
         return true;
     }
-    let flavor =
-        u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    let flavor = u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
     if !matches!(flavor, 0x0001_0000 | 0x4F54_544F | 0x7472_7565) {
         return false;
     }
-    let length =
-        u32::from_be_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    let length = u32::from_be_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
     if length < 44 {
         return false;
     }

@@ -158,9 +158,7 @@ impl ArtifactsState {
     /// Rebuild `filtered` from scratch using the current `filter_kind`.
     pub(crate) fn rebuild_filtered(&mut self) {
         self.filtered = (0..self.hits.len())
-            .filter(|&i| {
-                self.filter_kind.is_none() || self.filter_kind == Some(self.hits[i].kind)
-            })
+            .filter(|&i| self.filter_kind.is_none() || self.filter_kind == Some(self.hits[i].kind))
             .collect();
         let max = self.filtered.len().saturating_sub(1);
         self.hit_sel = self.hit_sel.min(max);

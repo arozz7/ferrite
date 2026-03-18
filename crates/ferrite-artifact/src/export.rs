@@ -14,8 +14,14 @@ pub fn write_csv(path: &str, hits: &[ArtifactHit]) -> io::Result<()> {
     out.push_str("byte_offset,kind,value\n");
     for hit in hits {
         let escaped_value = hit.value.replace('"', "\"\"");
-        writeln!(out, "{},{},\"{}\"", hit.byte_offset, hit.kind.label(), escaped_value)
-            .expect("write to String never fails");
+        writeln!(
+            out,
+            "{},{},\"{}\"",
+            hit.byte_offset,
+            hit.kind.label(),
+            escaped_value
+        )
+        .expect("write to String never fails");
     }
     std::fs::write(path, out)
 }

@@ -7,8 +7,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
 
 use super::{
-    preview, user_sig_panel, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow,
-    FormMode, ScanRangeField, UserSigForm,
+    preview, user_sig_panel, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow, FormMode,
+    ScanRangeField, UserSigForm,
 };
 
 impl CarvingState {
@@ -24,9 +24,7 @@ impl CarvingState {
                 KeyCode::Backspace => {
                     self.user_import_path.pop();
                 }
-                KeyCode::Char(c)
-                    if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
-                {
+                KeyCode::Char(c) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
                     self.user_import_path.push(c);
                 }
                 _ => {}
@@ -37,8 +35,7 @@ impl CarvingState {
         // ── User-signature form ───────────────────────────────────────────────
         if self.show_user_panel {
             if let Some(mut form) = self.user_sig_form.take() {
-                let action =
-                    user_sig_panel::handle_form_key(&mut form, code, modifiers);
+                let action = user_sig_panel::handle_form_key(&mut form, code, modifiers);
                 match action {
                     user_sig_panel::FormAction::None => {
                         self.user_sig_form = Some(form);

@@ -29,9 +29,7 @@ impl ArtifactsState {
                 KeyCode::Backspace => {
                     self.output_dir.pop();
                 }
-                KeyCode::Char(c)
-                    if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
-                {
+                KeyCode::Char(c) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
                     self.output_dir.push(c);
                 }
                 _ => {}
@@ -57,8 +55,7 @@ impl ArtifactsState {
             KeyCode::PageDown => {
                 if !self.filtered.is_empty() {
                     let max = self.filtered.len() - 1;
-                    self.hit_sel =
-                        (self.hit_sel + self.hits_page_size.max(1)).min(max);
+                    self.hit_sel = (self.hit_sel + self.hits_page_size.max(1)).min(max);
                 }
             }
             KeyCode::Home => self.hit_sel = 0,

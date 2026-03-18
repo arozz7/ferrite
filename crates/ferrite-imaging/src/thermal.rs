@@ -91,13 +91,10 @@ impl ThermalGuard {
                 if let Some(temp) = temp_provider() {
                     on_event(ThermalEvent::Temperature(temp));
 
-                    if temp >= config.pause_above_celsius
-                        && !pause_t.load(Ordering::Relaxed)
-                    {
+                    if temp >= config.pause_above_celsius && !pause_t.load(Ordering::Relaxed) {
                         pause_t.store(true, Ordering::Relaxed);
                         on_event(ThermalEvent::Paused);
-                    } else if temp <= config.resume_below_celsius
-                        && pause_t.load(Ordering::Relaxed)
+                    } else if temp <= config.resume_below_celsius && pause_t.load(Ordering::Relaxed)
                     {
                         pause_t.store(false, Ordering::Relaxed);
                         on_event(ThermalEvent::Resumed);

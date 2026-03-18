@@ -4,8 +4,8 @@
 //! regions of valid text content.  Each region is classified, quality-gated,
 //! and deduplicated before being sent to the TUI via `tx`.
 
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -190,7 +190,11 @@ impl<'a> BlockScanner<'a> {
                         self.in_block = true;
                         self.block_start_abs = abs - (self.block_buf.len() as u64 - 1);
                         self.gap_run = 0;
-                        self.printable_count = self.block_buf.iter().filter(|&&b| is_printable_ascii(b)).count() as u64;
+                        self.printable_count = self
+                            .block_buf
+                            .iter()
+                            .filter(|&&b| is_printable_ascii(b))
+                            .count() as u64;
                         self.total_count = self.block_buf.len() as u64;
                     }
                 } else {

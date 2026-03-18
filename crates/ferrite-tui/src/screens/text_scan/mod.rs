@@ -213,9 +213,7 @@ impl TextScanState {
         };
         let (written, errors) = ferrite_textcarver::write_files(&dir, &self.blocks);
         if errors.is_empty() {
-            self.export_status = Some(format!(
-                "Exported {written} blocks to {dir}"
-            ));
+            self.export_status = Some(format!("Exported {written} blocks to {dir}"));
         } else {
             self.export_status = Some(format!(
                 "Exported {written} blocks; {} error(s): {}",

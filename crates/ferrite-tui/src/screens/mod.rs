@@ -1,6 +1,5 @@
 pub mod artifacts;
 pub mod carving;
-pub mod text_scan;
 pub mod drive_select;
 pub mod file_browser;
 pub mod fs_recovery;
@@ -11,3 +10,4 @@ pub mod partition;
 pub mod quick_recover;
 pub mod report;
 pub mod session_manager;
+pub mod text_scan;

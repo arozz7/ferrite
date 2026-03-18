@@ -12,9 +12,7 @@ use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner
 static RE: OnceLock<Regex> = OnceLock::new();
 
 fn re() -> &'static Regex {
-    RE.get_or_init(|| {
-        Regex::new(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b").expect("iban regex")
-    })
+    RE.get_or_init(|| Regex::new(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b").expect("iban regex"))
 }
 
 /// ISO 13616 modulo-97 check.  Returns `true` if the IBAN passes.
@@ -36,16 +34,13 @@ fn iban_valid(s: &str) -> bool {
         })
         .collect();
     // Compute numeric % 97 using string chunking to avoid u128 overflow.
-    let remainder = numeric
-        .as_bytes()
-        .chunks(9)
-        .fold(0u64, |acc, chunk| {
-            let part: u64 = std::str::from_utf8(chunk)
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            (acc * 10u64.pow(chunk.len() as u32) + part) % 97
-        });
+    let remainder = numeric.as_bytes().chunks(9).fold(0u64, |acc, chunk| {
+        let part: u64 = std::str::from_utf8(chunk)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        (acc * 10u64.pow(chunk.len() as u32) + part) % 97
+    });
     remainder == 1
 }
 

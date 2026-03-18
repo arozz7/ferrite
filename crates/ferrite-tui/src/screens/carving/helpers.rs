@@ -41,13 +41,13 @@ const GROUP_ORDER: &[&str] = &[
 fn sig_group_label(ext: &str) -> &'static str {
     match ext {
         "jpg" | "png" | "gif" | "bmp" | "tif" | "webp" | "psd" => "Images",
-        "arw" | "cr2" | "nef" | "rw2" | "raf" | "heic" | "orf" | "pef" | "cr3" | "sr2"
-        | "dcr" | "crw" | "mrw" | "x3f" => "RAW Photos",
-        "mp4" | "mov" | "m4v" | "3gp" | "avi" | "mkv" | "webm" | "wmv" | "flv" | "mpg"
-        | "rm" | "swf" | "ts" | "m2ts" | "wtv" => "Video",
+        "arw" | "cr2" | "nef" | "rw2" | "raf" | "heic" | "orf" | "pef" | "cr3" | "sr2" | "dcr"
+        | "crw" | "mrw" | "x3f" => "RAW Photos",
+        "mp4" | "mov" | "m4v" | "3gp" | "avi" | "mkv" | "webm" | "wmv" | "flv" | "mpg" | "rm"
+        | "swf" | "ts" | "m2ts" | "wtv" => "Video",
         "mp3" | "flac" | "wav" | "ogg" | "m4a" | "mid" | "aif" | "wv" | "ape" | "au" => "Audio",
-        "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" | "eml" | "epub" | "odt" | "cdr"
-        | "ttf" | "woff" | "chm" | "blend" | "indd" | "php" | "sh" => "Documents",
+        "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" | "eml" | "epub" | "odt" | "cdr" | "ttf"
+        | "woff" | "chm" | "blend" | "indd" | "php" | "sh" => "Documents",
         "zip" | "ole" | "pst" | "msg" => "Office & Email",
         "rar" | "7z" | "gz" | "xz" | "bz2" | "iso" | "tar" => "Archives",
         "db" | "vmdk" | "evtx" | "exe" | "elf" | "dat" | "vhd" | "vhdx" | "qcow2" | "macho"
@@ -69,10 +69,9 @@ pub(super) fn build_user_sig_group(sigs: &[UserSigDef]) -> Option<SigGroup> {
     let entries: Vec<SigEntry> = sigs
         .iter()
         .filter_map(|def| {
-            def.to_signature().ok().map(|sig| SigEntry {
-                sig,
-                enabled: true,
-            })
+            def.to_signature()
+                .ok()
+                .map(|sig| SigEntry { sig, enabled: true })
         })
         .collect();
     if entries.is_empty() {

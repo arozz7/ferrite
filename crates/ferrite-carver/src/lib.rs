@@ -23,8 +23,8 @@
 
 mod carver_io;
 mod error;
-mod pre_validate;
 pub mod post_validate;
+mod pre_validate;
 mod scan_search;
 mod scanner;
 mod signature;

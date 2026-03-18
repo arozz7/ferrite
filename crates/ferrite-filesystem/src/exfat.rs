@@ -43,7 +43,7 @@ const EOC_MIN: u32 = 0xFFFF_FFF8;
 /// Read-only exFAT filesystem parser.
 pub struct ExFatParser {
     device: Arc<dyn BlockDevice>,
-    fat_byte_offset: u64,    // byte offset of FAT region from volume start
+    fat_byte_offset: u64,     // byte offset of FAT region from volume start
     cluster_heap_offset: u64, // byte offset where cluster 2 starts
     bytes_per_cluster: u64,
     root_cluster: u32,
@@ -229,13 +229,12 @@ impl ExFatParser {
             let name_len = stream[3] as usize;
             // ValidDataLength @ bytes 8-15 (u64 LE) — actual data bytes.
             let data_length = u64::from_le_bytes([
-                stream[8], stream[9], stream[10], stream[11],
-                stream[12], stream[13], stream[14], stream[15],
+                stream[8], stream[9], stream[10], stream[11], stream[12], stream[13], stream[14],
+                stream[15],
             ]);
             // FirstCluster @ bytes 20-23 (u32 LE).
-            let first_cluster = u32::from_le_bytes([
-                stream[20], stream[21], stream[22], stream[23],
-            ]);
+            let first_cluster =
+                u32::from_le_bytes([stream[20], stream[21], stream[22], stream[23]]);
 
             // Assemble filename from one or more File Name entries.
             let mut name_u16: Vec<u16> = Vec::with_capacity(name_len);
@@ -440,8 +439,7 @@ fn exfat_ts_to_unix(ts: u32) -> Option<u64> {
 
     const FAT_EPOCH_DAYS: u64 = 3652;
     const DAYS_IN_MONTH: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let is_leap =
-        |y: u32| (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
+    let is_leap = |y: u32| (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
 
     let mut days: u64 = FAT_EPOCH_DAYS;
     for y in 1980..year {
@@ -518,15 +516,15 @@ mod tests {
         // Entry set 0: live file "HELLO.TXT" (9 chars)
         // -- File primary (0x85)
         dir[0] = 0x85; // ETYPE_FILE_LIVE
-        dir[1] = 2;    // secondary_count (stream + name)
+        dir[1] = 2; // secondary_count (stream + name)
         dir[4] = 0x20; // attrs: ARCHIVE
         dir[5] = 0x00;
 
         // -- Stream Extension (0xC0) at offset 32
         dir[32] = 0xC0; // ETYPE_STREAM_LIVE
         dir[33] = 0x01; // flags: allocation possible
-        dir[35] = 9;    // name_length
-        // ValidDataLength @ 40-47 = 13 (u64 LE)
+        dir[35] = 9; // name_length
+                     // ValidDataLength @ 40-47 = 13 (u64 LE)
         dir[40..48].copy_from_slice(&13u64.to_le_bytes());
         // FirstCluster @ 52-55 = 3
         dir[52..56].copy_from_slice(&3u32.to_le_bytes());
@@ -546,15 +544,15 @@ mod tests {
 
         // Entry set 1: deleted file "GONE.DAT" (8 chars), starts at offset 96
         // -- File primary (0x05) at offset 96
-        dir[96] = 0x05;  // ETYPE_FILE_DEL
-        dir[97] = 2;     // secondary_count
+        dir[96] = 0x05; // ETYPE_FILE_DEL
+        dir[97] = 2; // secondary_count
         dir[100] = 0x20; // attrs: ARCHIVE
 
         // -- Stream Extension (0x40) at offset 128
         dir[128] = 0x40; // ETYPE_STREAM_DEL
         dir[129] = 0x01; // flags
-        dir[131] = 8;    // name_length
-        // ValidDataLength @ 136-143 = 4
+        dir[131] = 8; // name_length
+                      // ValidDataLength @ 136-143 = 4
         dir[136..144].copy_from_slice(&4u64.to_le_bytes());
         // FirstCluster @ 148-151 = 4 (free in FAT → RecoveryChance::High)
         dir[148..152].copy_from_slice(&4u32.to_le_bytes());

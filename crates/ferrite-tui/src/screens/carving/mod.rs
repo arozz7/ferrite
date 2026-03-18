@@ -477,9 +477,7 @@ impl CarvingState {
 
     /// Returns `true` while any text-input field is being edited (so `q` won't quit).
     pub fn is_editing(&self) -> bool {
-        self.editing_dir
-            || self.scan_range_field != ScanRangeField::None
-            || self.show_user_panel
+        self.editing_dir || self.scan_range_field != ScanRangeField::None || self.show_user_panel
     }
 
     /// Returns the byte offset of the currently selected hit when focus is on
@@ -539,11 +537,7 @@ impl CarvingState {
         let max_size = form.max_size_str.trim().parse::<u64>().unwrap_or(0);
         let def = user_sigs::UserSigDef {
             name: form.name.trim().to_string(),
-            extension: form
-                .extension
-                .trim()
-                .trim_start_matches('.')
-                .to_string(),
+            extension: form.extension.trim().trim_start_matches('.').to_string(),
             header: form.header.trim().to_uppercase(),
             footer: form.footer.trim().to_uppercase(),
             max_size,

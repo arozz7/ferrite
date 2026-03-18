@@ -10,8 +10,8 @@ use ratatui::{
     Frame,
 };
 
-use super::{CarvingState, FormMode, UserSigForm};
 use super::helpers::fmt_bytes;
+use super::{CarvingState, FormMode, UserSigForm};
 
 // ── Geometry helper ───────────────────────────────────────────────────────────
 
@@ -96,11 +96,7 @@ impl CarvingState {
 
             let mut list_state = ListState::default();
             list_state.select(Some(self.user_panel_sel));
-            frame.render_stateful_widget(
-                List::new(items),
-                rows[0],
-                &mut list_state,
-            );
+            frame.render_stateful_widget(List::new(items), rows[0], &mut list_state);
         }
 
         // ── Footer ────────────────────────────────────────────────────────────
