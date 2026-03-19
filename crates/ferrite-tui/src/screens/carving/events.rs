@@ -112,7 +112,8 @@ impl CarvingState {
                     }
                 }
                 Ok(CarveMsg::Done) => {
-                    self.hit_sel = 0;
+                    // Cursor at visual top = newest hit = last internal index.
+                    self.hit_sel = self.hits.len().saturating_sub(1);
                     // Flush all remaining displayable hits to checkpoint.
                     if let Some(cp) = self.checkpoint_path.clone() {
                         let new_hits = &self.hits[self.checkpoint_flushed..];

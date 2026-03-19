@@ -340,9 +340,12 @@ impl CarvingState {
         // Update page size so PgUp/PgDn cover exactly the visible rows.
         self.hits_page_size = (list_area.height as usize).max(1);
 
+        // Newest hits at the top — reverse the display order so the user
+        // sees the active extraction queue without scrolling.
         let items: Vec<ListItem> = self
             .hits
             .iter()
+            .rev()
             .map(|entry| {
                 let check = if entry.selected {
                     Span::styled(
@@ -412,8 +415,14 @@ impl CarvingState {
         let list =
             List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
+        // Convert internal hit_sel to visual index (reversed list).
+        let visual_sel = if self.hits.is_empty() {
+            0
+        } else {
+            self.hits.len() - 1 - self.hit_sel
+        };
         let mut ls =
-            ListState::default().with_selected(if focused { Some(self.hit_sel) } else { None });
+            ListState::default().with_selected(if focused { Some(visual_sel) } else { None });
         frame.render_stateful_widget(list, list_area, &mut ls);
     }
 
