@@ -13,8 +13,22 @@
 //! [`validate_extracted`] takes the **head** (first ≤ 8 192 bytes) and
 //! **tail** (last ≤ 65 536 bytes) of the extracted file for efficient
 //! format-specific validation.
+//!
+//! File-based (seek) validators live in sub-modules and are re-exported:
+//! - [`file_validators`]: PNG, PDF, SQLite
+//! - [`binary_validators`]: EVTX, RIFF, EXE
+//! - [`structural_validators`]: FLAC, ELF, REGF, TIFF
 
-use std::path::Path;
+mod binary_validators;
+mod file_validators;
+mod structural_validators;
+
+pub use file_validators::{validate_pdf_file, validate_png_file, validate_sqlite_file};
+// parse_last_startxref and looks_like_xref remain pub(crate) for direct test access.
+pub use binary_validators::{validate_evtx_file, validate_exe_file, validate_riff_file};
+pub use structural_validators::{
+    validate_elf_file, validate_flac_file, validate_regf_file, validate_tiff_file,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -55,228 +69,14 @@ pub fn validate_extracted(
         "gif" => validate_gif(tail),
         "pdf" => validate_pdf(tail),
         "html" => validate_html(head, tail),
-        "zip" | "ole" | "7z" | "pst" => validate_zip_eocd(tail, file_size),
+        "zip" | "ole" | "7z" | "pst" | "epub" => validate_zip_eocd(tail, file_size),
         _ => CarveQuality::Unknown,
     }
 }
 
-/// Validate a carved PNG by walking its chunk structure directly on the file.
-///
-/// Unlike [`validate_extracted`], this opens the file and seeks through it
-/// chunk-by-chunk, reading only the 12-byte chunk envelope (length + type +
-/// CRC) for large chunks and the full body for small ones (≤ 64 KiB).  This
-/// eliminates the "dead zone" limitation of the fixed head + tail buffers:
-/// a corrupt chunk type anywhere in the file is caught in O(N chunks) seeks,
-/// where N is typically 5–8 for a real-world PNG.
-///
-/// Returns [`CarveQuality::Unknown`] when the file cannot be opened (e.g. it
-/// was just deleted by skip-corrupt mode in a race).
-pub fn validate_png_file(path: &Path) -> CarveQuality {
-    use std::io::{Read, Seek, SeekFrom};
-
-    let mut f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return CarveQuality::Unknown,
-    };
-
-    // Verify the 8-byte PNG signature.
-    let mut sig = [0u8; 8];
-    if f.read_exact(&mut sig).is_err()
-        || sig != [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-    {
-        return CarveQuality::Corrupt;
-    }
-
-    // Body size threshold: read and CRC-verify chunks whose data fits here;
-    // seek over larger chunks (e.g. IDAT pixel data).
-    const MAX_CRC_BODY: usize = 65_536;
-
-    loop {
-        // Read chunk length (4 B) + type (4 B).
-        let mut hdr = [0u8; 8];
-        if f.read_exact(&mut hdr).is_err() {
-            return CarveQuality::Corrupt; // unexpected EOF before IEND
-        }
-
-        let data_len =
-            u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
-        let chunk_type = &hdr[4..8];
-
-        // Every PNG chunk type must be 4 ASCII alphabetic bytes.
-        if !chunk_type.iter().all(|&b| b.is_ascii_alphabetic()) {
-            return CarveQuality::Corrupt;
-        }
-
-        if chunk_type == b"IEND" {
-            // IEND must have a zero-length body.
-            return if data_len == 0 {
-                CarveQuality::Complete
-            } else {
-                CarveQuality::Corrupt
-            };
-        }
-
-        if data_len <= MAX_CRC_BODY {
-            // Small chunk: read the body and verify CRC-32.
-            let mut body = vec![0u8; data_len];
-            if f.read_exact(&mut body).is_err() {
-                return CarveQuality::Corrupt;
-            }
-            let mut crc_bytes = [0u8; 4];
-            if f.read_exact(&mut crc_bytes).is_err() {
-                return CarveQuality::Corrupt;
-            }
-            let stored_crc = u32::from_be_bytes(crc_bytes);
-            // CRC input = chunk_type(4) + data(data_len).
-            let mut crc_input = Vec::with_capacity(4 + data_len);
-            crc_input.extend_from_slice(chunk_type);
-            crc_input.extend_from_slice(&body);
-            if crc32fast::hash(&crc_input) != stored_crc {
-                return CarveQuality::Corrupt;
-            }
-        } else {
-            // Large chunk (typically IDAT): seek past body + CRC (4 B).
-            let skip = data_len as u64 + 4;
-            if f.seek(SeekFrom::Current(skip as i64)).is_err() {
-                return CarveQuality::Corrupt;
-            }
-        }
-    }
-}
-
-/// Validate a carved PDF by verifying `%%EOF` and that `startxref N` points
-/// to a recognisable cross-reference section.
-///
-/// The plain [`validate_pdf`] only checks for `%%EOF` in the last 1 KiB.
-/// On fragmented drives, PDF files often end correctly but their xref table
-/// sectors have been overwritten: `startxref` still appears near `%%EOF` but
-/// the offset it names now contains unrelated binary data that PDF readers
-/// cannot parse.  Two concrete failure modes:
-///
-/// 1. `startxref 0` — offset 0 is the `%PDF-x.y` header, never an xref.
-/// 2. `startxref N` where `N` is within the file but the bytes there are
-///    random sector data, not `xref` or an object header.
-///
-/// This function reads the last 1 KiB (for `%%EOF` + `startxref`), then
-/// seeks to the declared offset and checks that the data there begins with
-/// either `xref` (traditional cross-reference table) or an ASCII digit
-/// (cross-reference stream object header, e.g. `616 0 obj`).
-///
-/// Returns [`CarveQuality::Unknown`] when the file cannot be opened.
-pub fn validate_pdf_file(path: &Path) -> CarveQuality {
-    use std::io::{Read, Seek, SeekFrom};
-
-    let mut f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return CarveQuality::Unknown,
-    };
-
-    let file_size = match f.seek(SeekFrom::End(0)) {
-        Ok(s) => s,
-        Err(_) => return CarveQuality::Unknown,
-    };
-
-    // Read the last 1 KiB to locate %%EOF and startxref.
-    let read_start = file_size.saturating_sub(1024);
-    if f.seek(SeekFrom::Start(read_start)).is_err() {
-        return CarveQuality::Unknown;
-    }
-    let mut tail = [0u8; 1024];
-    let n = match f.read(&mut tail) {
-        Ok(n) => n,
-        Err(_) => return CarveQuality::Unknown,
-    };
-    let tail = &tail[..n];
-
-    // %%EOF must be present.
-    if !tail.windows(5).any(|w| w == b"%%EOF") {
-        return CarveQuality::Corrupt;
-    }
-
-    // Parse the value after the LAST `startxref` keyword.
-    let xref_offset = match parse_last_startxref(tail) {
-        Some(v) => v,
-        None => return CarveQuality::Corrupt,
-    };
-
-    // Offset 0 is always the PDF header, never a valid xref position.
-    // Any offset at or beyond the file is also invalid.
-    if xref_offset == 0 || xref_offset >= file_size {
-        return CarveQuality::Corrupt;
-    }
-
-    // Seek to the claimed xref position and check the leading bytes.
-    if f.seek(SeekFrom::Start(xref_offset)).is_err() {
-        return CarveQuality::Corrupt;
-    }
-    let mut xref_head = [0u8; 16];
-    let read = match f.read(&mut xref_head) {
-        Ok(n) => n,
-        Err(_) => return CarveQuality::Corrupt,
-    };
-
-    if looks_like_xref(&xref_head[..read]) {
-        CarveQuality::Complete
-    } else {
-        CarveQuality::Corrupt
-    }
-}
-
-/// Parse the numeric value after the last `startxref` keyword in `data`.
-pub(crate) fn parse_last_startxref(data: &[u8]) -> Option<u64> {
-    const KW: &[u8] = b"startxref";
-    let mut last: Option<u64> = None;
-    let mut pos = 0;
-    while pos + KW.len() <= data.len() {
-        if let Some(rel) = data[pos..].windows(KW.len()).position(|w| w == KW) {
-            let abs = pos + rel;
-            let after = &data[abs + KW.len()..];
-            // Skip line-ending / whitespace characters.
-            let skip = after
-                .iter()
-                .position(|b| !matches!(b, b'\n' | b'\r' | b' ' | b'\t'))
-                .unwrap_or(after.len());
-            let after = &after[skip..];
-            let digits_end = after
-                .iter()
-                .position(|b| !b.is_ascii_digit())
-                .unwrap_or(after.len());
-            if digits_end > 0 {
-                if let Ok(s) = std::str::from_utf8(&after[..digits_end]) {
-                    if let Ok(v) = s.parse::<u64>() {
-                        last = Some(v);
-                    }
-                }
-            }
-            pos = abs + KW.len();
-        } else {
-            break;
-        }
-    }
-    last
-}
-
-/// Returns `true` if `data` looks like the start of a PDF cross-reference
-/// section — either a traditional xref table or a cross-reference stream.
-///
-/// * Traditional: begins with `xref` (optionally preceded by whitespace).
-/// * Stream:      begins with an unsigned integer (the object number), e.g.
-///   `616 0 obj`.
-pub(crate) fn looks_like_xref(data: &[u8]) -> bool {
-    // Skip leading whitespace (CR/LF/space).
-    let start = data
-        .iter()
-        .position(|b| !matches!(b, b'\n' | b'\r' | b' ' | b'\t'))
-        .unwrap_or(data.len());
-    let d = &data[start..];
-    if d.starts_with(b"xref") {
-        return true;
-    }
-    // Cross-reference stream: first non-whitespace byte must be an ASCII digit.
-    d.first().is_some_and(|b| b.is_ascii_digit())
-}
-
-// ── Format validators ─────────────────────────────────────────────────────────
+// ── Head+tail format validators ────────────────────────────────────────────────
+// NOTE: File-based (seek) validators live in file_validators.rs and
+// binary_validators.rs and are re-exported at the top of this module.
 
 /// JPEG: must end with the End-of-Image marker `FF D9`, and the entropy
 /// (scan) data must not contain invalid marker sequences.
@@ -309,11 +109,21 @@ fn validate_jpeg(tail: &[u8]) -> CarveQuality {
             }
             let follower = scan_region[i + 1];
             match follower {
-                0x00 => { i += 2; }                // byte-stuffed FF
-                0xD0..=0xD7 => { i += 2; }         // RST marker
-                0xD9 => { i += 2; }                 // EOI (shouldn't appear here but tolerate)
-                0xFF => { i += 1; }                 // fill byte — advance one, recheck next
-                _ => { return CarveQuality::Corrupt; } // invalid marker in scan data
+                0x00 => {
+                    i += 2;
+                } // byte-stuffed FF
+                0xD0..=0xD7 => {
+                    i += 2;
+                } // RST marker
+                0xD9 => {
+                    i += 2;
+                } // EOI (shouldn't appear here but tolerate)
+                0xFF => {
+                    i += 1;
+                } // fill byte — advance one, recheck next
+                _ => {
+                    return CarveQuality::Corrupt;
+                } // invalid marker in scan data
             }
         } else {
             i += 1;
@@ -623,3 +433,5 @@ fn validate_zip_eocd(tail: &[u8], file_size: u64) -> CarveQuality {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_binary;

@@ -247,12 +247,41 @@ impl CarvingState {
                         let quality = if !truncated
                             && matches!(
                                 hit.signature.extension.as_str(),
-                                "png" | "pdf"
-                            )
-                        {
+                                "png"
+                                    | "pdf"
+                                    | "db"
+                                    | "evtx"
+                                    | "wav"
+                                    | "avi"
+                                    | "webp"
+                                    | "aiff"
+                                    | "exe"
+                                    | "flac"
+                                    | "elf"
+                                    | "regf"
+                                    | "tif"
+                                    | "nef"
+                                    | "arw"
+                                    | "cr2"
+                                    | "rw2"
+                                    | "orf"
+                                    | "pef"
+                                    | "sr2"
+                                    | "dcr"
+                            ) {
                             match hit.signature.extension.as_str() {
                                 "png" => post_validate::validate_png_file(Path::new(&filename)),
-                                _ => post_validate::validate_pdf_file(Path::new(&filename)),
+                                "pdf" => post_validate::validate_pdf_file(Path::new(&filename)),
+                                "db" => post_validate::validate_sqlite_file(Path::new(&filename)),
+                                "evtx" => post_validate::validate_evtx_file(Path::new(&filename)),
+                                "wav" | "avi" | "webp" | "aiff" => {
+                                    post_validate::validate_riff_file(Path::new(&filename))
+                                }
+                                "exe" => post_validate::validate_exe_file(Path::new(&filename)),
+                                "flac" => post_validate::validate_flac_file(Path::new(&filename)),
+                                "elf" => post_validate::validate_elf_file(Path::new(&filename)),
+                                "regf" => post_validate::validate_regf_file(Path::new(&filename)),
+                                _ => post_validate::validate_tiff_file(Path::new(&filename)),
                             }
                         } else {
                             let head = read_file_head(&filename, 8192);
@@ -542,14 +571,42 @@ impl CarvingState {
                             if !truncated
                                 && matches!(
                                     hit.signature.extension.as_str(),
-                                    "png" | "pdf"
+                                    "png"
+                                        | "pdf"
+                                        | "db"
+                                        | "evtx"
+                                        | "wav"
+                                        | "avi"
+                                        | "webp"
+                                        | "aiff"
+                                        | "exe"
+                                        | "flac"
+                                        | "elf"
+                                        | "regf"
+                                        | "tif"
+                                        | "nef"
+                                        | "arw"
+                                        | "cr2"
+                                        | "rw2"
+                                        | "orf"
+                                        | "pef"
+                                        | "sr2"
+                                        | "dcr"
                                 )
                             {
                                 match hit.signature.extension.as_str() {
-                                    "png" => {
-                                        post_validate::validate_png_file(Path::new(&path))
+                                    "png" => post_validate::validate_png_file(Path::new(&path)),
+                                    "pdf" => post_validate::validate_pdf_file(Path::new(&path)),
+                                    "db" => post_validate::validate_sqlite_file(Path::new(&path)),
+                                    "evtx" => post_validate::validate_evtx_file(Path::new(&path)),
+                                    "wav" | "avi" | "webp" | "aiff" => {
+                                        post_validate::validate_riff_file(Path::new(&path))
                                     }
-                                    _ => post_validate::validate_pdf_file(Path::new(&path)),
+                                    "exe" => post_validate::validate_exe_file(Path::new(&path)),
+                                    "flac" => post_validate::validate_flac_file(Path::new(&path)),
+                                    "elf" => post_validate::validate_elf_file(Path::new(&path)),
+                                    "regf" => post_validate::validate_regf_file(Path::new(&path)),
+                                    _ => post_validate::validate_tiff_file(Path::new(&path)),
                                 }
                             } else {
                                 let head = read_file_head(&path, 8192);

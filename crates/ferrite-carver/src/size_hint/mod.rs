@@ -7,13 +7,13 @@
 
 mod ebml;
 mod elf;
+mod gif;
 pub(crate) mod helpers;
 mod isobmff;
 mod linear;
 mod mpeg_ts;
 mod ogg;
 mod ole2;
-mod gif;
 mod pdf;
 mod pe;
 mod png;

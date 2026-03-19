@@ -17,13 +17,17 @@
 9. [Screen 4 — Partition Analysis](#9-screen-4--partition-analysis)
 10. [Screen 5 — File Browser](#10-screen-5--file-browser)
 11. [Screen 6 — File Carving](#11-screen-6--file-carving)
-12. [Configuration Files](#12-configuration-files)
-13. [Mapfile Format](#13-mapfile-format)
-14. [Logging & Diagnostics](#14-logging--diagnostics)
-15. [Permissions & Safety](#15-permissions--safety)
-16. [Filesystem Coverage & Known Limitations](#16-filesystem-coverage--known-limitations)
-17. [Troubleshooting](#17-troubleshooting)
-18. [Glossary](#18-glossary)
+12. [Screen 7 — Hex Viewer](#12-screen-7--hex-viewer)
+13. [Screen 8 — Quick Recover](#13-screen-8--quick-recover)
+14. [Screen 9 — Artifact Scanner](#14-screen-9--artifact-scanner)
+15. [Screen 10 — Text Block Scanner](#15-screen-10--text-block-scanner)
+16. [Configuration Files](#16-configuration-files)
+17. [Mapfile Format](#17-mapfile-format)
+18. [Logging & Diagnostics](#18-logging--diagnostics)
+19. [Permissions & Safety](#19-permissions--safety)
+20. [Filesystem Coverage & Known Limitations](#20-filesystem-coverage--known-limitations)
+21. [Troubleshooting](#21-troubleshooting)
+22. [Glossary](#22-glossary)
 
 ---
 
@@ -32,8 +36,9 @@
 Ferrite is a terminal-based storage diagnostics and data recovery application written
 in pure Rust.  It is designed to help users assess the health of failing drives,
 create resilient byte-for-byte images, recover lost partition tables, browse
-filesystem contents (including deleted files), and carve individual files from raw
-disk images — all from a single interactive terminal UI.
+filesystem contents (including deleted files), carve individual files from raw
+disk images, scan for forensic artifacts, and extract text blocks — all from a
+single interactive terminal UI.
 
 ### Core principles
 
@@ -138,20 +143,20 @@ Ferrite uses a full-screen terminal interface built with **ratatui 0.29** and
 **crossterm 0.28**.
 
 ```
-┌─ Ferrite ────────────────────────────────────────────────────────────────┐
-│  Drives  │  Health  │  Imaging  │  Partitions  │  Files  │  Carving     │  ← Tab bar
-├──────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│                        Screen content area                               │
-│                                                                          │
-├──────────────────────────────────────────────────────────────────────────┤
-│  ↑/↓: navigate  Enter: select device  r: refresh list  Tab: next  q: quit│  ← Help bar
-└──────────────────────────────────────────────────────────────────────────┘
+┌─ Ferrite ──────────────────────────────────────────────────────────────────────────────────┐
+│ Drives │ Health │ Imaging │ Partitions │ Files │ Carving │ Hex │ Quick Recover │ Artifacts │ Text Scan │  ← Tab bar
+├────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                            │
+│                              Screen content area                                           │
+│                                                                                            │
+├────────────────────────────────────────────────────────────────────────────────────────────┤
+│  ↑/↓: navigate  Enter: select device  r: refresh list  Tab: next  q: quit                 │  ← Help bar
+└────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Tab bar
 
-The tab bar at the top shows all six screens.  The currently active screen is
+The tab bar at the top shows all ten screens.  The currently active screen is
 highlighted in **bold yellow**.
 
 ### Help bar
@@ -165,8 +170,8 @@ These work from every screen at all times:
 
 | Key | Action |
 |---|---|
-| `Tab` | Move to the next screen (wraps from Carving back to Drives) |
-| `Shift-Tab` | Move to the previous screen (wraps from Drives back to Carving) |
+| `Tab` | Move to the next screen (wraps from Text Scan back to Drives) |
+| `Shift-Tab` | Move to the previous screen (wraps from Drives back to Text Scan) |
 | `q` | Quit Ferrite (suppressed while a text-input field is active) |
 
 ### Recommended workflow
@@ -207,6 +212,11 @@ the device paths.  Opening each path uses `O_RDONLY | O_DIRECT`.
 
 Enumeration runs automatically the first time the screen is displayed.  It happens
 on a background thread so the UI remains responsive.
+
+When a device is selected, Ferrite immediately runs a **write-blocker pre-flight
+check** in the background.  If the check detects that the device is writable
+(unexpected for a read-only session), an amber warning is shown below the device
+list.  The check does not block device selection.
 
 ### Columns
 
@@ -386,6 +396,45 @@ in **bold yellow** with a block cursor (`█`).
 While a field is in edit mode, the global `q` quit key is suppressed so you can
 type the character `q` in a path.
 
+### Safety features
+
+#### Write-blocker pre-flight
+
+When a device is selected, Ferrite runs `ferrite-imaging::write_blocker::check()` in
+the background.  If the device is unexpectedly writable, an amber warning badge is
+shown on the Imaging screen header before any scan begins.
+
+#### SHA-256 integrity sidecar
+
+When imaging completes successfully, Ferrite writes a `.sha256` sidecar file next to
+the image file (e.g. `drive0.img.sha256`).  The format is compatible with
+`sha256sum -c`:
+
+```
+<hex-digest>  drive0.img
+```
+
+If an imaging session is **resumed** from a mapfile, the progress bar title is shown
+in **amber** as a reminder that the SHA-256 hash covers only the data written in
+prior sessions combined with the current session.  The sidecar is updated on
+completion.
+
+#### ThermalGuard
+
+Ferrite monitors the drive temperature during imaging via a background `ThermalGuard`
+thread.  If the temperature exceeds the configured threshold (default: 55°C), imaging
+is automatically paused and a `[⚠ THERMAL PAUSE]` badge appears on the progress bar.
+Imaging resumes automatically once the temperature drops below the resume threshold.
+ThermalGuard is configured in `config/smart_thresholds.toml`.
+
+#### Low read-rate alert
+
+If the sustained read rate drops below **5 MB/s**, the progress bar turns **amber**
+and a `[⚠ LOW RATE]` label appears in the title.  The rate line in the Statistics
+panel is also shown in amber.  This is an early warning that the drive may be
+struggling; consider pausing to let it recover, or note that the remaining sectors
+may be bad.
+
 ### The five-pass imaging algorithm
 
 Ferrite implements a progressive, fault-tolerant copy algorithm:
@@ -536,19 +585,19 @@ devices because it reads every sector in sequence.
 ## 10. Screen 5 — File Browser
 
 **Purpose:** Open the filesystem on the selected device, navigate its directory tree,
-list file metadata, and optionally reveal deleted files.
+list file metadata, reveal deleted files, and extract individual files.
 
 ### Layout
 
 ```
-┌─ File Browser — d: toggle deleted  o: open filesystem ──────────────────┐
+┌─ File Browser — d: toggle deleted  o: open filesystem  e: extract ──────┐
 │  [Ntfs] / Windows / System32                                             │
 │                                                                          │
-│  Name                           Size      Type                           │
+│  Name                           Size      Type      Recovery             │
 │  📁 AdvancedInstallers           —         DIR                            │
 │  📁 Boot                         —         DIR                            │
 │     bootmgr.efi                  413.2K    FILE                           │
-│     cmd.exe [deleted]            270.0K    FILE                           │
+│     cmd.exe [deleted]            270.0K    FILE      [HIGH]               │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -570,7 +619,7 @@ workflow.
 |---|---|---|---|---|
 | NTFS | ✓ | ✓ | ✓ (in-use flag) | ✓ (resident data) |
 | FAT32 | ✓ | ✓ | ✓ (0xE5 marker) | ✓ |
-| ext4 | ✓ | ✓ | ✓ (inode == 0) | ✓ (direct + single-indirect) |
+| ext4 | ✓ | ✓ | ✓ (inode == 0) | ✓ (direct, single-indirect, and extents) |
 
 ### Breadcrumb bar
 
@@ -594,6 +643,18 @@ by ` / `.  The root directory is shown as `/`.
 Deleted entries are shown in **dark grey**.  They are only displayed when the deleted
 file toggle is active.
 
+### Recovery chance (deleted files)
+
+When deleted file display is active, each deleted entry shows a **RecoveryChance**
+indicator in the Recovery column:
+
+| Badge | Colour | Meaning |
+|---|---|---|
+| `[HIGH]` | Green | Data clusters / extents appear intact and unoverwritten |
+| `[MED]` | Yellow | Partial overwrite detected; some data may be recoverable |
+| `[LOW]` | Red | Significant overwrite; recovery unlikely |
+| `[ ? ]` | Dark gray | Recovery chance could not be determined |
+
 ### Deleted file detection
 
 Each filesystem parser detects deletion differently:
@@ -606,11 +667,20 @@ Each filesystem parser detects deletion differently:
 > underlying data clusters or extents are still intact and readable depends on
 > whether they have been overwritten.  Deleted file detection is best-effort.
 
-### Known limitations (MVP)
+### File extraction
+
+Press `e` on a selected file entry to extract it.  Extracted files are written to
+`./ferrite_output/fs_recovery/` relative to where Ferrite was launched.  The
+original filename is preserved.  A status message confirms extraction success or
+reports any read errors.
+
+### Known limitations
 
 - **NTFS:** Assumes a contiguous MFT.  Fragmented MFT tables may not be fully parsed.
-- **ext4:** Only direct blocks and single-indirect blocks are supported.  Files using
-  double- or triple-indirect blocks may show incorrect sizes or fail to read.
+- **ext4:** Double- and triple-indirect block reads are not supported.  Files that
+  use only those block addressing modes may show incorrect sizes or fail to read.
+  Files using the extents feature (the common case on modern ext4) are fully
+  supported.
 - **Timestamps:** `created` and `modified` timestamps are always `None` in the
   current implementation (shown as `—`).
 
@@ -623,108 +693,135 @@ Each filesystem parser detects deletion differently:
 | `Enter` | Open the selected directory (navigate into it) |
 | `Backspace` | Go up one directory level |
 | `d` | Toggle visibility of deleted files |
+| `e` | Extract the selected file to `./ferrite_output/fs_recovery/` |
 
 ---
 
 ## 11. Screen 6 — File Carving
 
-**Purpose:** Scan the raw byte stream of the selected device (or image file, if used
-as the source) for file-type magic bytes and extract matching files.  File carving
-does not rely on any filesystem structure and works even on completely wiped drives.
+**Purpose:** Scan the raw byte stream of the selected device (or image file) for
+file-type magic bytes and extract matching files.  File carving does not rely on any
+filesystem structure and works even on completely wiped or reformatted drives.
 
 ### Layout
 
 ```
-┌─ Carving [idle] — Space: toggle  s: scan  e: extract  ←/→: switch panel ─┐
-│ ┌─ Signatures (Space=toggle) ──────────┐ ┌─ Hits (4) — e: extract ──────┐│
-│ │ [✓] JPEG Image                       │ │  JPEG Image @ offset 0x1a2000 ││
-│ │ [✓] PNG Image                        │ │  JPEG Image @ offset 0x3f8000 ││
-│ │ [✓] PDF Document                     │ │  PNG Image  @ offset 0x5c0000 ││
-│ │ [ ] ZIP/Office                       │ │  PDF Document @ offset 0x8a000 ││
-│ │ [✓] GIF Image                        │ └──────────────────────────────┘│
-│ │ [✓] BMP Image                        │                                  │
-│ │ [✓] MP3 Audio                        │                                  │
-│ │ [✓] MP4 Video                        │                                  │
-│ │ [✓] RAR Archive                      │                                  │
-│ │ [✓] 7-Zip Archive                    │                                  │
-│ └──────────────────────────────────────┘                                  │
+┌─ Carving [scanning…] — s: scan  e: extract  ←/→: switch panel ──────────┐
+│ ┌─ Signatures ──────────────────────────────┐ ┌─ Hits (42) [↓ LIVE] ───┐│
+│ │ ▶ Images (9/10)                           │ │ ✓ JPEG  @ 0x001a2000   ││
+│ │ ▼ RAW Photos (15/15)                      │ │ ~ PNG   @ 0x003f8000   ││
+│ │   [✓] ARW                                 │ │ ✗ PDF   @ 0x008a0000   ││
+│ │   [✓] CR2                                 │ │   MP4   @ 0x012c0000   ││
+│ │   [✓] NEF                                 │ └────────────────────────┘│
+│ │ ▶ Video (17/17)                           │                            │
+│ │ ▶ Audio (10/10)                           │                            │
+│ │ ▶ Archives (8/8)                          │                            │
+│ │ ▶ Documents (17/17)                       │                            │
+│ │ ▶ Office & Email (4/4)                    │                            │
+│ │ ▶ System (18/18)                          │                            │
+│ └───────────────────────────────────────────┘                            │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Built-in file signatures
+### Signature groups
 
-All ten signatures are loaded from `config/signatures.toml` (compiled into the binary):
+All 99 built-in signatures are organised into 8 collapsible groups.  Groups start
+**collapsed** by default.  The header shows how many signatures are enabled:
+`▶ Video (17/17)` means all 17 Video signatures are active.
 
-| # | Name | Extension | Header (hex) | Footer (hex) | Max size |
-|---|---|---|---|---|---|
-| 1 | JPEG Image | `jpg` | `FF D8 FF` | `FF D9` | 10 MiB |
-| 2 | PNG Image | `png` | `89 50 4E 47 0D 0A 1A 0A` | `49 45 4E 44 AE 42 60 82` | 50 MiB |
-| 3 | PDF Document | `pdf` | `25 50 44 46` | `25 25 45 4F 46` | 100 MiB |
-| 4 | ZIP / Office | `zip` | `50 4B 03 04` | `50 4B 05 06` | 500 MiB |
-| 5 | GIF Image | `gif` | `47 49 46 38` | `00 3B` | 10 MiB |
-| 6 | BMP Image | `bmp` | `42 4D` | (none) | 50 MiB |
-| 7 | MP3 Audio | `mp3` | `49 44 33` | (none) | 50 MiB |
-| 8 | MP4 Video | `mp4` | `00 00 00 20 66 74 79 70` | (none) | 4 GiB |
-| 9 | RAR Archive | `rar` | `52 61 72 21 1A 07` | (none) | 500 MiB |
-| 10 | 7-Zip Archive | `7z` | `37 7A BC AF 27 1C` | (none) | 500 MiB |
+| Group | Count | Contents |
+|---|---|---|
+| Images | 10 | JPEG×2, PNG, GIF, BMP, TIFF×2, WebP, PSD, ICO |
+| RAW Photos | 15 | ARW, CR2, NEF, RW2, RAF, HEIC×2, ORF, PEF, CR3, SR2, DCR, CRW, MRW, X3F |
+| Video | 17 | MP4, MOV, M4V, 3GP, AVI, MKV, WebM, WMV, FLV, MPG, RM, SWF×3, TS, M2TS, WTV |
+| Audio | 10 | MP3, WAV, FLAC, OGG, M4A, MIDI, AIFF, WavPack, APE, AU |
+| Archives | 8 | ZIP, RAR, 7-Zip, GZip, XZ, BZip2, ISO, TAR |
+| Documents | 17 | PDF, XML, HTML, RTF, VCF, ICS, EML, EPUB, ODT, CDR, TTF, WOFF, CHM, Blender, InDesign, PHP, Shebang |
+| Office & Email | 4 | ZIP-Office, OLE2, PST, MSG |
+| System | 18 | SQLite, EVTX, EXE, ELF, VMDK, REGF, VHD, VHDX, QCOW2, Mach-O, KDBX, KDB, E01, PCAP×2, DMP, plist, LUKS, DICOM |
 
-All signatures start enabled by default.
+Signatures are loaded from `config/signatures.toml` (compiled into the binary).
+
+### Custom user signatures
+
+Press `u` to open the **Custom Signature Panel**.  You can add, edit, delete, and
+import user-defined signatures that appear as a ninth "Custom" group.  Custom
+signatures support the same header/footer/max_size fields as built-in signatures.
 
 ### How scanning works
 
-1. Ferrite reads the device in 1 MiB chunks.
-2. Each chunk overlaps the previous by `max(header_length) - 1` bytes to catch
-   headers that span a chunk boundary.
-3. For each enabled signature, Ferrite uses `memchr` to quickly locate bytes
-   matching the first byte of the header, then checks the full header at each
-   candidate position.
-4. The scan runs in parallel using **rayon** (one thread per physical CPU core).
-5. All hits are sorted by byte offset before being displayed.
+1. Ferrite reads the device in 1 MiB chunks with overlap to catch headers spanning
+   chunk boundaries.
+2. For each enabled signature, `memchr` locates candidate bytes; the full header is
+   verified at each position.
+3. Structural pre-validators run for many formats before a hit is accepted (e.g. TIFF
+   IFD walk, PDF parser, PE/ELF header check, RIFF FOURCC check).
+4. Hits are sorted by byte offset and displayed in the right panel.
+5. Scanning runs on a background thread; the TUI remains fully responsive.
 
-Scanning runs on a background thread; the TUI remains responsive.  Because the
-`scan()` API does not support mid-scan cancellation, pressing `c` marks the
-operation cancelled on the TUI side, but the background thread finishes before
-results are discarded.
+### Carve quality indicators
+
+After extraction, each hit is post-validated and assigned a **CarveQuality** tag
+shown as a prefix in the hits list:
+
+| Symbol | Quality | Meaning |
+|---|---|---|
+| `✓` | Complete | File structure validated; appears intact |
+| `~` | Truncated | Footer found but file structure suggests incomplete data |
+| `✗` | Corrupt | Internal structure validation failed (bad CRC, invalid markers, etc.) |
+| ` ` | Unknown | No post-validator available for this format |
+
+### Auto-follow (live scanning)
+
+While a scan is in progress, the hits panel automatically scrolls to keep the latest
+hit visible and shows a **`[↓ LIVE]`** badge in the panel title.  As soon as you
+press `↑` or `↓` to navigate the hits list, auto-follow disables and the badge
+disappears.  This lets you inspect early hits without losing track of the live
+stream.
+
+### Deduplication
+
+Ferrite computes a 4 KiB fingerprint for each extracted file.  If a new hit produces
+an identical fingerprint to one already extracted, it is tagged `[DUP]` and skipped.
+A summary line shows `⊘ N skipped` at the end of extraction.  Toggle dedup with
+`D`.
+
+### Skip modes
+
+| Mode | Key | Behaviour |
+|---|---|---|
+| Skip-corrupt | `Shift+C` | Files post-validated as `Corrupt` are automatically deleted after extraction |
+| Skip-truncated | `t` | Files post-validated as `Truncated` are automatically deleted after extraction |
+
+Both modes are persisted in the session JSON file so they survive a restart.
 
 ### How extraction works
 
-For each hit, Ferrite streams bytes from the hit offset:
+For each hit, Ferrite uses format-specific **size hints** where possible (PE/EXE,
+ELF, RAR, MKV/WebM, TS/M2TS, PNG, GIF, PDF linearized, etc.) to determine the
+exact file length before writing.  For formats without a size hint, extraction falls
+back to footer search then max_size cap.
 
-- **Signatures with a footer** (`jpg`, `png`, `pdf`, `zip`, `gif`): Streams bytes
-  until the footer sequence is found (inclusive), then stops.  The stream is capped
-  at `max_size` even if no footer is found.
-- **Signatures without a footer** (`bmp`, `mp3`, `mp4`, `rar`, `7z`): Streams
-  exactly `max_size` bytes from the hit offset (or until end of device).
-
-Extraction is performed on a background thread so the UI is not blocked.
-
-### Extracted file naming
-
-Extracted files are written to the **current working directory** (wherever Ferrite
-was launched from) using the following naming pattern:
+Extracted files are written to `./ferrite_output/carving/` using the pattern:
 
 ```
 ferrite_<extension>_<byte_offset>.<extension>
 ```
 
-Examples:
+Example:
 ```
-ferrite_jpg_1769472.jpg       ← JPEG found at byte offset 1,769,472
-ferrite_png_6291456.png       ← PNG found at byte offset 6,291,456
-ferrite_pdf_8978432.pdf
+ferrite_jpg_1769472.jpg
+ferrite_png_6291456.png
 ```
 
-This naming scheme guarantees uniqueness even when multiple hits of the same type
-are found at different offsets.
+Zero-byte files are deleted automatically after extraction.
 
 ### Two-panel navigation
 
-The screen is split into two panels:
-
 | Panel | Content | Activated by |
 |---|---|---|
-| Left | Signature list (toggle enabled/disabled) | `←` arrow or default on entry |
-| Right | Hits list (select and extract) | `→` arrow |
+| Left | Signature groups + individual sigs (toggle enabled/disabled) | `←` arrow or default on entry |
+| Right | Hits list (quality tag, format, offset) | `→` arrow |
 
 The **active panel** is indicated by a **bold yellow** title.
 
@@ -732,16 +829,291 @@ The **active panel** is indicated by a **bold yellow** title.
 
 | Key | Action |
 |---|---|
-| `←` | Focus the left panel (Signatures) |
-| `→` | Focus the right panel (Hits); only available after a scan completes |
+| `←` / `→` | Switch focus between Signatures panel (left) and Hits panel (right) |
 | `↑` / `↓` | Navigate the focused panel |
-| `Space` | Toggle the selected signature on/off (left panel only) |
-| `s` | Start a carving scan using all enabled signatures |
-| `e` | Extract the selected hit to the current directory (right panel) |
+| `Space` | Toggle signature on/off (left panel, sig row) OR toggle all sigs in group on/off (left panel, group row) |
+| `Enter` | Expand / collapse signature group (left panel, group row) |
+| `s` | Start carving scan |
+| `e` | Extract selected hit (right panel) |
+| `E` | Extract all hits |
+| `Shift+C` | Toggle skip-corrupt mode |
+| `t` | Toggle skip-truncated mode |
+| `D` | Toggle duplicate suppression |
+| `u` | Open custom user signature panel |
 
 ---
 
-## 12. Configuration Files
+## 12. Screen 7 — Hex Viewer
+
+**Purpose:** Inspect the raw bytes of the selected device sector-by-sector.  Useful
+for manually verifying carve hit offsets, examining partition table bytes, and
+diagnosing filesystem corruption.
+
+### Layout
+
+```
+┌─ Hex Viewer — offset: 0x00000000 ───────────────────────────────────────┐
+│ 00000000  4D 5A 90 00 03 00 00 00  04 00 00 00 FF FF 00 00  │MZ..........│
+│ 00000010  B8 00 00 00 00 00 00 00  40 00 00 00 00 00 00 00  │........@...│
+│ 00000020  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  │............│
+│ ...                                                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+The display shows:
+
+- **Offset column** (left): byte offset from the start of the device in hexadecimal.
+- **Hex columns** (centre): 16 bytes per row, split into two groups of 8, displayed
+  in hex.  Null bytes are shown in dark gray; printable ASCII bytes are highlighted.
+- **ASCII column** (right): the same 16 bytes rendered as ASCII characters.
+  Non-printable bytes are shown as `.`.
+
+### Navigation
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Scroll one row (16 bytes) up or down |
+| `PgUp` / `PgDn` | Scroll one screen at a time |
+| `g` | Open the offset jump dialog — type a hex offset and press Enter |
+| `Home` | Jump to offset 0 |
+
+### Offset jump dialog
+
+Press `g` to activate the jump dialog.  Type a hexadecimal offset (with or without a
+`0x` prefix) and press `Enter`.  The viewer will seek to that byte offset, aligned
+to the nearest 16-byte row boundary.  Press `Esc` to cancel without navigating.
+
+---
+
+## 13. Screen 8 — Quick Recover
+
+**Purpose:** Scan the selected device for deleted files using filesystem metadata
+(NTFS MFT, FAT32 directory entries, or ext4 inodes) and recover them in bulk — faster
+than full file carving when the filesystem is partially intact.
+
+### Layout
+
+```
+┌─ Quick Recover — [NTFS] ────────────────────────────────────────────────┐
+│  Filter: _______________                                                 │
+│                                                                          │
+│  [HIGH] documents\report.docx              14.2 KB                      │
+│  [HIGH] pictures\photo_001.jpg             3.8 MB                       │
+│  [MED ] pictures\photo_002.jpg             3.1 MB    [✓]                 │
+│  [LOW ] videos\clip.mp4                    720.4 MB                     │
+│  [ ?  ] downloads\setup.exe               1.2 MB    [✓]                 │
+│                                                                          │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  2 files checked  •  R: recover checked files                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### How it works
+
+After a device is selected, Quick Recover:
+
+1. Detects the filesystem type.
+2. Opens the appropriate parser and calls `deleted_files()` to enumerate all deleted
+   entries found in the filesystem metadata.
+3. Scores each entry with a `RecoveryChance` based on whether the data clusters or
+   extents appear to still contain the original data.
+4. Displays the result list sorted by recovery chance (HIGH first).
+
+All detection runs on a background thread; the list populates progressively.
+
+### Recovery chance badges
+
+| Badge | Colour | Meaning |
+|---|---|---|
+| `[HIGH]` | Green | Data appears intact; recovery very likely to succeed |
+| `[MED]` | Yellow | Partial overwrite or uncertainty detected |
+| `[LOW]` | Red | Heavily overwritten; recovery unlikely |
+| `[ ? ]` | Dark gray | Could not be determined |
+
+### Selecting files for recovery
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Navigate the file list |
+| `Space` | Toggle the check mark on the selected file |
+| `a` | Check all files with `[HIGH]` recovery chance |
+| `A` | Check all files in the list |
+| `R` | Recover all checked files |
+| `/` | Activate the filter box — type to filter by filename |
+
+### Output
+
+Recovered files are written to `./ferrite_output/quick_recover/` preserving the
+original filename.  If two deleted files share the same name, a numeric suffix is
+appended.
+
+---
+
+## 14. Screen 9 — Artifact Scanner
+
+**Purpose:** Scan the raw byte stream for forensic personally identifiable information
+(PII) artifacts: email addresses, URLs, credit card numbers, IBANs, Windows file
+paths, and US Social Security Numbers.
+
+> **Privacy notice:** A consent dialog is shown before scanning begins.  No data
+> leaves the local machine; all processing is done in-process with no network access.
+
+### Layout
+
+```
+┌─ Artifact Scanner ──────────────────────────────────────────────────────┐
+│ ████████████████████████░░░░░░░░░░░░░  scanning… 63.4%                  │
+│ Filter: email___________                                                 │
+│                                                                          │
+│  Email    user@example.com               offset: 0x00a4c200             │
+│  URL      https://internal.corp/admin    offset: 0x00a4c340             │
+│  CCard    **** **** **** 4242            offset: 0x00b10000             │
+│  IBAN     GB29 NWBK 6016 1331 9268 19   offset: 0x00b10200             │
+│  WinPath  C:\Users\alice\Documents\...  offset: 0x00c00100             │
+│                                                                          │
+│  Total hits: 47   •   X: export CSV                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Consent dialog
+
+On first launch (and whenever the screen is entered without a prior consent), Ferrite
+displays a one-time consent dialog explaining the nature of the scan.  Press `Y` to
+consent and begin; press `N` or `Esc` to cancel.
+
+### Scanner types
+
+| Kind | Description | Notes |
+|---|---|---|
+| `Email` | RFC 5321-compatible email addresses | Deduplicated per address |
+| `URL` | HTTP and HTTPS URLs | Deduplicated per URL |
+| `CCard` | Luhn-valid 13–19 digit credit card numbers | Displayed masked to last 4 digits |
+| `IBAN` | International Bank Account Numbers (ISO 13616) | Deduplicated per IBAN |
+| `WinPath` | Windows absolute paths (`C:\...`, `\\server\share\...`) | Truncated to 120 chars for display |
+| `SSN` | US Social Security Numbers (`XXX-XX-XXXX`) | Common invalid patterns excluded |
+
+### Implementation notes
+
+- Regex patterns are compiled once via `OnceLock` and reused for the entire scan.
+- A 4 KiB overlap buffer ensures patterns that span 1 MiB read boundaries are not
+  missed.
+- Per-kind `HashSet` deduplication prevents the same string from appearing twice.
+- Credit card numbers are validated with the Luhn algorithm before being recorded.
+- All scanning runs on a background thread; the hit list updates live.
+
+### Filter and export
+
+Type in the filter box to show only hits whose kind or value contains the search
+string.  Press `X` to export all hits (unfiltered) to a CSV file:
+
+```
+ferrite_artifacts_<timestamp>.csv
+```
+
+CSV columns: `kind`, `value`, `offset_hex`.
+
+### Key bindings
+
+| Key | Action |
+|---|---|
+| `s` | Start a new scan (shows consent dialog if not yet consented) |
+| `↑` / `↓` | Navigate the hit list |
+| `/` | Activate the filter box |
+| `X` | Export all hits to CSV |
+
+---
+
+## 15. Screen 10 — Text Block Scanner
+
+**Purpose:** Extract coherent text blocks from raw binary data without relying on any
+filesystem or file format.  Useful for recovering plain text documents, source code,
+CSV data, configuration files, and log files from unstructured regions of a drive.
+
+> **Privacy notice:** A consent dialog is shown before scanning begins, identical to
+> the one on the Artifact Scanner screen.
+
+### Layout
+
+```
+┌─ Text Block Scanner ────────────────────────────────────────────────────┐
+│ ████████████████████████░░░░░░░░░░░░░  scanning… 41.2%                  │
+│ Kind filter: [All]                                                       │
+│                                                                          │
+│  [Prose   ] offset: 0x00120000  len: 4.2 KB  "The quick brown fox…"     │
+│  [Code    ] offset: 0x00340000  len: 12.1 KB "fn main() { …"            │
+│  [CSV     ] offset: 0x00780000  len: 2.8 KB  "name,age,email\r\n…"      │
+│  [Log     ] offset: 0x009a0000  len: 8.0 KB  "2024-01-15 10:32:…"       │
+│                                                                          │
+│  Blocks found: 31   •   W: write files                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Consent dialog
+
+A one-time consent dialog is displayed before the first scan.  Press `Y` to proceed
+or `N` / `Esc` to cancel.
+
+### TextKind variants
+
+The classifier assigns one of nine kinds to each block:
+
+| Kind | Description |
+|---|---|
+| `Prose` | Natural language paragraphs (high word-level entropy, mixed punctuation) |
+| `Code` | Source code (keywords, braces, indentation patterns) |
+| `CSV` | Comma- or tab-separated values (consistent delimiter density) |
+| `Log` | Log file lines (timestamp prefix, repetitive structure) |
+| `Config` | INI / TOML / YAML style configuration text |
+| `Html` | HTML / XML markup (tag density) |
+| `Json` | JSON structure detected |
+| `Path` | Predominantly file paths and directory listings |
+| `Other` | Printable text that does not match any above category |
+
+### Scanning algorithm
+
+Ferrite uses a **gap-tolerant sliding window** approach:
+
+1. A window advances byte-by-byte across the device.
+2. Bytes with values 0x09 (tab), 0x0A (LF), 0x0D (CR), and 0x20–0x7E (printable
+   ASCII) are counted as valid text bytes.
+3. A block starts when the printable ratio over the window exceeds a threshold
+   (default: 85%).
+4. The block continues as long as the printable ratio stays above a lower threshold
+   (default: 70%), tolerating short binary gaps (e.g., embedded null terminators).
+5. The block ends when the printable ratio falls below the lower threshold.
+6. Blocks shorter than a minimum length (default: 512 bytes) are discarded.
+7. The classifier is run on each accepted block to assign a `TextKind`.
+
+All scanning runs on a background thread.
+
+### Kind filter
+
+Press `k` to cycle through the nine TextKind filters plus "All".  The hits list
+immediately updates to show only blocks matching the selected kind.
+
+### Writing extracted blocks
+
+Press `W` to write all discovered text blocks (from the unfiltered set) to
+`./ferrite_output/text_scan/`.  Each block is written as a `.txt` file named by its
+byte offset:
+
+```
+block_0x00120000.txt
+block_0x00340000.txt
+```
+
+### Key bindings
+
+| Key | Action |
+|---|---|
+| `s` | Start a new scan |
+| `↑` / `↓` | Navigate the block list |
+| `k` | Cycle the TextKind filter |
+| `W` | Write all blocks to `./ferrite_output/text_scan/` |
+
+---
+
+## 16. Configuration Files
 
 Ferrite ships two TOML configuration files in the `config/` directory at the
 workspace root.  Both files are **compiled into the binary** via `include_str!`
@@ -771,12 +1143,16 @@ max_size  = 10485760   # bytes (10 MiB)
 ### `config/smart_thresholds.toml`
 
 Controls what threshold values trigger Warning and Critical verdicts on the Health
-Dashboard.  Default values:
+Dashboard, and configures ThermalGuard imaging pause thresholds.  Default values:
 
 ```toml
 [temperature]
 warning_c  = 50
 critical_c = 60
+
+[thermal_guard]
+pause_c  = 55
+resume_c = 45
 
 [reallocated_sectors]   # SMART attribute ID 5
 warning_count  = 1
@@ -800,7 +1176,7 @@ The modified values will be compiled into the binary.
 
 ---
 
-## 13. Mapfile Format
+## 17. Mapfile Format
 
 Ferrite uses a mapfile format that is **fully compatible with GNU ddrescue**.  You can
 resume a Ferrite imaging session with `ddrescue` and vice versa.
@@ -854,7 +1230,7 @@ Because the format is identical, you can:
 
 ---
 
-## 14. Logging & Diagnostics
+## 18. Logging & Diagnostics
 
 Ferrite uses the `tracing` crate for structured logging.  Log output is written to
 **stderr** and does not appear on screen during normal operation.
@@ -892,7 +1268,7 @@ RUST_LOG=info,ferrite_imaging=debug ./ferrite
 
 ---
 
-## 15. Permissions & Safety
+## 19. Permissions & Safety
 
 ### Why elevated privileges are needed
 
@@ -920,13 +1296,15 @@ through the `BlockDevice` abstraction.
 
 - The image file created by the Imaging screen is an ordinary file, not a device.
   It is opened with standard read/write access.
-- Extracted carve files are written to the current working directory as ordinary
-  files.
+- Extracted carve files are written to `./ferrite_output/carving/` as ordinary files.
+- Recovered filesystem files are written to `./ferrite_output/fs_recovery/`.
+- Quick Recover output goes to `./ferrite_output/quick_recover/`.
+- Text block output goes to `./ferrite_output/text_scan/`.
 - The mapfile is written atomically (`.tmp` + rename) to prevent corruption on crash.
 
 ---
 
-## 16. Filesystem Coverage & Known Limitations
+## 20. Filesystem Coverage & Known Limitations
 
 ### NTFS
 
@@ -963,15 +1341,15 @@ through the `BlockDevice` abstraction.
 | Deleted file detection (inode == 0) | ✓ |
 | Direct block reads | ✓ |
 | Single-indirect block reads | ✓ |
+| Extents (ext4 feature) | ✓ (full extent tree supported) |
 | Double-indirect block reads | Not supported |
 | Triple-indirect block reads | Not supported |
-| Extents (ext4 feature) | Not supported |
 | Timestamps | Not displayed (always `—`) |
 | Journal recovery | Not supported |
 
 ---
 
-## 17. Troubleshooting
+## 21. Troubleshooting
 
 ### No drives appear in the Drive Selection list
 
@@ -1002,19 +1380,38 @@ This can happen if the mapfile was loaded from a different device.  Ensure:
 
 Delete the mapfile to force a fresh start if necessary.
 
+### Imaging pauses with `[⚠ THERMAL PAUSE]`
+
+ThermalGuard has detected that the drive temperature exceeded the configured pause
+threshold (default 55°C).  Imaging will resume automatically when the temperature
+drops to the resume threshold (default 45°C).  Ensure the drive has adequate
+airflow.  If the drive keeps overheating, consider shorter imaging sessions with
+cooling breaks between runs.
+
+### Imaging shows `[⚠ LOW RATE]` warning
+
+The sustained read rate has dropped below 5 MB/s.  This can indicate:
+- The drive is reaching bad sectors and is retrying internally.
+- The drive is throttling due to temperature.
+- The drive hardware is degrading.
+
+Consider pausing and checking the Health Dashboard.  Imaging the drive over multiple
+short sessions can reduce the risk of complete drive failure mid-session.
+
 ### File Browser shows "Error: …" after pressing `o`
 
 | Cause | Fix |
 |---|---|
 | Filesystem type is `Unknown` | The device may be unpartitioned, encrypted, or use an unsupported filesystem |
 | Device has multiple partitions | Ferrite opens the raw device, not individual partitions; if the first partition does not start at offset 0, detection may fail |
-| ext4 with extents | Not supported in the current MVP; use ext4 inspection tools on a mounted image |
 
 ### Carving scan produces many false positives
 
-Some file types (especially `BMP` and `MP3`) have very short headers that can match
-at random positions in binary data.  Disable the signatures for those types by
-pressing `Space` before starting the scan.
+Some file types (especially `BMP`, `MP3`, and `PHP`) have very short or common
+headers that can match at random positions in binary data.  Disable the signatures
+for those types by navigating to the Signatures panel (`←`), locating the signature,
+and pressing `Space` before starting the scan.  Consider enabling skip-corrupt mode
+(`Shift+C`) so that structurally invalid hits are discarded automatically.
 
 ### Carving extraction writes 0 bytes or stops early
 
@@ -1023,6 +1420,19 @@ pressing `Space` before starting the scan.
   is used instead.
 - **Device read error:** The sectors containing the file may be bad.  Consider
   imaging the device first and carving from the image file.
+- **Zero-byte cleanup:** Ferrite deletes zero-byte output files automatically.
+  If many files are zero bytes, the source regions may be entirely unreadable.
+
+### Quick Recover finds no deleted files
+
+- The filesystem may have been reformatted, which overwrites directory metadata.
+- Use File Carving (Screen 6) instead, which works without filesystem metadata.
+
+### Artifact Scanner or Text Scanner finds no results
+
+- The area of the drive containing those files may have been overwritten.
+- The scan covers the entire raw device; ensure the correct device is selected.
+- Re-running after giving consent will restart the scan from the beginning.
 
 ### Ferrite crashes and the terminal is left in a broken state
 
@@ -1040,28 +1450,39 @@ reset
 
 ---
 
-## 18. Glossary
+## 22. Glossary
 
 | Term | Definition |
 |---|---|
+| **Artifact** | A recoverable data fragment with forensic value, such as an email address or file path found in raw binary data |
 | **Bad sector** | A disk sector that cannot be read after all retry attempts |
 | **Block device** | A storage device accessed in fixed-size chunks (sectors); e.g. `/dev/sda`, `\\.\PhysicalDrive0` |
+| **CarveQuality** | A post-extraction assessment of a carved file: Complete (✓), Truncated (~), Corrupt (✗), or Unknown |
 | **Carving** | Extracting files from raw binary data by recognising their header/footer magic bytes, without relying on filesystem metadata |
-| **CRC** | Cyclic Redundancy Check — used in GPT headers and sector checksums |
+| **CRC** | Cyclic Redundancy Check — used in GPT headers, PNG chunks, and sector checksums |
 | **ddrescue** | GNU ddrescue is a data recovery tool that uses a similar multi-pass algorithm and the same mapfile format as Ferrite |
 | **Direct I/O** | Reads that bypass the OS page cache and go directly to the device (`O_DIRECT` on Linux, `FILE_FLAG_NO_BUFFERING` on Windows) |
 | **ERC / TLER** | Error Recovery Control / Time-Limited Error Recovery — a drive firmware setting that caps per-sector retry time; Ferrite does not configure this but benefits when it is set |
+| **Extents** | An ext4 data addressing scheme where a contiguous run of blocks is described by a single start+length record, replacing the older indirect-block scheme |
 | **Footer** | A magic byte sequence at the end of a file (e.g. `FF D9` for JPEG) used by the carver to determine the file boundary |
 | **GPT** | GUID Partition Table — the modern partition scheme used on UEFI systems |
 | **Header** | The magic byte sequence at the start of a file used by the carver to detect file type (e.g. `FF D8 FF` for JPEG) |
 | **Image file** | A byte-for-byte copy of a block device saved as a regular file |
 | **LBA** | Logical Block Address — a zero-based index of a 512-byte (or 4 KiB) sector on a block device |
+| **Luhn algorithm** | A checksum formula used to validate credit card numbers |
 | **Mapfile** | A text file tracking the copy status of every sector; compatible with GNU ddrescue |
 | **MBR** | Master Boot Record — the legacy partition table format stored in the first 512 bytes of a device |
 | **MFT** | Master File Table — the central metadata store in NTFS |
 | **NVMe** | Non-Volatile Memory Express — a protocol for SSDs connected over PCIe |
+| **PII** | Personally Identifiable Information — data that can identify an individual, such as email addresses or financial account numbers |
+| **RecoveryChance** | An enum assigned to deleted filesystem entries: High / Medium / Low / Unknown, based on whether the data clusters are still intact |
 | **S.M.A.R.T.** | Self-Monitoring, Analysis and Reporting Technology — firmware-level drive health monitoring |
 | **Sector** | The smallest addressable unit on a block device (typically 512 bytes; some modern drives use 4 KiB) |
 | **Sector alignment** | The requirement that read offsets and buffer sizes are multiples of the sector size when using direct I/O |
+| **SHA-256** | A cryptographic hash function; Ferrite writes a `.sha256` sidecar file after imaging to allow integrity verification |
 | **Signature** | In file carving, the combination of a header magic, optional footer magic, and maximum size that identifies a file type |
+| **Size hint** | A format-specific algorithm that reads structural metadata (e.g. PE headers, PNG chunk lengths) to determine the exact length of a carved file before extraction |
 | **smartctl** | The command-line tool from the smartmontools package used to query S.M.A.R.T. data |
+| **TextKind** | A content classification assigned to extracted text blocks: Prose, Code, CSV, Log, Config, Html, Json, Path, or Other |
+| **ThermalGuard** | Ferrite's background imaging safety system that auto-pauses imaging when drive temperature exceeds a configurable threshold |
+| **Write-blocker** | A hardware or software mechanism that prevents writes to a source device; Ferrite performs a software pre-flight check on device selection |

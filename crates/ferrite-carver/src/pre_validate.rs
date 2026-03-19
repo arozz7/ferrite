@@ -840,7 +840,8 @@ fn validate_mp4(data: &[u8], pos: usize) -> bool {
         || brand == b"heix"       // Apple HEIC variant — dedicated sig
         || brand == b"mif1"       // HEIF generic container
         || brand == b"avif"       // AV1 Image File Format
-        || brand == b"crx "       // Canon CR3 — dedicated sig
+        || brand == b"crx "
+    // Canon CR3 — dedicated sig
     {
         return false;
     }

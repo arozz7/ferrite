@@ -4,13 +4,18 @@ Autonomous storage diagnostics and data recovery — built in pure Rust.
 
 ## Overview
 
-Ferrite recovers data from failing drives through five operational phases:
+Ferrite recovers data from failing drives through ten operational screens:
 
-1. **S.M.A.R.T. Diagnostics** — Health assessment before touching the drive
-2. **Resilient Disk Imaging** — ddrescue-style multi-pass imaging with mapfile resume
-3. **Partition Recovery** — MBR/GPT parsing, corrupt table reconstruction
-4. **Filesystem Analysis** — NTFS, FAT32, ext4 — live and deleted file enumeration
-5. **File Carving** — Signature-based recovery from raw sectors
+1. **Drive Selection** — Discover block devices and designate the active source
+2. **S.M.A.R.T. Health** — Health assessment before touching the drive
+3. **Resilient Disk Imaging** — ddrescue-style multi-pass imaging with mapfile resume
+4. **Partition Recovery** — MBR/GPT parsing, corrupt table reconstruction
+5. **Filesystem Analysis** — NTFS, FAT32, ext4 — live and deleted file enumeration and extraction
+6. **File Carving** — Signature-based recovery from raw sectors (99 signatures, 8 groups)
+7. **Hex Viewer** — Raw sector hex viewer with offset navigation
+8. **Quick Recover** — Deleted file recovery using filesystem metadata
+9. **Artifact Scanner** — Forensic PII scanner (email, URL, credit card, IBAN, SSN, Windows path)
+10. **Text Block Scanner** — Heuristic text block extraction with 9 content-kind variants
 
 ## Design Principles
 
@@ -26,12 +31,16 @@ Ferrite recovers data from failing drives through five operational phases:
 |---|---|
 | `ferrite-core` | Core types, errors, configuration |
 | `ferrite-blockdev` | Platform-abstracted block device I/O |
-| `ferrite-imaging` | Multi-pass imaging engine |
+| `ferrite-imaging` | Multi-pass imaging engine (SHA-256 sidecar, ThermalGuard, write-blocker) |
 | `ferrite-smart` | S.M.A.R.T. diagnostics via smartctl |
 | `ferrite-partition` | MBR/GPT parsing and recovery |
-| `ferrite-filesystem` | NTFS / FAT32 / ext4 metadata parsing |
-| `ferrite-carver` | Signature-based file carving |
-| `ferrite-tui` | ratatui terminal interface |
+| `ferrite-filesystem` | NTFS / FAT32 / ext4 metadata parsing (full extent tree support) |
+| `ferrite-carver` | Signature-based file carving (99 signatures, CarveQuality validation) |
+| `ferrite-textcarver` | Heuristic text block scanner (9 TextKind variants) |
+| `ferrite-artifact` | Forensic PII artifact scanner (6 scanner types, CSV export) |
+| `ferrite-tui` | ratatui terminal interface (10 tabs) |
+
+Binary: `ferrite`
 
 ## Prerequisites
 

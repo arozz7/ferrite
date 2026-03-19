@@ -1,3 +1,4 @@
+use super::file_validators::{looks_like_xref, parse_last_startxref};
 use super::*;
 
 // ── is_truncated short-circuit ────────────────────────────────────────────
@@ -172,9 +173,9 @@ fn png_corrupt_idat_declares_size_beyond_file() {
     // but file_size = 191_831, so file_size - 12 = 191_819
     // 192_912 > 191_819 → Corrupt.
     let mut head = make_png_head(); // PNG sig + IHDR (33 bytes)
-    // Append a fake IDAT header with length 192_786 (0x0002F112).
-    // The data extends well beyond the head buffer, so the head walk
-    // will hit the "chunk extends beyond buffer" branch and check sizes.
+                                    // Append a fake IDAT header with length 192_786 (0x0002F112).
+                                    // The data extends well beyond the head buffer, so the head walk
+                                    // will hit the "chunk extends beyond buffer" branch and check sizes.
     head.extend_from_slice(&[0x00, 0x02, 0xF1, 0x12]); // length = 192_786
     head.extend_from_slice(b"IDAT");
     // 4 more bytes so the chunk header (12 bytes) fully fits in the buffer,
@@ -406,7 +407,7 @@ fn png_complete_valid_ascii_chunk_after_idat_in_tail() {
     // Valid ASCII chunk type after IDAT (e.g., IEND or IDAT continuation)
     tail[ti..ti + 4].copy_from_slice(&0u32.to_be_bytes()); // length = 0
     tail[ti + 4..ti + 8].copy_from_slice(b"IEND"); // valid ASCII type
-    // IEND at the tail end
+                                                   // IEND at the tail end
     tail[65_536 - 12..].copy_from_slice(&[
         0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ]);
@@ -452,21 +453,15 @@ fn validate_png_file_complete_minimal() {
     let ihdr_data = [
         0, 0, 0, 1, // width = 1
         0, 0, 0, 1, // height = 1
-        8,          // bit depth
-        0,          // color type = grayscale
-        0, 0, 0,    // compression, filter, interlace
+        8, // bit depth
+        0, // color type = grayscale
+        0, 0, 0, // compression, filter, interlace
     ];
     // Minimal valid zlib-compressed single-row pixel (filter byte 0x00 + pixel 0x00).
     let idat_data = [0x08, 0xD7, 0x63, 0x60, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01];
-    let (_dir, path) = write_png_chunks(&[
-        (b"IHDR", &ihdr_data),
-        (b"IDAT", &idat_data),
-        (b"IEND", &[]),
-    ]);
-    assert_eq!(
-        validate_png_file(&path),
-        CarveQuality::Complete
-    );
+    let (_dir, path) =
+        write_png_chunks(&[(b"IHDR", &ihdr_data), (b"IDAT", &idat_data), (b"IEND", &[])]);
+    assert_eq!(validate_png_file(&path), CarveQuality::Complete);
 }
 
 #[test]
@@ -480,9 +475,10 @@ fn validate_png_file_corrupt_garbage_type_after_large_idat() {
     let path = dir.path().join("corrupt.png");
     let mut f = std::fs::File::create(&path).expect("create");
     // PNG signature
-    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        .unwrap();
     // IHDR chunk (valid, small — will be CRC-verified by the walker)
-    let ihdr_data = [0,0,0,1, 0,0,0,1, 8,0, 0,0,0];
+    let ihdr_data = [0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0, 0, 0];
     f.write_all(&(13u32).to_be_bytes()).unwrap();
     f.write_all(b"IHDR").unwrap();
     f.write_all(&ihdr_data).unwrap();
@@ -502,7 +498,7 @@ fn validate_png_file_corrupt_garbage_type_after_large_idat() {
     f.write_all(&[0x21, 0x60, 0x1E, 0xEE]).unwrap(); // non-ASCII type
     f.write_all(&vec![0xAB; 132]).unwrap(); // garbage body
     f.write_all(&[0u8; 4]).unwrap(); // garbage CRC
-    // Valid IEND (unreachable — the walk aborts at the garbage type above)
+                                     // Valid IEND (unreachable — the walk aborts at the garbage type above)
     f.write_all(&[0u8; 4]).unwrap();
     f.write_all(b"IEND").unwrap();
     f.write_all(&[0u8; 4]).unwrap();
@@ -517,7 +513,8 @@ fn validate_png_file_corrupt_bad_crc_on_small_chunk() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("bad_crc.png");
     let mut f = std::fs::File::create(&path).expect("create");
-    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        .unwrap();
     f.write_all(&(13u32).to_be_bytes()).unwrap();
     f.write_all(b"IHDR").unwrap();
     f.write_all(&[0u8; 13]).unwrap();
@@ -537,7 +534,8 @@ fn validate_png_file_corrupt_missing_iend() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("no_iend.png");
     let mut f = std::fs::File::create(&path).expect("create");
-    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        .unwrap();
     // IDAT header claiming 10_000 bytes but file ends immediately after the header.
     f.write_all(&(10_000u32).to_be_bytes()).unwrap();
     f.write_all(b"IDAT").unwrap();
@@ -696,9 +694,7 @@ fn validate_pdf_file_complete_traditional_xref() {
     content.extend_from_slice(b"xref\n0 1\n0000000000 65535 f \n");
     content.extend_from_slice(b"trailer\n<</Size 1>>\n");
     let sxref_pos = content.len();
-    content.extend_from_slice(
-        format!("startxref\n{xref_offset}\n%%EOF\n").as_bytes(),
-    );
+    content.extend_from_slice(format!("startxref\n{xref_offset}\n%%EOF\n").as_bytes());
     let _ = sxref_pos; // used for readability
     let (_dir, path) = write_pdf(&content);
     assert_eq!(validate_pdf_file(&path), CarveQuality::Complete);
@@ -712,9 +708,7 @@ fn validate_pdf_file_complete_xref_stream() {
     let mut content = b"%PDF-1.5\n".to_vec();
     assert_eq!(content.len(), xref_offset);
     content.extend_from_slice(b"1 0 obj\n<</Type/XRef/Size 1>>\nstream\nendstream\nendobj\n");
-    content.extend_from_slice(
-        format!("startxref\n{xref_offset}\n%%EOF\n").as_bytes(),
-    );
+    content.extend_from_slice(format!("startxref\n{xref_offset}\n%%EOF\n").as_bytes());
     let (_dir, path) = write_pdf(&content);
     assert_eq!(validate_pdf_file(&path), CarveQuality::Complete);
 }
@@ -736,9 +730,7 @@ fn validate_pdf_file_corrupt_startxref_points_to_garbage() {
     let garbage_offset = content.len();
     // Place random-looking binary data at the xref offset.
     content.extend_from_slice(&[0x47, 0x87, 0x2E, 0x3E, 0x55, 0x6F, 0xB0, 0xBD]);
-    content.extend_from_slice(
-        format!("startxref\n{garbage_offset}\n%%EOF\n").as_bytes(),
-    );
+    content.extend_from_slice(format!("startxref\n{garbage_offset}\n%%EOF\n").as_bytes());
     let (_dir, path) = write_pdf(&content);
     assert_eq!(validate_pdf_file(&path), CarveQuality::Corrupt);
 }

@@ -247,8 +247,7 @@ mod tests {
 
         // LSD: has GCT with 4 colors (size field = 1 → 2^(1+1) = 4).
         buf.extend_from_slice(&[
-            0x01, 0x00, 0x01, 0x00,
-            0x81, // GCT flag=1, size=1 (4 colors)
+            0x01, 0x00, 0x01, 0x00, 0x81, // GCT flag=1, size=1 (4 colors)
             0x00, 0x00,
         ]);
 
