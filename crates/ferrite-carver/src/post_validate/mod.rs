@@ -144,6 +144,138 @@ pub fn validate_png_file(path: &Path) -> CarveQuality {
     }
 }
 
+/// Validate a carved PDF by verifying `%%EOF` and that `startxref N` points
+/// to a recognisable cross-reference section.
+///
+/// The plain [`validate_pdf`] only checks for `%%EOF` in the last 1 KiB.
+/// On fragmented drives, PDF files often end correctly but their xref table
+/// sectors have been overwritten: `startxref` still appears near `%%EOF` but
+/// the offset it names now contains unrelated binary data that PDF readers
+/// cannot parse.  Two concrete failure modes:
+///
+/// 1. `startxref 0` — offset 0 is the `%PDF-x.y` header, never an xref.
+/// 2. `startxref N` where `N` is within the file but the bytes there are
+///    random sector data, not `xref` or an object header.
+///
+/// This function reads the last 1 KiB (for `%%EOF` + `startxref`), then
+/// seeks to the declared offset and checks that the data there begins with
+/// either `xref` (traditional cross-reference table) or an ASCII digit
+/// (cross-reference stream object header, e.g. `616 0 obj`).
+///
+/// Returns [`CarveQuality::Unknown`] when the file cannot be opened.
+pub fn validate_pdf_file(path: &Path) -> CarveQuality {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return CarveQuality::Unknown,
+    };
+
+    let file_size = match f.seek(SeekFrom::End(0)) {
+        Ok(s) => s,
+        Err(_) => return CarveQuality::Unknown,
+    };
+
+    // Read the last 1 KiB to locate %%EOF and startxref.
+    let read_start = file_size.saturating_sub(1024);
+    if f.seek(SeekFrom::Start(read_start)).is_err() {
+        return CarveQuality::Unknown;
+    }
+    let mut tail = [0u8; 1024];
+    let n = match f.read(&mut tail) {
+        Ok(n) => n,
+        Err(_) => return CarveQuality::Unknown,
+    };
+    let tail = &tail[..n];
+
+    // %%EOF must be present.
+    if !tail.windows(5).any(|w| w == b"%%EOF") {
+        return CarveQuality::Corrupt;
+    }
+
+    // Parse the value after the LAST `startxref` keyword.
+    let xref_offset = match parse_last_startxref(tail) {
+        Some(v) => v,
+        None => return CarveQuality::Corrupt,
+    };
+
+    // Offset 0 is always the PDF header, never a valid xref position.
+    // Any offset at or beyond the file is also invalid.
+    if xref_offset == 0 || xref_offset >= file_size {
+        return CarveQuality::Corrupt;
+    }
+
+    // Seek to the claimed xref position and check the leading bytes.
+    if f.seek(SeekFrom::Start(xref_offset)).is_err() {
+        return CarveQuality::Corrupt;
+    }
+    let mut xref_head = [0u8; 16];
+    let read = match f.read(&mut xref_head) {
+        Ok(n) => n,
+        Err(_) => return CarveQuality::Corrupt,
+    };
+
+    if looks_like_xref(&xref_head[..read]) {
+        CarveQuality::Complete
+    } else {
+        CarveQuality::Corrupt
+    }
+}
+
+/// Parse the numeric value after the last `startxref` keyword in `data`.
+pub(crate) fn parse_last_startxref(data: &[u8]) -> Option<u64> {
+    const KW: &[u8] = b"startxref";
+    let mut last: Option<u64> = None;
+    let mut pos = 0;
+    while pos + KW.len() <= data.len() {
+        if let Some(rel) = data[pos..].windows(KW.len()).position(|w| w == KW) {
+            let abs = pos + rel;
+            let after = &data[abs + KW.len()..];
+            // Skip line-ending / whitespace characters.
+            let skip = after
+                .iter()
+                .position(|b| !matches!(b, b'\n' | b'\r' | b' ' | b'\t'))
+                .unwrap_or(after.len());
+            let after = &after[skip..];
+            let digits_end = after
+                .iter()
+                .position(|b| !b.is_ascii_digit())
+                .unwrap_or(after.len());
+            if digits_end > 0 {
+                if let Ok(s) = std::str::from_utf8(&after[..digits_end]) {
+                    if let Ok(v) = s.parse::<u64>() {
+                        last = Some(v);
+                    }
+                }
+            }
+            pos = abs + KW.len();
+        } else {
+            break;
+        }
+    }
+    last
+}
+
+/// Returns `true` if `data` looks like the start of a PDF cross-reference
+/// section — either a traditional xref table or a cross-reference stream.
+///
+/// * Traditional: begins with `xref` (optionally preceded by whitespace).
+/// * Stream:      begins with an unsigned integer (the object number), e.g.
+///   `616 0 obj`.
+pub(crate) fn looks_like_xref(data: &[u8]) -> bool {
+    // Skip leading whitespace (CR/LF/space).
+    let start = data
+        .iter()
+        .position(|b| !matches!(b, b'\n' | b'\r' | b' ' | b'\t'))
+        .unwrap_or(data.len());
+    let d = &data[start..];
+    if d.starts_with(b"xref") {
+        return true;
+    }
+    // Cross-reference stream: first non-whitespace byte must be an ASCII digit.
+    d.first().is_some_and(|b| b.is_ascii_digit())
+}
+
 // ── Format validators ─────────────────────────────────────────────────────────
 
 /// JPEG: must end with the End-of-Image marker `FF D9`, and the entropy

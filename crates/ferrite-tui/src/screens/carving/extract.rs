@@ -244,8 +244,16 @@ impl CarvingState {
                         if let Some(ref meta_idx) = meta_index {
                             apply_timestamps(&filename, hit.byte_offset, meta_idx);
                         }
-                        let quality = if hit.signature.extension == "png" && !truncated {
-                            post_validate::validate_png_file(Path::new(&filename))
+                        let quality = if !truncated
+                            && matches!(
+                                hit.signature.extension.as_str(),
+                                "png" | "pdf"
+                            )
+                        {
+                            match hit.signature.extension.as_str() {
+                                "png" => post_validate::validate_png_file(Path::new(&filename)),
+                                _ => post_validate::validate_pdf_file(Path::new(&filename)),
+                            }
                         } else {
                             let head = read_file_head(&filename, 8192);
                             let tail = read_file_tail(&filename, 65536);
@@ -531,8 +539,18 @@ impl CarvingState {
                     let quality = match &result {
                         Ok(bytes) => {
                             let truncated = *bytes >= hit.signature.max_size;
-                            if hit.signature.extension == "png" && !truncated {
-                                post_validate::validate_png_file(Path::new(&path))
+                            if !truncated
+                                && matches!(
+                                    hit.signature.extension.as_str(),
+                                    "png" | "pdf"
+                                )
+                            {
+                                match hit.signature.extension.as_str() {
+                                    "png" => {
+                                        post_validate::validate_png_file(Path::new(&path))
+                                    }
+                                    _ => post_validate::validate_pdf_file(Path::new(&path)),
+                                }
                             } else {
                                 let head = read_file_head(&path, 8192);
                                 let tail = read_file_tail(&path, 65536);

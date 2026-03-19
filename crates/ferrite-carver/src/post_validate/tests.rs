@@ -671,6 +671,139 @@ fn pdf_corrupt_eof_outside_last_1kb() {
     );
 }
 
+// ── validate_pdf_file ─────────────────────────────────────────────────────
+//
+// Tests use tempfile to write real files so validate_pdf_file can open them.
+
+fn write_pdf(content: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("test.pdf");
+    std::fs::File::create(&path)
+        .expect("create")
+        .write_all(content)
+        .expect("write");
+    (dir, path)
+}
+
+#[test]
+fn validate_pdf_file_complete_traditional_xref() {
+    // Minimal PDF with traditional xref table at a valid offset.
+    // xref table starts at byte 9 (right after the header).
+    let xref_offset: usize = 9;
+    let mut content = b"%PDF-1.4\n".to_vec();
+    assert_eq!(content.len(), xref_offset);
+    content.extend_from_slice(b"xref\n0 1\n0000000000 65535 f \n");
+    content.extend_from_slice(b"trailer\n<</Size 1>>\n");
+    let sxref_pos = content.len();
+    content.extend_from_slice(
+        format!("startxref\n{xref_offset}\n%%EOF\n").as_bytes(),
+    );
+    let _ = sxref_pos; // used for readability
+    let (_dir, path) = write_pdf(&content);
+    assert_eq!(validate_pdf_file(&path), CarveQuality::Complete);
+}
+
+#[test]
+fn validate_pdf_file_complete_xref_stream() {
+    // PDF whose startxref points to a cross-reference stream object.
+    // The object header starts with an integer, e.g. "1 0 obj".
+    let xref_offset: usize = 9;
+    let mut content = b"%PDF-1.5\n".to_vec();
+    assert_eq!(content.len(), xref_offset);
+    content.extend_from_slice(b"1 0 obj\n<</Type/XRef/Size 1>>\nstream\nendstream\nendobj\n");
+    content.extend_from_slice(
+        format!("startxref\n{xref_offset}\n%%EOF\n").as_bytes(),
+    );
+    let (_dir, path) = write_pdf(&content);
+    assert_eq!(validate_pdf_file(&path), CarveQuality::Complete);
+}
+
+#[test]
+fn validate_pdf_file_corrupt_startxref_zero() {
+    // Real-world case 1: startxref = 0 always points to the %PDF header,
+    // never to an xref table.
+    let content = b"%PDF-1.6\n%binary\ncontent here\nstartxref\n0\n%%EOF\n";
+    let (_dir, path) = write_pdf(content);
+    assert_eq!(validate_pdf_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn validate_pdf_file_corrupt_startxref_points_to_garbage() {
+    // Real-world case 2: startxref N is within the file but the bytes there
+    // are random binary data, not an xref table or object header.
+    let mut content = b"%PDF-1.5\n".to_vec();
+    let garbage_offset = content.len();
+    // Place random-looking binary data at the xref offset.
+    content.extend_from_slice(&[0x47, 0x87, 0x2E, 0x3E, 0x55, 0x6F, 0xB0, 0xBD]);
+    content.extend_from_slice(
+        format!("startxref\n{garbage_offset}\n%%EOF\n").as_bytes(),
+    );
+    let (_dir, path) = write_pdf(&content);
+    assert_eq!(validate_pdf_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn validate_pdf_file_corrupt_startxref_beyond_file() {
+    // startxref value larger than the file — clearly invalid.
+    let content = b"%PDF-1.4\nstartxref\n999999999\n%%EOF\n";
+    let (_dir, path) = write_pdf(content);
+    assert_eq!(validate_pdf_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn validate_pdf_file_corrupt_no_eof() {
+    // File ends without %%EOF.
+    let content = b"%PDF-1.4\nxref\n0 0\ntrailer\n<</Size 0>>\nstartxref\n9\n";
+    let (_dir, path) = write_pdf(content);
+    assert_eq!(validate_pdf_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn parse_last_startxref_basic() {
+    assert_eq!(parse_last_startxref(b"startxref\n116\n%%EOF"), Some(116));
+}
+
+#[test]
+fn parse_last_startxref_crlf() {
+    assert_eq!(
+        parse_last_startxref(b"startxref\r\n1005634\r\n%%EOF"),
+        Some(1005634)
+    );
+}
+
+#[test]
+fn parse_last_startxref_zero() {
+    assert_eq!(parse_last_startxref(b"startxref\r\n0\r\n%%EOF"), Some(0));
+}
+
+#[test]
+fn parse_last_startxref_takes_last() {
+    // Multiple startxref entries — must return the last value.
+    let data = b"startxref\n100\n%%EOF\nstartxref\n200\n%%EOF";
+    assert_eq!(parse_last_startxref(data), Some(200));
+}
+
+#[test]
+fn looks_like_xref_traditional() {
+    assert!(looks_like_xref(b"xref\n0 5\n"));
+}
+
+#[test]
+fn looks_like_xref_stream_object() {
+    assert!(looks_like_xref(b"616 0 obj\n<<"));
+}
+
+#[test]
+fn looks_like_xref_rejects_pdf_header() {
+    assert!(!looks_like_xref(b"%PDF-1.6\n"));
+}
+
+#[test]
+fn looks_like_xref_rejects_binary_garbage() {
+    assert!(!looks_like_xref(&[0x47, 0x87, 0x2E, 0x3E, 0x55, 0x6F]));
+}
+
 // ── ZIP / EOCD ────────────────────────────────────────────────────────────
 
 #[test]
