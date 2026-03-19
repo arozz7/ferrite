@@ -827,12 +827,20 @@ fn validate_mp4(data: &[u8], pos: usize) -> bool {
         return false;
     }
 
-    // Reject brands handled by dedicated signatures to avoid duplicate output.
+    // Reject brands handled by dedicated signatures or non-video ISOBMFF
+    // formats to avoid false positives and duplicate output.
     let brand = &data[pos + 8..pos + 12];
-    if brand == b"qt  "
-        || brand == b"M4V "
-        || brand.starts_with(b"3gp")
-        || brand.starts_with(b"3g2")
+    if brand == b"qt  "           // QuickTime MOV — dedicated sig
+        || brand == b"M4V "       // iTunes M4V — dedicated sig
+        || brand == b"M4A "       // iTunes M4A audio — dedicated sig
+        || brand.starts_with(b"3gp")  // 3GPP — dedicated sig
+        || brand.starts_with(b"3g2")  // 3GPP2 — dedicated sig
+        || brand.starts_with(b"jp")   // JPEG 2000: jp2 , jpx , jpm , jpxb
+        || brand == b"heic"       // Apple HEIC — dedicated sig
+        || brand == b"heix"       // Apple HEIC variant — dedicated sig
+        || brand == b"mif1"       // HEIF generic container
+        || brand == b"avif"       // AV1 Image File Format
+        || brand == b"crx "       // Canon CR3 — dedicated sig
     {
         return false;
     }
@@ -3125,6 +3133,49 @@ mod tests {
     #[test]
     fn mp4_rejects_qt_brand() {
         let data = make_isobmff_ftyp(20, b"qt  ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_jp2_brand() {
+        // Real-world false positive: JPEG 2000 files carved as MP4.
+        let data = make_isobmff_ftyp(20, b"jp2 ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_jpx_brand() {
+        let data = make_isobmff_ftyp(20, b"jpx ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_jpm_brand() {
+        let data = make_isobmff_ftyp(20, b"jpm ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_m4a_brand() {
+        let data = make_isobmff_ftyp(20, b"M4A ");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_heic_brand() {
+        let data = make_isobmff_ftyp(20, b"heic");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_avif_brand() {
+        let data = make_isobmff_ftyp(20, b"avif");
+        assert!(!validate_mp4(&data, 0));
+    }
+
+    #[test]
+    fn mp4_rejects_crx_brand() {
+        let data = make_isobmff_ftyp(20, b"crx ");
         assert!(!validate_mp4(&data, 0));
     }
 
