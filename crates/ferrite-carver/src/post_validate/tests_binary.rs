@@ -152,7 +152,7 @@ fn riff_complete_wav_three_chunks() {
 fn riff_complete_aiff() {
     // FORM/AIFF uses big-endian chunk sizes — make_riff writes LE for the
     // RIFF form size but we override the form magic here.
-    let mut data = make_riff(
+    let data = make_riff(
         b"FORM",
         b"AIFF",
         &[(b"COMM", 26), (b"SSND", 8), (b"MARK", 4)],

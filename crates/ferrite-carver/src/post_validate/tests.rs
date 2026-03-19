@@ -496,7 +496,7 @@ fn validate_png_file_corrupt_garbage_type_after_large_idat() {
     // Garbage chunk: non-ASCII type bytes + some body + fake IEND at the end.
     f.write_all(&(132u32).to_be_bytes()).unwrap(); // garbage length
     f.write_all(&[0x21, 0x60, 0x1E, 0xEE]).unwrap(); // non-ASCII type
-    f.write_all(&vec![0xAB; 132]).unwrap(); // garbage body
+    f.write_all(&[0xAB; 132]).unwrap(); // garbage body
     f.write_all(&[0u8; 4]).unwrap(); // garbage CRC
                                      // Valid IEND (unreachable — the walk aborts at the garbage type above)
     f.write_all(&[0u8; 4]).unwrap();
