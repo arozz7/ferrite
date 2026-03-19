@@ -49,7 +49,7 @@ pub fn validate_extracted(
     }
     match ext {
         "jpg" => validate_jpeg(tail),
-        "png" => validate_png(head, tail),
+        "png" => validate_png(head, tail, file_size),
         "gif" => validate_gif(tail),
         "pdf" => validate_pdf(tail),
         "html" => validate_html(head, tail),
@@ -114,7 +114,7 @@ fn validate_jpeg(tail: &[u8]) -> CarveQuality {
 ///    chunks (IHDR, sRGB, gAMA, pHYs, tEXt, …) will not match when
 ///    the underlying disk sectors were overwritten or belong to a
 ///    different file (fragmentation on a damaged drive).
-fn validate_png(head: &[u8], tail: &[u8]) -> CarveQuality {
+fn validate_png(head: &[u8], tail: &[u8], file_size: u64) -> CarveQuality {
     const IEND: &[u8] = &[
         0x00, 0x00, 0x00, 0x00, // chunk length = 0
         0x49, 0x45, 0x4E, 0x44, // "IEND"
@@ -147,7 +147,15 @@ fn validate_png(head: &[u8], tail: &[u8]) -> CarveQuality {
 
             let chunk_end = pos + 12 + chunk_data_len; // length + type + data + CRC
             if chunk_end > head.len() {
-                // Chunk extends beyond head buffer — can't verify, stop walking.
+                // Chunk extends beyond the head buffer — CRC can't be verified.
+                // However, if the chunk's declared data would place its end
+                // past where IEND must sit, the IEND footer is embedded inside
+                // this chunk's data (from an overlapping sector of another file).
+                // file_size - 12 is the earliest valid IEND position.
+                let chunk_body_end = pos as u64 + 12 + chunk_data_len as u64;
+                if chunk_body_end > file_size.saturating_sub(12) {
+                    return CarveQuality::Corrupt;
+                }
                 break;
             }
 

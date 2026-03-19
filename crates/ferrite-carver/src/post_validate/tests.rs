@@ -161,6 +161,65 @@ fn make_png_head() -> Vec<u8> {
 }
 
 #[test]
+fn png_corrupt_idat_declares_size_beyond_file() {
+    // Real-world case: a single large IDAT chunk whose declared length
+    // would place its end past where IEND sits.  This happens when the
+    // carver stops at an IEND that is embedded inside IDAT data from an
+    // overlapping sector belonging to a different file.
+    //
+    // IDAT at offset 114 claims 192_786 bytes of data →
+    //   chunk_body_end = 114 + 12 + 192_786 = 192_912
+    // but file_size = 191_831, so file_size - 12 = 191_819
+    // 192_912 > 191_819 → Corrupt.
+    let mut head = make_png_head(); // PNG sig + IHDR (33 bytes)
+    // Append a fake IDAT header with length 192_786 (0x0002F112).
+    // The data extends well beyond the head buffer, so the head walk
+    // will hit the "chunk extends beyond buffer" branch and check sizes.
+    head.extend_from_slice(&[0x00, 0x02, 0xF1, 0x12]); // length = 192_786
+    head.extend_from_slice(b"IDAT");
+    // 4 more bytes so the chunk header (12 bytes) fully fits in the buffer,
+    // allowing the walk to read length+type and then hit the overflow check.
+    head.extend_from_slice(&[0x78, 0xDA, 0x00, 0x00]); // start of zlib stream
+
+    let mut tail = vec![0u8; 4];
+    tail.extend_from_slice(&[
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ]);
+
+    // file_size = 191_831; IDAT body end = 114+12+192_786 = 192_912 > 191_819
+    assert_eq!(
+        validate_extracted("png", &head, &tail, false, 191_831),
+        CarveQuality::Corrupt
+    );
+}
+
+#[test]
+fn png_complete_idat_fits_within_file() {
+    // Positive case: IDAT declared size is consistent with file size.
+    // IDAT at the same offset (33+8 = offset depends on head size),
+    // but with a length that fits: body_end ≤ file_size - 12.
+    let mut head = make_png_head(); // 33 bytes (sig + IHDR)
+    let idat_offset = head.len() as u64; // 33
+    let idat_data_len: u32 = 1000;
+    head.extend_from_slice(&idat_data_len.to_be_bytes());
+    head.extend_from_slice(b"IDAT");
+    // 4 more bytes so chunk header (12 bytes) fits → overflow check can run.
+    head.extend_from_slice(&[0x78, 0xDA, 0x00, 0x00]);
+    // chunk_body_end = idat_offset + 12 + 1000 = 33 + 12 + 1000 = 1045
+    // file_size = 1057 (= 1045 + 12 for IEND)
+    let file_size: u64 = idat_offset + 12 + idat_data_len as u64 + 12;
+
+    let mut tail = vec![0u8; 4];
+    tail.extend_from_slice(&[
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ]);
+    assert_eq!(
+        validate_extracted("png", &head, &tail, false, file_size),
+        CarveQuality::Complete
+    );
+}
+
+#[test]
 fn png_complete_with_valid_ihdr_crc() {
     let head = make_png_head();
     let mut tail = vec![0u8; 4];
