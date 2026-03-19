@@ -172,24 +172,27 @@ impl CarvingState {
             KeyCode::Left => self.focus = CarveFocus::Signatures,
             KeyCode::Right if !self.hits.is_empty() => self.focus = CarveFocus::Hits,
             KeyCode::Up => {
+                if self.focus == CarveFocus::Hits {
+                    self.auto_follow = false;
+                }
                 self.move_selection(-1);
                 if self.show_preview && self.focus == CarveFocus::Hits {
                     self.refresh_preview();
                 }
             }
             KeyCode::Down => {
+                if self.focus == CarveFocus::Hits {
+                    self.auto_follow = false;
+                }
                 self.move_selection(1);
                 if self.show_preview && self.focus == CarveFocus::Hits {
                     self.refresh_preview();
                 }
             }
+            // Hits list is rendered newest-first (reversed).  PageUp moves
+            // toward newer hits (higher internal index), PageDown toward older.
             KeyCode::PageUp if self.focus == CarveFocus::Hits => {
-                self.hit_sel = self.hit_sel.saturating_sub(self.hits_page_size.max(1));
-                if self.show_preview {
-                    self.refresh_preview();
-                }
-            }
-            KeyCode::PageDown if self.focus == CarveFocus::Hits => {
+                self.auto_follow = false;
                 if !self.hits.is_empty() {
                     let last = self.hits.len() - 1;
                     self.hit_sel = (self.hit_sel + self.hits_page_size.max(1)).min(last);
@@ -198,18 +201,30 @@ impl CarvingState {
                     }
                 }
             }
-            KeyCode::Home if self.focus == CarveFocus::Hits => {
-                self.hit_sel = 0;
+            KeyCode::PageDown if self.focus == CarveFocus::Hits => {
+                self.auto_follow = false;
+                self.hit_sel = self.hit_sel.saturating_sub(self.hits_page_size.max(1));
                 if self.show_preview {
                     self.refresh_preview();
                 }
             }
-            KeyCode::End if self.focus == CarveFocus::Hits => {
+            // Home = top of visual list = newest hit = last internal index.
+            // Also re-engages auto-follow so the view tracks new hits live.
+            KeyCode::Home if self.focus == CarveFocus::Hits => {
+                self.auto_follow = true;
                 if !self.hits.is_empty() {
                     self.hit_sel = self.hits.len() - 1;
                     if self.show_preview {
                         self.refresh_preview();
                     }
+                }
+            }
+            // End = bottom of visual list = oldest hit = first internal index.
+            KeyCode::End if self.focus == CarveFocus::Hits => {
+                self.auto_follow = false;
+                self.hit_sel = 0;
+                if self.show_preview {
+                    self.refresh_preview();
                 }
             }
             KeyCode::Char(' ') if self.focus == CarveFocus::Signatures => {
@@ -250,6 +265,12 @@ impl CarvingState {
             KeyCode::Char('E') => self.extract_all_selected(),
             KeyCode::Char('x') => {
                 self.auto_extract = !self.auto_extract;
+            }
+            KeyCode::Char('t') => {
+                self.skip_truncated = !self.skip_truncated;
+            }
+            KeyCode::Char('C') => {
+                self.skip_corrupt = !self.skip_corrupt;
             }
             KeyCode::Char('u') => {
                 self.show_user_panel = true;
@@ -322,14 +343,16 @@ impl CarvingState {
                 }
             }
             CarveFocus::Hits => {
+                // Hits render newest-first, so Up (delta < 0) moves toward
+                // newer hits (higher internal index) and Down toward older.
                 let len = self.hits.len();
                 if len == 0 {
                     return;
                 }
                 if delta < 0 {
-                    self.hit_sel = self.hit_sel.saturating_sub(1);
-                } else {
                     self.hit_sel = (self.hit_sel + 1).min(len - 1);
+                } else {
+                    self.hit_sel = self.hit_sel.saturating_sub(1);
                 }
             }
         }
@@ -429,6 +452,7 @@ impl CarvingState {
         self.pause.store(false, Ordering::Relaxed);
         self.hits.clear();
         self.hit_sel = 0;
+        self.auto_follow = true;
         self.scan_progress = None;
         self.scan_start = Some(Instant::now());
         self.paused_elapsed = std::time::Duration::ZERO;
@@ -543,11 +567,9 @@ impl CarvingState {
     pub(super) fn toggle_hit_selected(&mut self) {
         if let Some(e) = self.hits.get_mut(self.hit_sel) {
             e.selected = !e.selected;
-            // Advance cursor so Space+Down becomes a quick multi-select gesture.
-            let len = self.hits.len();
-            if len > 0 {
-                self.hit_sel = (self.hit_sel + 1).min(len - 1);
-            }
+            // Advance cursor visually downward (toward older hits) so
+            // Space+Down becomes a quick multi-select gesture.
+            self.hit_sel = self.hit_sel.saturating_sub(1);
         }
     }
 

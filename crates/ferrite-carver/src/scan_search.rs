@@ -121,6 +121,8 @@ mod tests {
             pre_validate: Some(PreValidate::Zip),
             header_offset: 0,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         }
     }
 
@@ -160,6 +162,8 @@ mod tests {
             pre_validate: None,
             header_offset: offset,
             min_hit_gap: 0,
+            suppress_group: None,
+            footer_extra: 0,
         }
     }
 

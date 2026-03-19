@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -85,6 +86,24 @@ fn read_file_tail(path: &str, max_bytes: u64) -> Vec<u8> {
     let mut buf = Vec::new();
     let _ = f.read_to_end(&mut buf);
     buf
+}
+
+/// Read up to `max_bytes` from the **head** (beginning) of `path`.
+///
+/// Used for post-extraction CRC-32 verification of early chunks (PNG).
+fn read_file_head(path: &str, max_bytes: usize) -> Vec<u8> {
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let mut buf = vec![0u8; max_bytes];
+    match f.read(&mut buf) {
+        Ok(n) => {
+            buf.truncate(n);
+            buf
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Compute a fast u64 fingerprint from the first 4 KiB of a hit on `device`.
@@ -173,6 +192,8 @@ impl CarvingState {
         let filename = self.filename_for_hit(&hit, &dir);
         let meta_index = self.meta_index.clone();
         let seen_fingerprints = Arc::clone(&self.seen_fingerprints);
+        let skip_truncated_single = self.skip_truncated;
+        let skip_corrupt_single = self.skip_corrupt;
         let config = CarvingConfig {
             signatures: vec![hit.signature.clone()],
             scan_chunk_size: 4 * 1024 * 1024,
@@ -202,24 +223,92 @@ impl CarvingState {
             let carver = Carver::new(device, config);
             if let Ok(mut f) = std::fs::File::create(&filename) {
                 match carver.extract(&hit, &mut f) {
+                    Ok(0) => {
+                        // Size-hint resolved below min_size — remove empty file.
+                        let _ = std::fs::remove_file(&filename);
+                        let _ = tx.send(CarveMsg::Skipped { idx });
+                    }
                     Ok(bytes) => {
+                        // Post-extraction min_size check: the pre-extraction
+                        // check compares against the *planned* extraction size
+                        // (max_size for footer-based formats), which is always
+                        // large.  The actual extracted bytes may be much smaller
+                        // when the footer is found early (e.g. tiny JPEG
+                        // thumbnails, GIF spacer pixels).
+                        if hit.signature.min_size > 0 && bytes < hit.signature.min_size {
+                            let _ = std::fs::remove_file(&filename);
+                            let _ = tx.send(CarveMsg::Skipped { idx });
+                            return;
+                        }
                         let truncated = bytes >= hit.signature.max_size;
                         if let Some(ref meta_idx) = meta_index {
                             apply_timestamps(&filename, hit.byte_offset, meta_idx);
                         }
-                        let tail = read_file_tail(&filename, 65536);
-                        let quality = post_validate::validate_extracted(
-                            &hit.signature.extension,
-                            &tail,
-                            truncated,
-                        );
-                        tracing::info!(path = %filename, bytes, "extracted file");
-                        let _ = tx.send(CarveMsg::Extracted {
-                            idx,
-                            bytes,
-                            truncated,
-                            quality,
-                        });
+                        let quality = if !truncated
+                            && matches!(
+                                hit.signature.extension.as_str(),
+                                "png"
+                                    | "pdf"
+                                    | "db"
+                                    | "evtx"
+                                    | "wav"
+                                    | "avi"
+                                    | "webp"
+                                    | "aiff"
+                                    | "exe"
+                                    | "flac"
+                                    | "elf"
+                                    | "regf"
+                                    | "tif"
+                                    | "nef"
+                                    | "arw"
+                                    | "cr2"
+                                    | "rw2"
+                                    | "orf"
+                                    | "pef"
+                                    | "sr2"
+                                    | "dcr"
+                            ) {
+                            match hit.signature.extension.as_str() {
+                                "png" => post_validate::validate_png_file(Path::new(&filename)),
+                                "pdf" => post_validate::validate_pdf_file(Path::new(&filename)),
+                                "db" => post_validate::validate_sqlite_file(Path::new(&filename)),
+                                "evtx" => post_validate::validate_evtx_file(Path::new(&filename)),
+                                "wav" | "avi" | "webp" | "aiff" => {
+                                    post_validate::validate_riff_file(Path::new(&filename))
+                                }
+                                "exe" => post_validate::validate_exe_file(Path::new(&filename)),
+                                "flac" => post_validate::validate_flac_file(Path::new(&filename)),
+                                "elf" => post_validate::validate_elf_file(Path::new(&filename)),
+                                "regf" => post_validate::validate_regf_file(Path::new(&filename)),
+                                _ => post_validate::validate_tiff_file(Path::new(&filename)),
+                            }
+                        } else {
+                            let head = read_file_head(&filename, 8192);
+                            let tail = read_file_tail(&filename, 65536);
+                            post_validate::validate_extracted(
+                                &hit.signature.extension,
+                                &head,
+                                &tail,
+                                truncated,
+                                bytes,
+                            )
+                        };
+                        if skip_truncated_single && matches!(quality, CarveQuality::Truncated) {
+                            let _ = std::fs::remove_file(&filename);
+                            let _ = tx.send(CarveMsg::Skipped { idx });
+                        } else if skip_corrupt_single && matches!(quality, CarveQuality::Corrupt) {
+                            let _ = std::fs::remove_file(&filename);
+                            let _ = tx.send(CarveMsg::SkippedCorrupt { idx });
+                        } else {
+                            tracing::info!(path = %filename, bytes, "extracted file");
+                            let _ = tx.send(CarveMsg::Extracted {
+                                idx,
+                                bytes,
+                                truncated,
+                                quality,
+                            });
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(path = %filename, error = %e, "extraction failed");
@@ -335,6 +424,8 @@ impl CarvingState {
         let pause = Arc::clone(&self.extract_pause);
         let meta_index = self.meta_index.clone();
         let seen_fingerprints = Arc::clone(&self.seen_fingerprints);
+        let skip_truncated = self.skip_truncated;
+        let skip_corrupt = self.skip_corrupt;
 
         self.extract_progress = Some(ExtractProgress {
             done: 0,
@@ -367,6 +458,8 @@ impl CarvingState {
                     truncated: 0,
                     failed: 0,
                     duplicates: 0,
+                    skipped_trunc: 0,
+                    skipped_corrupt: 0,
                     total_bytes: 0,
                     elapsed_secs: extract_start.elapsed().as_secs_f64(),
                 });
@@ -378,6 +471,14 @@ impl CarvingState {
                     idx: usize,
                 },
                 Duplicate {
+                    idx: usize,
+                },
+                /// Truncated file deleted because skip-truncated mode is active.
+                Skipped {
+                    idx: usize,
+                },
+                /// Corrupt file deleted because skip-corrupt mode is active.
+                SkippedCorrupt {
                     idx: usize,
                 },
                 Completed {
@@ -447,27 +548,96 @@ impl CarvingState {
                             apply_timestamps(&path, hit.byte_offset, meta_idx);
                         }
                     }
-                    // Post-extraction quality check: read file tail, run structural
-                    // validator for known formats.
+                    // Zero-byte extraction: size-hint resolved below min_size.
+                    if matches!(result, Ok(0)) {
+                        let _ = std::fs::remove_file(&path);
+                        let _ = done_tx.send(WorkerMsg::Skipped { idx });
+                        return;
+                    }
+                    // Post-extraction min_size check against actual bytes written.
+                    if let Ok(bytes) = &result {
+                        if hit.signature.min_size > 0 && *bytes < hit.signature.min_size {
+                            let _ = std::fs::remove_file(&path);
+                            let _ = done_tx.send(WorkerMsg::Skipped { idx });
+                            return;
+                        }
+                    }
+                    // Post-extraction quality check: run structural validator.
+                    // PNG uses a seek-based chunk walk (no dead zone); all other
+                    // formats use the head + tail buffer approach.
                     let quality = match &result {
                         Ok(bytes) => {
                             let truncated = *bytes >= hit.signature.max_size;
-                            let tail = read_file_tail(&path, 65536);
-                            post_validate::validate_extracted(
-                                &hit.signature.extension,
-                                &tail,
-                                truncated,
-                            )
+                            if !truncated
+                                && matches!(
+                                    hit.signature.extension.as_str(),
+                                    "png"
+                                        | "pdf"
+                                        | "db"
+                                        | "evtx"
+                                        | "wav"
+                                        | "avi"
+                                        | "webp"
+                                        | "aiff"
+                                        | "exe"
+                                        | "flac"
+                                        | "elf"
+                                        | "regf"
+                                        | "tif"
+                                        | "nef"
+                                        | "arw"
+                                        | "cr2"
+                                        | "rw2"
+                                        | "orf"
+                                        | "pef"
+                                        | "sr2"
+                                        | "dcr"
+                                )
+                            {
+                                match hit.signature.extension.as_str() {
+                                    "png" => post_validate::validate_png_file(Path::new(&path)),
+                                    "pdf" => post_validate::validate_pdf_file(Path::new(&path)),
+                                    "db" => post_validate::validate_sqlite_file(Path::new(&path)),
+                                    "evtx" => post_validate::validate_evtx_file(Path::new(&path)),
+                                    "wav" | "avi" | "webp" | "aiff" => {
+                                        post_validate::validate_riff_file(Path::new(&path))
+                                    }
+                                    "exe" => post_validate::validate_exe_file(Path::new(&path)),
+                                    "flac" => post_validate::validate_flac_file(Path::new(&path)),
+                                    "elf" => post_validate::validate_elf_file(Path::new(&path)),
+                                    "regf" => post_validate::validate_regf_file(Path::new(&path)),
+                                    _ => post_validate::validate_tiff_file(Path::new(&path)),
+                                }
+                            } else {
+                                let head = read_file_head(&path, 8192);
+                                let tail = read_file_tail(&path, 65536);
+                                post_validate::validate_extracted(
+                                    &hit.signature.extension,
+                                    &head,
+                                    &tail,
+                                    truncated,
+                                    *bytes,
+                                )
+                            }
                         }
                         Err(_) => CarveQuality::Unknown,
                     };
-                    let _ = done_tx.send(WorkerMsg::Completed {
-                        idx,
-                        hit: Box::new(hit),
-                        path,
-                        result,
-                        quality,
-                    });
+                    // Skip-truncated mode: delete the file and report as Skipped.
+                    if skip_truncated && matches!(quality, CarveQuality::Truncated) {
+                        let _ = std::fs::remove_file(&path);
+                        let _ = done_tx.send(WorkerMsg::Skipped { idx });
+                    } else if skip_corrupt && matches!(quality, CarveQuality::Corrupt) {
+                        let _ = std::fs::remove_file(&path);
+                        let _ = done_tx.send(WorkerMsg::SkippedCorrupt { idx });
+                    } else {
+                        let _ = done_tx.send(WorkerMsg::Completed {
+                            idx,
+                            hit: Box::new(hit),
+                            path,
+                            result,
+                            quality,
+                        });
+                    }
                 });
             }
             drop(done_tx); // let done_rx drain once all workers finish
@@ -477,6 +647,8 @@ impl CarvingState {
             let mut truncated_count = 0usize;
             let mut failed = 0usize;
             let mut duplicates = 0usize;
+            let mut skipped_trunc = 0usize;
+            let mut skipped_corrupt = 0usize;
             let mut total_bytes = 0u64;
             let mut last_name = String::new();
 
@@ -489,6 +661,28 @@ impl CarvingState {
                         duplicates += 1;
                         completed += 1;
                         let _ = tx.send(CarveMsg::Duplicate { idx });
+                        let _ = tx.send(CarveMsg::ExtractionProgress {
+                            done: completed,
+                            total,
+                            total_bytes,
+                            last_name: last_name.clone(),
+                        });
+                    }
+                    WorkerMsg::Skipped { idx } => {
+                        skipped_trunc += 1;
+                        completed += 1;
+                        let _ = tx.send(CarveMsg::Skipped { idx });
+                        let _ = tx.send(CarveMsg::ExtractionProgress {
+                            done: completed,
+                            total,
+                            total_bytes,
+                            last_name: last_name.clone(),
+                        });
+                    }
+                    WorkerMsg::SkippedCorrupt { idx } => {
+                        skipped_corrupt += 1;
+                        completed += 1;
+                        let _ = tx.send(CarveMsg::SkippedCorrupt { idx });
                         let _ = tx.send(CarveMsg::ExtractionProgress {
                             done: completed,
                             total,
@@ -549,6 +743,8 @@ impl CarvingState {
                 truncated: truncated_count,
                 failed,
                 duplicates,
+                skipped_trunc,
+                skipped_corrupt,
                 total_bytes,
                 elapsed_secs: extract_start.elapsed().as_secs_f64(),
             });

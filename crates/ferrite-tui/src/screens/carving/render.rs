@@ -238,13 +238,18 @@ impl CarvingState {
         } else {
             ""
         };
+        let live_str = if self.auto_follow && self.status == CarveStatus::Running {
+            " [↓ LIVE]"
+        } else {
+            ""
+        };
         let title_str = if self.extract_progress.is_some() {
-            format!(" Hits ({hits_label}){auto_str}  {done_count} extracted — p: pause  c: cancel ")
+            format!(" Hits ({hits_label}){auto_str}{live_str}  {done_count} extracted — p: pause  c: cancel ")
         } else if sel_count > 0 {
-            format!(" Hits ({hits_label}){auto_str}  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected  PgUp/Dn: page  Home/End: jump ")
+            format!(" Hits ({hits_label}){auto_str}{live_str}  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected  PgUp/Dn: page  Home: live  End: oldest ")
         } else {
             format!(
-                " Hits ({hits_label}){auto_str} — Space: select  a: all  E: extract selected  x: auto-extract  D: dedup  PgUp/Dn: page  Home/End: jump "
+                " Hits ({hits_label}){auto_str}{live_str} — Space: select  a: all  E: extract selected  x: auto-extract  D: dedup  PgUp/Dn: page  Home: live  End: oldest "
             )
         };
         let block = Block::default()
@@ -340,9 +345,12 @@ impl CarvingState {
         // Update page size so PgUp/PgDn cover exactly the visible rows.
         self.hits_page_size = (list_area.height as usize).max(1);
 
+        // Newest hits at the top — reverse the display order so the user
+        // sees the active extraction queue without scrolling.
         let items: Vec<ListItem> = self
             .hits
             .iter()
+            .rev()
             .map(|entry| {
                 let check = if entry.selected {
                     Span::styled(
@@ -372,6 +380,9 @@ impl CarvingState {
                     ),
                     HitStatus::Duplicate => {
                         Span::styled(" [DUP]", Style::default().fg(Color::DarkGray))
+                    }
+                    HitStatus::Skipped => {
+                        Span::styled(" [SKIP]", Style::default().fg(Color::DarkGray))
                     }
                 };
                 let quality_span = match &entry.quality {
@@ -409,8 +420,14 @@ impl CarvingState {
         let list =
             List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
+        // Convert internal hit_sel to visual index (reversed list).
+        let visual_sel = if self.hits.is_empty() {
+            0
+        } else {
+            self.hits.len() - 1 - self.hit_sel
+        };
         let mut ls =
-            ListState::default().with_selected(if focused { Some(self.hit_sel) } else { None });
+            ListState::default().with_selected(if focused { Some(visual_sel) } else { None });
         frame.render_stateful_widget(list, list_area, &mut ls);
     }
 
@@ -565,7 +582,27 @@ impl CarvingState {
         );
         let dup_span = if s.duplicates > 0 {
             Span::styled(
-                format!("   ⊘ {} skipped", s.duplicates),
+                format!("   ⊘ {} dup", s.duplicates),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
+        let skip_trunc_span = if s.skipped_trunc > 0 {
+            Span::styled(
+                format!("   ⊘ {} skipped (trunc)", s.skipped_trunc),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
+        let skip_corrupt_span = if s.skipped_corrupt > 0 {
+            Span::styled(
+                format!("   ⊘ {} skipped (corrupt)", s.skipped_corrupt),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
@@ -599,6 +636,8 @@ impl CarvingState {
                 trunc_span,
                 fail_span,
                 dup_span,
+                skip_trunc_span,
+                skip_corrupt_span,
                 meta_span,
                 dismiss_span,
             ])),
