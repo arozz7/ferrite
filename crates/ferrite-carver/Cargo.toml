@@ -19,3 +19,4 @@ crc32fast        = { workspace = true }
 
 [dev-dependencies]
 ferrite-blockdev = { workspace = true }
+tempfile         = { workspace = true }

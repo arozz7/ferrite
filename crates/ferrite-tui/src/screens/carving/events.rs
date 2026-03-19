@@ -80,6 +80,12 @@ impl CarvingState {
                         }
                     }
 
+                    // Auto-follow: keep the selection pinned to the newest hit
+                    // (visual top) so the user sees incoming hits without scrolling.
+                    if self.auto_follow && !self.hits.is_empty() {
+                        self.hit_sel = self.hits.len() - 1;
+                    }
+
                     // Checkpoint flush: every 1000 new displayable hits.
                     if self.hits.len().saturating_sub(self.checkpoint_flushed) >= 1000 {
                         if let Some(cp) = self.checkpoint_path.clone() {

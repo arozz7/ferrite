@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -243,15 +244,19 @@ impl CarvingState {
                         if let Some(ref meta_idx) = meta_index {
                             apply_timestamps(&filename, hit.byte_offset, meta_idx);
                         }
-                        let head = read_file_head(&filename, 8192);
-                        let tail = read_file_tail(&filename, 65536);
-                        let quality = post_validate::validate_extracted(
-                            &hit.signature.extension,
-                            &head,
-                            &tail,
-                            truncated,
-                            bytes,
-                        );
+                        let quality = if hit.signature.extension == "png" && !truncated {
+                            post_validate::validate_png_file(Path::new(&filename))
+                        } else {
+                            let head = read_file_head(&filename, 8192);
+                            let tail = read_file_tail(&filename, 65536);
+                            post_validate::validate_extracted(
+                                &hit.signature.extension,
+                                &head,
+                                &tail,
+                                truncated,
+                                bytes,
+                            )
+                        };
                         if skip_truncated_single && matches!(quality, CarveQuality::Truncated) {
                             let _ = std::fs::remove_file(&filename);
                             let _ = tx.send(CarveMsg::Skipped { idx });
@@ -520,20 +525,25 @@ impl CarvingState {
                             return;
                         }
                     }
-                    // Post-extraction quality check: read file tail, run structural
-                    // validator for known formats.
+                    // Post-extraction quality check: run structural validator.
+                    // PNG uses a seek-based chunk walk (no dead zone); all other
+                    // formats use the head + tail buffer approach.
                     let quality = match &result {
                         Ok(bytes) => {
                             let truncated = *bytes >= hit.signature.max_size;
-                            let head = read_file_head(&path, 8192);
-                            let tail = read_file_tail(&path, 65536);
-                            post_validate::validate_extracted(
-                                &hit.signature.extension,
-                                &head,
-                                &tail,
-                                truncated,
-                                *bytes,
-                            )
+                            if hit.signature.extension == "png" && !truncated {
+                                post_validate::validate_png_file(Path::new(&path))
+                            } else {
+                                let head = read_file_head(&path, 8192);
+                                let tail = read_file_tail(&path, 65536);
+                                post_validate::validate_extracted(
+                                    &hit.signature.extension,
+                                    &head,
+                                    &tail,
+                                    truncated,
+                                    *bytes,
+                                )
+                            }
                         }
                         Err(_) => CarveQuality::Unknown,
                     };

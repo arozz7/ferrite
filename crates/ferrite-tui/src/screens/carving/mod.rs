@@ -363,6 +363,10 @@ pub struct CarvingState {
     pub(crate) skip_corrupt: bool,
     /// Running count of hits skipped due to corruption (skip-corrupt mode).
     pub(crate) skipped_corrupt_count: usize,
+    /// When `true`, the hits list automatically follows the newest hit
+    /// (visual top) as hits arrive.  Disabled the moment the user navigates
+    /// away; re-enabled by pressing `Home`.
+    pub(crate) auto_follow: bool,
 }
 
 impl Default for CarvingState {
@@ -428,6 +432,7 @@ impl CarvingState {
             skipped_trunc_count: 0,
             skip_corrupt: false,
             skipped_corrupt_count: 0,
+            auto_follow: false,
             user_sig_path: "./ferrite-user-signatures.toml".to_string(),
             user_sigs: Vec::new(),
             show_user_panel: false,

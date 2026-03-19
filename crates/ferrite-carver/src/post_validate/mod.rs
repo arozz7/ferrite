@@ -14,6 +14,8 @@
 //! **tail** (last ≤ 65 536 bytes) of the extracted file for efficient
 //! format-specific validation.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 /// Structural integrity tag assigned after file extraction.
@@ -55,6 +57,90 @@ pub fn validate_extracted(
         "html" => validate_html(head, tail),
         "zip" | "ole" | "7z" | "pst" => validate_zip_eocd(tail, file_size),
         _ => CarveQuality::Unknown,
+    }
+}
+
+/// Validate a carved PNG by walking its chunk structure directly on the file.
+///
+/// Unlike [`validate_extracted`], this opens the file and seeks through it
+/// chunk-by-chunk, reading only the 12-byte chunk envelope (length + type +
+/// CRC) for large chunks and the full body for small ones (≤ 64 KiB).  This
+/// eliminates the "dead zone" limitation of the fixed head + tail buffers:
+/// a corrupt chunk type anywhere in the file is caught in O(N chunks) seeks,
+/// where N is typically 5–8 for a real-world PNG.
+///
+/// Returns [`CarveQuality::Unknown`] when the file cannot be opened (e.g. it
+/// was just deleted by skip-corrupt mode in a race).
+pub fn validate_png_file(path: &Path) -> CarveQuality {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return CarveQuality::Unknown,
+    };
+
+    // Verify the 8-byte PNG signature.
+    let mut sig = [0u8; 8];
+    if f.read_exact(&mut sig).is_err()
+        || sig != [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+    {
+        return CarveQuality::Corrupt;
+    }
+
+    // Body size threshold: read and CRC-verify chunks whose data fits here;
+    // seek over larger chunks (e.g. IDAT pixel data).
+    const MAX_CRC_BODY: usize = 65_536;
+
+    loop {
+        // Read chunk length (4 B) + type (4 B).
+        let mut hdr = [0u8; 8];
+        if f.read_exact(&mut hdr).is_err() {
+            return CarveQuality::Corrupt; // unexpected EOF before IEND
+        }
+
+        let data_len =
+            u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
+        let chunk_type = &hdr[4..8];
+
+        // Every PNG chunk type must be 4 ASCII alphabetic bytes.
+        if !chunk_type.iter().all(|&b| b.is_ascii_alphabetic()) {
+            return CarveQuality::Corrupt;
+        }
+
+        if chunk_type == b"IEND" {
+            // IEND must have a zero-length body.
+            return if data_len == 0 {
+                CarveQuality::Complete
+            } else {
+                CarveQuality::Corrupt
+            };
+        }
+
+        if data_len <= MAX_CRC_BODY {
+            // Small chunk: read the body and verify CRC-32.
+            let mut body = vec![0u8; data_len];
+            if f.read_exact(&mut body).is_err() {
+                return CarveQuality::Corrupt;
+            }
+            let mut crc_bytes = [0u8; 4];
+            if f.read_exact(&mut crc_bytes).is_err() {
+                return CarveQuality::Corrupt;
+            }
+            let stored_crc = u32::from_be_bytes(crc_bytes);
+            // CRC input = chunk_type(4) + data(data_len).
+            let mut crc_input = Vec::with_capacity(4 + data_len);
+            crc_input.extend_from_slice(chunk_type);
+            crc_input.extend_from_slice(&body);
+            if crc32fast::hash(&crc_input) != stored_crc {
+                return CarveQuality::Corrupt;
+            }
+        } else {
+            // Large chunk (typically IDAT): seek past body + CRC (4 B).
+            let skip = data_len as u64 + 4;
+            if f.seek(SeekFrom::Current(skip as i64)).is_err() {
+                return CarveQuality::Corrupt;
+            }
+        }
     }
 }
 
@@ -108,12 +194,14 @@ fn validate_jpeg(tail: &[u8]) -> CarveQuality {
 /// PNG: the last 12 bytes must be the IEND chunk, and all chunks whose
 /// data fits within the `head` buffer must pass CRC-32 verification.
 ///
-/// This catches two classes of corruption:
-/// 1. Missing IEND footer (existing check).
-/// 2. Sector-level corruption inside the file body — the CRC of early
-///    chunks (IHDR, sRGB, gAMA, pHYs, tEXt, …) will not match when
-///    the underlying disk sectors were overwritten or belong to a
-///    different file (fragmentation on a damaged drive).
+/// This catches three classes of corruption:
+/// 1. Missing IEND footer.
+/// 2. Sector-level CRC mismatch in early chunks (IHDR, pHYs, iCCP, …).
+/// 3. Garbage chunk type immediately after IDAT — detected when the IDAT
+///    end position falls within the tail buffer and the following chunk
+///    type bytes are not ASCII alphabetic.  This catches fragmentation
+///    where overwritten pixel-data sectors produce an invalid chunk header
+///    between the IDAT body and the IEND footer.
 fn validate_png(head: &[u8], tail: &[u8], file_size: u64) -> CarveQuality {
     const IEND: &[u8] = &[
         0x00, 0x00, 0x00, 0x00, // chunk length = 0
@@ -128,6 +216,11 @@ fn validate_png(head: &[u8], tail: &[u8], file_size: u64) -> CarveQuality {
 
     // Head check: walk chunks and verify CRC-32 for each complete chunk
     // in the buffer.  The PNG signature occupies bytes 0..8.
+    //
+    // Also record the file offset immediately after the first IDAT chunk
+    // that extends beyond the head buffer, so we can verify the following
+    // chunk type using the tail buffer (see post-IDAT check below).
+    let mut first_idat_file_end: Option<u64> = None;
     if head.len() > 8 {
         let mut pos: usize = 8; // skip PNG signature
         loop {
@@ -156,6 +249,10 @@ fn validate_png(head: &[u8], tail: &[u8], file_size: u64) -> CarveQuality {
                 if chunk_body_end > file_size.saturating_sub(12) {
                     return CarveQuality::Corrupt;
                 }
+                // Record the IDAT boundary for the post-IDAT tail check.
+                if chunk_type == b"IDAT" && first_idat_file_end.is_none() {
+                    first_idat_file_end = Some(chunk_body_end);
+                }
                 break;
             }
 
@@ -178,6 +275,29 @@ fn validate_png(head: &[u8], tail: &[u8], file_size: u64) -> CarveQuality {
             }
 
             pos = chunk_end;
+        }
+    }
+
+    // Post-IDAT chunk type check: when the first IDAT's body extends beyond
+    // the head buffer but its end falls within the tail buffer, validate that
+    // the chunk immediately following it has an ASCII-alphabetic type field.
+    //
+    // On fragmented drives, sectors overwritten by unrelated data produce
+    // garbage chunk types (e.g. 0x21 0x60 0x1E 0xEE) after the IDAT body.
+    // The head CRC walk cannot see past the 8 KiB head buffer, but the tail
+    // buffer (64 KiB) often covers smaller files entirely.
+    if let Some(idat_end) = first_idat_file_end {
+        let tail_start = file_size.saturating_sub(tail.len() as u64);
+        // The next chunk header starts at `idat_end` in the file.
+        // We need at least 8 bytes (length + type) to validate it.
+        if idat_end >= tail_start && idat_end + 8 <= file_size {
+            let tail_idx = (idat_end - tail_start) as usize;
+            if tail_idx + 8 <= tail.len() {
+                let next_type = &tail[tail_idx + 4..tail_idx + 8];
+                if !next_type.iter().all(|&b| b.is_ascii_alphabetic()) {
+                    return CarveQuality::Corrupt;
+                }
+            }
         }
     }
 

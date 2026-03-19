@@ -172,12 +172,18 @@ impl CarvingState {
             KeyCode::Left => self.focus = CarveFocus::Signatures,
             KeyCode::Right if !self.hits.is_empty() => self.focus = CarveFocus::Hits,
             KeyCode::Up => {
+                if self.focus == CarveFocus::Hits {
+                    self.auto_follow = false;
+                }
                 self.move_selection(-1);
                 if self.show_preview && self.focus == CarveFocus::Hits {
                     self.refresh_preview();
                 }
             }
             KeyCode::Down => {
+                if self.focus == CarveFocus::Hits {
+                    self.auto_follow = false;
+                }
                 self.move_selection(1);
                 if self.show_preview && self.focus == CarveFocus::Hits {
                     self.refresh_preview();
@@ -186,6 +192,7 @@ impl CarvingState {
             // Hits list is rendered newest-first (reversed).  PageUp moves
             // toward newer hits (higher internal index), PageDown toward older.
             KeyCode::PageUp if self.focus == CarveFocus::Hits => {
+                self.auto_follow = false;
                 if !self.hits.is_empty() {
                     let last = self.hits.len() - 1;
                     self.hit_sel = (self.hit_sel + self.hits_page_size.max(1)).min(last);
@@ -195,13 +202,16 @@ impl CarvingState {
                 }
             }
             KeyCode::PageDown if self.focus == CarveFocus::Hits => {
+                self.auto_follow = false;
                 self.hit_sel = self.hit_sel.saturating_sub(self.hits_page_size.max(1));
                 if self.show_preview {
                     self.refresh_preview();
                 }
             }
             // Home = top of visual list = newest hit = last internal index.
+            // Also re-engages auto-follow so the view tracks new hits live.
             KeyCode::Home if self.focus == CarveFocus::Hits => {
+                self.auto_follow = true;
                 if !self.hits.is_empty() {
                     self.hit_sel = self.hits.len() - 1;
                     if self.show_preview {
@@ -211,6 +221,7 @@ impl CarvingState {
             }
             // End = bottom of visual list = oldest hit = first internal index.
             KeyCode::End if self.focus == CarveFocus::Hits => {
+                self.auto_follow = false;
                 self.hit_sel = 0;
                 if self.show_preview {
                     self.refresh_preview();
@@ -441,6 +452,7 @@ impl CarvingState {
         self.pause.store(false, Ordering::Relaxed);
         self.hits.clear();
         self.hit_sel = 0;
+        self.auto_follow = true;
         self.scan_progress = None;
         self.scan_start = Some(Instant::now());
         self.paused_elapsed = std::time::Duration::ZERO;

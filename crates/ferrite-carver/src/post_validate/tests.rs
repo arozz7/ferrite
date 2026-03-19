@@ -349,6 +349,203 @@ fn png_corrupt_garbage_before_iend_in_tail() {
     );
 }
 
+// Post-IDAT garbage chunk type detected via tail buffer (Phase 85).
+// Real-world pattern: fragmented drive sector overwrites IDAT pixel data,
+// producing a non-ASCII chunk type immediately after the IDAT body.
+// Detectable when the IDAT end falls within the tail buffer.
+
+#[test]
+fn png_corrupt_garbage_type_after_idat_in_tail() {
+    // File layout (file_size = 100_000):
+    //   [PNG sig][IDAT hdr(len=60_000)][... body beyond head ...][CRC][garbage][...][IEND]
+    //   Head covers bytes 0..8192; tail covers bytes 34_464..100_000.
+    //   IDAT chunk_body_end = 8 + 12 + 60_000 = 60_020 → in tail buffer.
+    const FILE_SIZE: u64 = 100_000;
+    const IDAT_LEN: u32 = 60_000;
+    let idat_body_end: u64 = 8 + 12 + IDAT_LEN as u64; // 60_020
+    let tail_start: u64 = FILE_SIZE - 65_536; // 34_464
+    let ti = (idat_body_end - tail_start) as usize; // 25_556
+
+    let mut head = vec![0u8; 8192];
+    head[0..8].copy_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    head[8..12].copy_from_slice(&IDAT_LEN.to_be_bytes());
+    head[12..16].copy_from_slice(b"IDAT");
+
+    let mut tail = vec![0u8; 65_536];
+    // Garbage chunk length (any value)
+    tail[ti..ti + 4].copy_from_slice(&132u32.to_be_bytes());
+    // Garbage chunk type: non-ASCII bytes matching the real-world case
+    tail[ti + 4..ti + 8].copy_from_slice(&[0x21, 0x60, 0x1E, 0xEE]);
+    // IEND at the tail end (required by the initial IEND check)
+    tail[65_536 - 12..].copy_from_slice(&[
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ]);
+
+    assert_eq!(
+        validate_extracted("png", &head, &tail, false, FILE_SIZE),
+        CarveQuality::Corrupt
+    );
+}
+
+#[test]
+fn png_complete_valid_ascii_chunk_after_idat_in_tail() {
+    // Positive case: the chunk immediately following the large IDAT has an
+    // ASCII-alpha type (IEND), so the post-IDAT check passes.
+    const FILE_SIZE: u64 = 100_000;
+    const IDAT_LEN: u32 = 60_000;
+    let idat_body_end: u64 = 8 + 12 + IDAT_LEN as u64; // 60_020
+    let tail_start: u64 = FILE_SIZE - 65_536; // 34_464
+    let ti = (idat_body_end - tail_start) as usize; // 25_556
+
+    let mut head = vec![0u8; 8192];
+    head[0..8].copy_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    head[8..12].copy_from_slice(&IDAT_LEN.to_be_bytes());
+    head[12..16].copy_from_slice(b"IDAT");
+
+    let mut tail = vec![0u8; 65_536];
+    // Valid ASCII chunk type after IDAT (e.g., IEND or IDAT continuation)
+    tail[ti..ti + 4].copy_from_slice(&0u32.to_be_bytes()); // length = 0
+    tail[ti + 4..ti + 8].copy_from_slice(b"IEND"); // valid ASCII type
+    // IEND at the tail end
+    tail[65_536 - 12..].copy_from_slice(&[
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ]);
+
+    assert_eq!(
+        validate_extracted("png", &head, &tail, false, FILE_SIZE),
+        CarveQuality::Complete
+    );
+}
+
+// ── validate_png_file ─────────────────────────────────────────────────────
+//
+// These tests write real files to a temp directory so the seek-based chunk
+// walker can open and read them.
+
+fn write_png_chunks(chunks: &[(&[u8], &[u8])]) -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("test.png");
+    let mut f = std::fs::File::create(&path).expect("create");
+    // PNG signature
+    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        .unwrap();
+    for (chunk_type, data) in chunks {
+        let len = data.len() as u32;
+        f.write_all(&len.to_be_bytes()).unwrap();
+        f.write_all(chunk_type).unwrap();
+        f.write_all(data).unwrap();
+        // CRC covers type + data.
+        let mut crc_input = Vec::with_capacity(4 + data.len());
+        crc_input.extend_from_slice(chunk_type);
+        crc_input.extend_from_slice(data);
+        let crc = crc32fast::hash(&crc_input);
+        f.write_all(&crc.to_be_bytes()).unwrap();
+    }
+    (dir, path)
+}
+
+#[test]
+fn validate_png_file_complete_minimal() {
+    // Minimal valid PNG: IHDR + IDAT (1 byte, 0 data) + IEND.
+    // Use a tiny 1×1 raw IDAT body (deflate-compressed zeros, simplified).
+    let ihdr_data = [
+        0, 0, 0, 1, // width = 1
+        0, 0, 0, 1, // height = 1
+        8,          // bit depth
+        0,          // color type = grayscale
+        0, 0, 0,    // compression, filter, interlace
+    ];
+    // Minimal valid zlib-compressed single-row pixel (filter byte 0x00 + pixel 0x00).
+    let idat_data = [0x08, 0xD7, 0x63, 0x60, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01];
+    let (_dir, path) = write_png_chunks(&[
+        (b"IHDR", &ihdr_data),
+        (b"IDAT", &idat_data),
+        (b"IEND", &[]),
+    ]);
+    assert_eq!(
+        validate_png_file(&path),
+        CarveQuality::Complete
+    );
+}
+
+#[test]
+fn validate_png_file_corrupt_garbage_type_after_large_idat() {
+    // Simulates file 1 from the real-world test run: a large IDAT (body in
+    // the dead zone between head and tail buffers) followed by a garbage chunk
+    // with non-ASCII type bytes.  The file-walk approach catches it because it
+    // seeks past the IDAT body and reads the corrupt chunk type directly.
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("corrupt.png");
+    let mut f = std::fs::File::create(&path).expect("create");
+    // PNG signature
+    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+    // IHDR chunk (valid, small — will be CRC-verified by the walker)
+    let ihdr_data = [0,0,0,1, 0,0,0,1, 8,0, 0,0,0];
+    f.write_all(&(13u32).to_be_bytes()).unwrap();
+    f.write_all(b"IHDR").unwrap();
+    f.write_all(&ihdr_data).unwrap();
+    let ihdr_crc = crc32fast::hash(&[b"IHDR".as_ref(), &ihdr_data].concat());
+    f.write_all(&ihdr_crc.to_be_bytes()).unwrap();
+    // Large IDAT chunk (body = 100_000 zero bytes — bigger than MAX_CRC_BODY).
+    // The body is valid (all zeros) but the chunk after it is garbage.
+    let idat_len: u32 = 100_000;
+    f.write_all(&idat_len.to_be_bytes()).unwrap();
+    f.write_all(b"IDAT").unwrap();
+    let idat_body = vec![0u8; 100_000];
+    f.write_all(&idat_body).unwrap();
+    // Deliberately wrong CRC (all zeros) — the walker skips CRC for large chunks.
+    f.write_all(&[0u8; 4]).unwrap();
+    // Garbage chunk: non-ASCII type bytes + some body + fake IEND at the end.
+    f.write_all(&(132u32).to_be_bytes()).unwrap(); // garbage length
+    f.write_all(&[0x21, 0x60, 0x1E, 0xEE]).unwrap(); // non-ASCII type
+    f.write_all(&vec![0xAB; 132]).unwrap(); // garbage body
+    f.write_all(&[0u8; 4]).unwrap(); // garbage CRC
+    // Valid IEND (unreachable — the walk aborts at the garbage type above)
+    f.write_all(&[0u8; 4]).unwrap();
+    f.write_all(b"IEND").unwrap();
+    f.write_all(&[0u8; 4]).unwrap();
+    drop(f);
+    assert_eq!(validate_png_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn validate_png_file_corrupt_bad_crc_on_small_chunk() {
+    // IHDR with a deliberately wrong CRC — caught because IHDR is small.
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("bad_crc.png");
+    let mut f = std::fs::File::create(&path).expect("create");
+    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+    f.write_all(&(13u32).to_be_bytes()).unwrap();
+    f.write_all(b"IHDR").unwrap();
+    f.write_all(&[0u8; 13]).unwrap();
+    f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap(); // wrong CRC
+    f.write_all(&[0u8; 4]).unwrap();
+    f.write_all(b"IEND").unwrap();
+    let iend_crc = crc32fast::hash(b"IEND");
+    f.write_all(&iend_crc.to_be_bytes()).unwrap();
+    drop(f);
+    assert_eq!(validate_png_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn validate_png_file_corrupt_missing_iend() {
+    // File ends abruptly inside an IDAT body — read_exact returns Err.
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("no_iend.png");
+    let mut f = std::fs::File::create(&path).expect("create");
+    f.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+    // IDAT header claiming 10_000 bytes but file ends immediately after the header.
+    f.write_all(&(10_000u32).to_be_bytes()).unwrap();
+    f.write_all(b"IDAT").unwrap();
+    // No body, no IEND.
+    drop(f);
+    assert_eq!(validate_png_file(&path), CarveQuality::Corrupt);
+}
+
 // ── HTML ─────────────────────────────────────────────────────────────────
 
 #[test]

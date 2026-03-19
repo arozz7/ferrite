@@ -238,13 +238,18 @@ impl CarvingState {
         } else {
             ""
         };
+        let live_str = if self.auto_follow && self.status == CarveStatus::Running {
+            " [↓ LIVE]"
+        } else {
+            ""
+        };
         let title_str = if self.extract_progress.is_some() {
-            format!(" Hits ({hits_label}){auto_str}  {done_count} extracted — p: pause  c: cancel ")
+            format!(" Hits ({hits_label}){auto_str}{live_str}  {done_count} extracted — p: pause  c: cancel ")
         } else if sel_count > 0 {
-            format!(" Hits ({hits_label}){auto_str}  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected  PgUp/Dn: page  Home/End: jump ")
+            format!(" Hits ({hits_label}){auto_str}{live_str}  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected  PgUp/Dn: page  Home: live  End: oldest ")
         } else {
             format!(
-                " Hits ({hits_label}){auto_str} — Space: select  a: all  E: extract selected  x: auto-extract  D: dedup  PgUp/Dn: page  Home/End: jump "
+                " Hits ({hits_label}){auto_str}{live_str} — Space: select  a: all  E: extract selected  x: auto-extract  D: dedup  PgUp/Dn: page  Home: live  End: oldest "
             )
         };
         let block = Block::default()
