@@ -206,14 +206,20 @@ pub struct ImagingState {
     pub user_paused: bool,
     /// `true` when the imaging session is resuming from an existing mapfile.
     pub imaging_resumed: bool,
-    /// Instant when `bytes_finished` last increased.  Reset to `Some(now)`
-    /// when imaging starts so the watchdog counts from thread-spawn even if
-    /// the first read never succeeds.
-    pub(crate) last_bytes_increase_instant: Option<Instant>,
-    /// Last observed `bytes_finished` value — used to detect stalls.
+    /// Instant when any block was last processed (success OR failure).  Resets
+    /// on thread-spawn so the watchdog counts from the start even before the
+    /// first read completes.  The watchdog fires only when the engine is truly
+    /// frozen — not merely working through a run of bad sectors.
+    pub(crate) last_attempt_instant: Option<Instant>,
+    /// Total bytes processed in any outcome (finished + bad + non_trimmed +
+    /// non_scraped) at the last reset — used to detect when the engine stalls.
+    pub(crate) last_attempted_bytes: u64,
+    /// Last observed `bytes_finished` — kept separately for the stall message
+    /// so we can report "X MiB recovered so far" while the timer uses the
+    /// broader attempted-bytes metric.
     pub(crate) last_bytes_finished: u64,
-    /// Seconds since the last byte was successfully recovered.  Zero while not
-    /// running or paused.  Rendered in the Statistics panel when ≥ 10 s.
+    /// Seconds since the last block was processed.  Zero while not running or
+    /// paused.  Rendered in the Statistics panel when ≥ 90 s.
     pub(crate) watchdog_secs: u64,
 }
 
@@ -247,7 +253,8 @@ impl ImagingState {
             user_pause: Arc::new(AtomicBool::new(false)),
             user_paused: false,
             imaging_resumed: false,
-            last_bytes_increase_instant: None,
+            last_attempt_instant: None,
+            last_attempted_bytes: 0,
             last_bytes_finished: 0,
             watchdog_secs: 0,
         }
@@ -270,7 +277,8 @@ impl ImagingState {
         self.user_pause.store(false, Ordering::Relaxed);
         self.user_paused = false;
         self.imaging_resumed = false;
-        self.last_bytes_increase_instant = None;
+        self.last_attempt_instant = None;
+        self.last_attempted_bytes = 0;
         self.last_bytes_finished = 0;
         self.watchdog_secs = 0;
 
@@ -298,13 +306,13 @@ impl ImagingState {
             }
         }
 
-        // Watchdog: seconds since bytes_finished last increased.
-        // A Progress message arriving every block-timeout does NOT reset this —
-        // only actually recovering bytes does.  This fires on dead drives where
-        // every read attempt times out and no data is written.
+        // Watchdog: seconds since any block was last processed (success or failure).
+        // Resets on finished bytes AND on failed bytes — if the failed counter is
+        // ticking up the engine is working normally through bad sectors and should
+        // not be flagged.  Only fires when the engine is truly frozen.
         if self.status == ImagingStatus::Running && !self.user_paused && !self.thermal_paused {
             self.watchdog_secs = self
-                .last_bytes_increase_instant
+                .last_attempt_instant
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
         } else {
@@ -321,11 +329,21 @@ impl ImagingState {
                     if let Some(snapshot) = u.map_snapshot.clone() {
                         self.sector_map = snapshot;
                     }
-                    // Only reset the watchdog clock when we actually recover bytes.
-                    if u.bytes_finished > self.last_bytes_finished {
-                        self.last_bytes_increase_instant = Some(Instant::now());
-                        self.last_bytes_finished = u.bytes_finished;
+                    // Reset the watchdog whenever any block is processed —
+                    // success (bytes_finished) OR failure (bad/non_trimmed/
+                    // non_scraped).  If the Failed counter is ticking up, the
+                    // engine is making progress through a bad region and should
+                    // not be flagged as frozen.
+                    let total_attempted =
+                        u.bytes_finished + u.bytes_bad + u.bytes_non_trimmed + u.bytes_non_scraped;
+                    if total_attempted > self.last_attempted_bytes {
+                        self.last_attempt_instant = Some(Instant::now());
+                        self.last_attempted_bytes = total_attempted;
                         self.watchdog_secs = 0;
+                    }
+                    // Track finished bytes separately for the stall message display.
+                    if u.bytes_finished > self.last_bytes_finished {
+                        self.last_bytes_finished = u.bytes_finished;
                     }
                     self.latest = Some(u);
                 }
@@ -534,7 +552,8 @@ impl ImagingState {
         self.sector_map = Vec::new();
         // Watchdog clock starts at thread-spawn so it counts even before the
         // first Progress message (e.g. while the SMART pre-populate query runs).
-        self.last_bytes_increase_instant = Some(Instant::now());
+        self.last_attempt_instant = Some(Instant::now());
+        self.last_attempted_bytes = 0;
         self.last_bytes_finished = 0;
         self.watchdog_secs = 0;
         let cancel = Arc::clone(&self.cancel);
@@ -788,8 +807,8 @@ mod tests {
         let mut s = ImagingState::new();
         s.status = ImagingStatus::Running;
         s.rx = Some(rx);
-        // Simulate last bytes-increase being 5 s ago with no bytes yet.
-        s.last_bytes_increase_instant = Some(Instant::now() - std::time::Duration::from_secs(5));
+        // Simulate last block-attempt being 5 s ago with no blocks processed yet.
+        s.last_attempt_instant = Some(Instant::now() - std::time::Duration::from_secs(5));
         // Send a progress update
         let update = ferrite_imaging::ProgressUpdate {
             phase: ferrite_imaging::ImagingPhase::Copy,
