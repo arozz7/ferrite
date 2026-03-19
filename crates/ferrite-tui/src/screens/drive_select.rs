@@ -9,7 +9,7 @@ use ferrite_core::types::DeviceInfo;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
 use tracing::debug;
@@ -67,6 +67,10 @@ pub struct DriveSelectState {
     sort_key: SortKey,
     filter_input: String,
     filtering: bool,
+    /// When `Some`, the image-open overlay is active and holds the typed path.
+    image_input: Option<String>,
+    /// Error message from the last failed image open attempt.
+    image_error: Option<String>,
 }
 
 impl Default for DriveSelectState {
@@ -85,6 +89,8 @@ impl DriveSelectState {
             sort_key: SortKey::Path,
             filter_input: String::new(),
             filtering: false,
+            image_input: None,
+            image_error: None,
         }
     }
 
@@ -163,18 +169,52 @@ impl DriveSelectState {
         }
     }
 
-    /// Returns `true` while the filter bar is open (so `q` won't quit).
+    /// Returns `true` while the filter bar or image-open overlay is active
+    /// (so `q` won't quit while text is being entered).
     pub fn is_filtering(&self) -> bool {
-        self.filtering
+        self.filtering || self.image_input.is_some()
     }
 
     /// Handle key events.  Returns `Some(Arc<dyn BlockDevice>)` when the user
-    /// presses Enter to select a device.
+    /// presses Enter to select a device or confirms an image-file path.
     pub fn handle_key(
         &mut self,
         code: KeyCode,
         _modifiers: KeyModifiers,
     ) -> Option<Arc<dyn BlockDevice>> {
+        // Image-open overlay takes priority over all other key handling.
+        if let Some(ref mut input) = self.image_input {
+            match code {
+                KeyCode::Esc => {
+                    self.image_input = None;
+                    self.image_error = None;
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                    self.image_error = None;
+                }
+                KeyCode::Char(c) => {
+                    input.push(c);
+                    self.image_error = None;
+                }
+                KeyCode::Enter => {
+                    let path = input.trim().to_owned();
+                    match ferrite_blockdev::FileBlockDevice::open(&path) {
+                        Ok(dev) => {
+                            self.image_input = None;
+                            self.image_error = None;
+                            return Some(Arc::new(dev) as Arc<dyn BlockDevice>);
+                        }
+                        Err(e) => {
+                            self.image_error = Some(format!("{e}"));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return None;
+        }
+
         if self.filtering {
             match code {
                 KeyCode::Esc => {
@@ -214,6 +254,10 @@ impl DriveSelectState {
             KeyCode::Char('s') => {
                 self.sort_key = self.sort_key.next();
                 self.selected = 0;
+            }
+            KeyCode::Char('f') => {
+                self.image_input = Some(String::new());
+                self.image_error = None;
             }
             KeyCode::Char('/') => {
                 self.filtering = true;
@@ -272,7 +316,7 @@ impl DriveSelectState {
 
         let sort_label = self.sort_key.label();
         let title = format!(
-            " Drive Selection — r: refresh  s: sort [{}]  /: filter  o: sessions  Enter: select ",
+            " Drive Selection — r: refresh  s: sort [{}]  /: filter  f: open image  o: sessions  Enter: select ",
             sort_label
         );
         let block = Block::default().borders(Borders::ALL).title(title);
@@ -393,7 +437,69 @@ impl DriveSelectState {
                 }
             }
         }
+
+        // Image-open overlay: rendered last so it floats above everything.
+        if let Some(ref input) = self.image_input {
+            let popup = centered_popup(area, 70, 5);
+            let hint = match &self.image_error {
+                Some(e) => format!(" {e} "),
+                None => " Enter path to .img file  ·  Esc: cancel ".into(),
+            };
+            let hint_color = if self.image_error.is_some() {
+                Color::Red
+            } else {
+                Color::DarkGray
+            };
+            let text = format!("\n  Path: {}█\n\n  {}", input, hint);
+            frame.render_widget(Clear, popup);
+            frame.render_widget(
+                Paragraph::new(text)
+                    .style(Style::default().fg(Color::Yellow))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Open Image File ")
+                            .border_style(Style::default().fg(Color::Cyan)),
+                    ),
+                popup,
+            );
+            // Render the hint line in its own colour by overwriting the last
+            // interior line.  Simpler than a nested layout for a small overlay.
+            if popup.height >= 4 {
+                let hint_area = Rect {
+                    x: popup.x + 1,
+                    y: popup.y + popup.height - 2,
+                    width: popup.width.saturating_sub(2),
+                    height: 1,
+                };
+                frame.render_widget(
+                    Paragraph::new(format!("  {}", hint.trim()))
+                        .style(Style::default().fg(hint_color)),
+                    hint_area,
+                );
+            }
+        }
     }
+}
+
+// ── Layout helpers ────────────────────────────────────────────────────────────
+
+/// Return a centered `Rect` of the given `width_pct` (0–100) and `height`
+/// rows, centred within `area`.
+fn centered_popup(area: Rect, width_pct: u16, height: u16) -> Rect {
+    let margin_pct = (100u16.saturating_sub(width_pct)) / 2;
+    let vert = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage(margin_pct),
+        Constraint::Percentage(100 - margin_pct * 2),
+        Constraint::Percentage(margin_pct),
+    ])
+    .split(vert[1])[1]
 }
 
 // ── Platform helpers ──────────────────────────────────────────────────────────
@@ -562,5 +668,64 @@ mod tests {
     fn fmt_bytes_gib() {
         let s = fmt_bytes(2 * 1024 * 1024 * 1024);
         assert_eq!(s, "2.0 GiB");
+    }
+
+    // ── Image-open overlay tests ───────────────────────────────────────────────
+
+    #[test]
+    fn f_key_opens_image_overlay() {
+        let mut s = DriveSelectState::new();
+        s.status = DriveStatus::Loaded;
+        s.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert!(s.image_input.is_some(), "'f' should open image overlay");
+        assert_eq!(s.image_input.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn image_overlay_char_accumulates() {
+        let mut s = DriveSelectState::new();
+        s.image_input = Some(String::new());
+        s.handle_key(KeyCode::Char('C'), KeyModifiers::NONE);
+        s.handle_key(KeyCode::Char(':'), KeyModifiers::NONE);
+        s.handle_key(KeyCode::Char('\\'), KeyModifiers::NONE);
+        assert_eq!(s.image_input.as_deref(), Some("C:\\"));
+    }
+
+    #[test]
+    fn image_overlay_backspace_removes_char() {
+        let mut s = DriveSelectState::new();
+        s.image_input = Some("abc".into());
+        s.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(s.image_input.as_deref(), Some("ab"));
+    }
+
+    #[test]
+    fn image_overlay_esc_closes() {
+        let mut s = DriveSelectState::new();
+        s.image_input = Some("something".into());
+        s.image_error = Some("oops".into());
+        s.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(s.image_input.is_none());
+        assert!(s.image_error.is_none());
+    }
+
+    #[test]
+    fn image_overlay_enter_nonexistent_sets_error() {
+        let mut s = DriveSelectState::new();
+        s.image_input = Some("/nonexistent/__ferrite_phase85_test__.img".into());
+        let dev = s.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(dev.is_none(), "nonexistent file should not open a device");
+        assert!(s.image_error.is_some(), "error should be set");
+        assert!(s.image_input.is_some(), "overlay should stay open on error");
+    }
+
+    #[test]
+    fn is_filtering_true_during_image_overlay() {
+        let mut s = DriveSelectState::new();
+        s.image_input = Some(String::new());
+        assert!(
+            s.is_filtering(),
+            "is_filtering should return true when image overlay is open"
+        );
     }
 }

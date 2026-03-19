@@ -77,7 +77,7 @@ impl ImagingState {
                     if editing_dest {
                         format!("{}█", self.dest_path)
                     } else if self.dest_path.is_empty() {
-                        "(not set — press d)  e.g. D:\\recovery\\disk.img".into()
+                        "(empty — press s to auto-generate, or d to set)".into()
                     } else {
                         self.dest_path.clone()
                     },
@@ -182,8 +182,9 @@ impl ImagingState {
                 Span::raw("  (r to toggle)"),
             ]),
             Line::from(Span::styled(
-                " Dest is the output image file path, e.g. D:\\recovery\\disk.img  \
-                 Mapfile saves progress so imaging can resume after interruption.",
+                " Dest: full file path, e.g. D:\\recovery\\disk.img  \
+                 — or leave empty / set to a folder to auto-name from drive serial.  \
+                 Mapfile saves progress for resume.",
                 Style::default().fg(Color::DarkGray),
             )),
         ];
@@ -417,9 +418,10 @@ impl ImagingState {
             };
 
             let stats = format!(
-                " Finished: {}  Bad: {}  Non-tried: {}  Elapsed: {:02}:{:02}:{:02}",
+                " Finished: {}  Bad: {}  Failed: {}  Non-tried: {}  Elapsed: {:02}:{:02}:{:02}",
                 fmt_bytes(u.bytes_finished),
                 fmt_bytes(u.bytes_bad),
+                fmt_bytes(u.bytes_non_trimmed + u.bytes_non_scraped),
                 fmt_bytes(u.bytes_non_tried),
                 elapsed / 3600,
                 (elapsed % 3600) / 60,
@@ -444,6 +446,33 @@ impl ImagingState {
             });
             let mut text = Text::from(stats);
             text.push_line(rate_line);
+            // Watchdog: fires when bytes_finished has not increased for ≥ 90 s.
+            // Threshold is 3× the 30 s per-block timeout so isolated bad sectors
+            // don't trigger a false alarm.  Message distinguishes two cases:
+            //   • bytes_finished == 0 → drive may be fully unresponsive (red)
+            //   • bytes_finished > 0  → stuck in a damaged region but working (yellow)
+            if self.watchdog_secs >= 90 {
+                if self.last_bytes_finished == 0 {
+                    text.push_line(Line::from(Span::styled(
+                        format!(
+                            " ⚠ No bytes recovered in {}s — drive may be \
+                             unresponsive. Try Reverse mode (r) or cancel (c).",
+                            self.watchdog_secs
+                        ),
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    )));
+                } else {
+                    text.push_line(Line::from(Span::styled(
+                        format!(
+                            " ⚠ Stuck in a damaged region for {}s — {} recovered \
+                             so far. Imaging continues automatically past bad areas.",
+                            self.watchdog_secs,
+                            fmt_bytes(self.last_bytes_finished)
+                        ),
+                        Style::default().fg(Color::Yellow),
+                    )));
+                }
+            }
             if let Some(hl) = hash_line {
                 text.push_line(hl);
             }
@@ -456,22 +485,35 @@ impl ImagingState {
                 chunks[3],
             );
         } else {
-            let base_msg = " Press s to start imaging, d to set destination path.";
-            if let Some(wbl) = wb_line {
-                let mut text = Text::from(base_msg);
-                text.push_line(wbl);
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
-                    chunks[3],
-                );
+            // No progress data yet — show base message plus watchdog if hung.
+            let base_msg = if self.status == ImagingStatus::Running {
+                " Imaging started — waiting for first sector read to complete…"
             } else {
-                frame.render_widget(
-                    Paragraph::new(base_msg)
-                        .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
-                    chunks[3],
-                );
+                " Press s to start imaging, d to set destination path."
+            };
+            let mut text = Text::from(base_msg);
+            // Watchdog is critical here: this branch is reached when imaging is
+            // running but the very first read has never returned (e.g. smartctl
+            // subprocess or the first ReadFile is stuck on a dead USB drive).
+            // In the no-latest branch bytes_finished is always 0, so always red.
+            if self.watchdog_secs >= 90 {
+                text.push_line(Line::from(Span::styled(
+                    format!(
+                        " ⚠ No read progress for {}s — drive may be unresponsive. \
+                         Try Reverse mode (r) or cancel (c).",
+                        self.watchdog_secs
+                    ),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )));
             }
+            if let Some(wbl) = wb_line {
+                text.push_line(wbl);
+            }
+            frame.render_widget(
+                Paragraph::new(text)
+                    .block(Block::default().borders(Borders::ALL).title(" Statistics ")),
+                chunks[3],
+            );
         }
     }
 

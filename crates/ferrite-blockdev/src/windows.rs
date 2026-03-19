@@ -266,7 +266,13 @@ impl BlockDevice for WindowsBlockDevice {
             // OVERLAPPED is no longer in use before we return.
             unsafe { CancelIo(self.handle) };
             let mut _drained: u32 = 0;
-            unsafe { GetOverlappedResultEx(self.handle, &ov, &mut _drained, 5_000, 0i32) };
+            // Wait up to 30 s for the driver to acknowledge the cancel.
+            // USB host controllers (xHCI) may hold the I/O at the hardware
+            // level for far longer than our software timeout.  Waiting here
+            // ensures the stack-allocated OVERLAPPED remains valid for the
+            // full lifetime of the driver's write-back, preventing a
+            // use-after-return memory hazard.
+            unsafe { GetOverlappedResultEx(self.handle, &ov, &mut _drained, 30_000, 0i32) };
             return Err(BlockDeviceError::Timeout {
                 device: self.info.path.clone(),
                 offset,

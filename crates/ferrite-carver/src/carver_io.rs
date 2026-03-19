@@ -5,6 +5,7 @@
 use std::io::Write;
 
 use memchr::memmem;
+use tracing::warn;
 
 use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 
@@ -15,6 +16,9 @@ use crate::error::{CarveError, Result};
 pub(crate) const EXTRACT_CHUNK: usize = 256 * 1024; // 256 KiB per extraction chunk
 
 /// Write bytes from `[start, end)` on the device to `writer`.
+///
+/// Bad sectors are zero-filled rather than aborting extraction, so the
+/// caller receives a complete (though potentially corrupted) output file.
 pub(crate) fn stream_bytes(
     device: &dyn BlockDevice,
     start: u64,
@@ -26,7 +30,7 @@ pub(crate) fn stream_bytes(
 
     while pos < end {
         let to_read = EXTRACT_CHUNK.min((end - pos) as usize);
-        let data = read_bytes_clamped(device, pos, to_read)?;
+        let data = read_bytes_zeroed(device, pos, to_read);
         if data.is_empty() {
             break;
         }
@@ -61,7 +65,7 @@ pub(crate) fn stream_until_footer(
 
     while pos < max_end {
         let to_read = EXTRACT_CHUNK.min((max_end - pos) as usize);
-        let new_data = read_bytes_clamped(device, pos, to_read)?;
+        let new_data = read_bytes_zeroed(device, pos, to_read);
         if new_data.is_empty() {
             break;
         }
@@ -83,7 +87,7 @@ pub(crate) fn stream_until_footer(
             if needed > combined.len() {
                 let still_need = needed - combined.len();
                 let extra_pos = pos + new_data.len() as u64;
-                let extra = read_bytes_clamped(device, extra_pos, still_need)?;
+                let extra = read_bytes_zeroed(device, extra_pos, still_need);
                 if !extra.is_empty() {
                     writer
                         .write_all(&extra)
@@ -150,7 +154,7 @@ pub(crate) fn stream_until_last_footer(
     // on single reads while still streaming in manageable pieces).
     while pos < max_end {
         let to_read = EXTRACT_CHUNK.min((max_end - pos) as usize);
-        let chunk = read_bytes_clamped(device, pos, to_read)?;
+        let chunk = read_bytes_zeroed(device, pos, to_read);
         if chunk.is_empty() {
             break;
         }
@@ -176,7 +180,26 @@ pub(crate) fn stream_until_last_footer(
     Ok(write_end as u64)
 }
 
-// ── I/O helper ────────────────────────────────────────────────────────────────
+// ── I/O helpers ───────────────────────────────────────────────────────────────
+
+/// Like [`read_bytes_clamped`] but returns zeros on I/O error instead of
+/// propagating it.  Used during extraction so a bad sector produces a
+/// zero-filled gap rather than aborting the carved output file.
+fn read_bytes_zeroed(device: &dyn BlockDevice, offset: u64, len: usize) -> Vec<u8> {
+    if len == 0 || offset >= device.size() {
+        return Vec::new();
+    }
+    let available = (device.size() - offset) as usize;
+    let clamped = len.min(available);
+    match read_bytes_clamped(device, offset, len) {
+        Ok(data) if !data.is_empty() => data,
+        Ok(_) => vec![0u8; clamped],
+        Err(e) => {
+            warn!(offset, len = clamped, error = %e, "read error during extraction — zero-filling sector");
+            vec![0u8; clamped]
+        }
+    }
+}
 
 /// Read up to `len` bytes starting at `offset`, clamped to device bounds.
 ///
@@ -404,5 +427,74 @@ mod tests {
             .extract(&hit, &mut out)
             .unwrap();
         assert_eq!(written, 300);
+    }
+
+    // ── Error-tolerant extraction tests ───────────────────────────────────────
+
+    #[test]
+    fn stream_bytes_does_not_abort_on_bad_sector() {
+        // A single-sector device that always fails.
+        // Extraction must succeed (returning zeros) rather than propagating
+        // the I/O error.
+        let dev = Arc::new(MockBlockDevice::new(vec![0xFFu8; 512], 512));
+        dev.inject_error(0, ferrite_blockdev::ErrorPolicy::AlwaysFail);
+
+        let mut out = Vec::new();
+        let result = stream_bytes(dev.as_ref(), 0, 512, &mut out);
+        assert!(result.is_ok(), "extraction must not abort on a bad sector");
+        assert_eq!(
+            out.len(),
+            512,
+            "output length must match request despite error"
+        );
+        assert!(
+            out.iter().all(|&b| b == 0x00),
+            "failed sector should be zero-filled"
+        );
+    }
+
+    #[test]
+    fn stream_bytes_good_sector_after_bad_is_readable() {
+        // Two separate extraction calls: first sector bad, second sector good.
+        // Each call covers exactly one sector, so the good read is independent
+        // of the earlier failure.
+        let mut data = vec![0u8; 1024];
+        data[512..1024].fill(0xCC);
+        let dev = Arc::new(MockBlockDevice::new(data, 512));
+        dev.inject_error(0, ferrite_blockdev::ErrorPolicy::AlwaysFail);
+
+        // Bad sector: zero-filled, no abort.
+        let mut out1 = Vec::new();
+        stream_bytes(dev.as_ref(), 0, 512, &mut out1).unwrap();
+        assert_eq!(out1.len(), 512);
+        assert!(out1.iter().all(|&b| b == 0x00));
+
+        // Good sector (independent read): real data.
+        let mut out2 = Vec::new();
+        stream_bytes(dev.as_ref(), 512, 1024, &mut out2).unwrap();
+        assert_eq!(out2.len(), 512);
+        assert!(
+            out2.iter().all(|&b| b == 0xCC),
+            "good sector should have real data"
+        );
+    }
+
+    #[test]
+    fn read_bytes_zeroed_returns_zeros_on_error() {
+        let dev = MockBlockDevice::new(vec![0xFFu8; 512], 512);
+        dev.inject_error(0, ferrite_blockdev::ErrorPolicy::AlwaysFail);
+        let result = read_bytes_zeroed(&dev, 0, 512);
+        assert_eq!(result.len(), 512);
+        assert!(
+            result.iter().all(|&b| b == 0x00),
+            "should return zeros on read error"
+        );
+    }
+
+    #[test]
+    fn read_bytes_zeroed_returns_empty_past_eof() {
+        let dev = MockBlockDevice::new(vec![0u8; 512], 512);
+        let result = read_bytes_zeroed(&dev, 512, 512);
+        assert!(result.is_empty(), "past EOF should return empty");
     }
 }

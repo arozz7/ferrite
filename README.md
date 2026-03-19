@@ -6,9 +6,9 @@ Autonomous storage diagnostics and data recovery — built in pure Rust.
 
 Ferrite recovers data from failing drives through ten operational screens:
 
-1. **Drive Selection** — Discover block devices and designate the active source
+1. **Drive Selection** — Discover block devices or open a disk image file (`f` key) as the active source
 2. **S.M.A.R.T. Health** — Health assessment before touching the drive
-3. **Resilient Disk Imaging** — ddrescue-style multi-pass imaging with mapfile resume
+3. **Resilient Disk Imaging** — ddrescue-style multi-pass imaging with mapfile resume; auto-generates filename from drive serial; watchdog alerts when a read stalls ≥ 10 s
 4. **Partition Recovery** — MBR/GPT parsing, corrupt table reconstruction
 5. **Filesystem Analysis** — NTFS, FAT32, ext4 — live and deleted file enumeration and extraction
 6. **File Carving** — Signature-based recovery from raw sectors (99 signatures, 8 groups)
@@ -24,6 +24,7 @@ Ferrite recovers data from failing drives through ten operational screens:
 - **Platform abstracted** — runs on Windows 11 and Linux via `BlockDevice` trait
 - **ddrescue-compatible mapfiles** — interoperable with GNU ddrescue
 - **Non-destructive** — read-only access to source drives at all times
+- **Damaged-drive resilient** — image-first workflow (`f` key in Drive Selection opens `.img` files); bad sectors zero-filled during extraction rather than aborting; watchdog detects USB/xHCI hangs and advises Reverse mode
 
 ## Workspace Crates
 
@@ -35,7 +36,7 @@ Ferrite recovers data from failing drives through ten operational screens:
 | `ferrite-smart` | S.M.A.R.T. diagnostics via smartctl |
 | `ferrite-partition` | MBR/GPT parsing and recovery |
 | `ferrite-filesystem` | NTFS / FAT32 / ext4 metadata parsing (full extent tree support) |
-| `ferrite-carver` | Signature-based file carving (99 signatures, CarveQuality validation) |
+| `ferrite-carver` | Signature-based file carving (99 signatures, CarveQuality validation, error-tolerant extraction) |
 | `ferrite-textcarver` | Heuristic text block scanner (9 TextKind variants) |
 | `ferrite-artifact` | Forensic PII artifact scanner (6 scanner types, CSV export) |
 | `ferrite-tui` | ratatui terminal interface (10 tabs) |
