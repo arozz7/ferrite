@@ -238,14 +238,45 @@ shows `"open failed (admin required?)"` and no size is displayed.
 | `↑` / `↓` | Move the selection highlight up or down |
 | `Enter` | Open the selected device and set it as the active device for all screens |
 | `r` | Re-enumerate all block devices (refreshes the list) |
+| `s` | Cycle sort order (by Path / by Size descending) |
+| `/` | Open filter bar — type to narrow the list by path, model, or serial |
+| `Esc` | Clear the active filter |
+| `f` | Open an image file as the source device (see below) |
+| `o` | Open the saved-session manager |
+
+### Opening an image file as the source device
+
+Press `f` to open the **image-file overlay**.  Type (or paste) the full path to a
+`.img` file previously created on the Imaging screen, then press `Enter`.  The image
+file is opened via `FileBlockDevice` and propagated to all other screens exactly as
+a physical drive would be.
+
+```
+┌─ Open Image File ─────────────────────────────────────────────────┐
+│                                                                     │
+│  Path: E:\images\drive9.img█                                       │
+│                                                                     │
+│  Enter path to .img file  ·  Esc: cancel                           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+If the path is invalid or the file cannot be opened, an error is shown in the
+overlay and the input remains active so you can correct the path.  Press `Esc` to
+close the overlay without selecting anything.
+
+> **Recommended workflow for critically damaged drives:**
+> 1. Select the physical drive and go to the **Imaging** screen.
+> 2. Image the drive (even a partial image is useful — bad sectors are zero-filled).
+> 3. Return to the Drive Selection screen and press `f` to open the resulting `.img` file.
+> 4. All tabs now operate on the image — the drive is no longer stressed by repeated reads.
 
 ### What happens after selecting a device
 
-Pressing `Enter` on a device calls `WindowsBlockDevice::open()` (or the Linux
-equivalent), which opens a read-only handle to the raw block device.  The resulting
-`Arc<dyn BlockDevice>` is cloned and propagated to every other screen.  All
-subsequent operations (health query, imaging, partition reading, filesystem opening,
-and carving) will operate on this device.
+Pressing `Enter` on a device (or `Enter` after typing an image path with `f`) opens
+a read-only handle to the block device or file.  The resulting `Arc<dyn BlockDevice>`
+is cloned and propagated to every other screen.  All subsequent operations (health
+query, imaging, partition reading, filesystem opening, and carving) will operate on
+this device.
 
 > **Note:** If the device cannot be opened (e.g. you ran Ferrite without elevated
 > privileges), an error is shown.  No changes are made to the device.
@@ -375,9 +406,23 @@ so interrupted sessions can be resumed.
 ### Before starting
 
 1. Select a device on the Drives screen.
-2. Press `d` to enter the **destination path** (where the image file will be written).
-3. (Recommended) Press `m` to enter a **mapfile path** (enables resume and progress persistence).
-4. Press `s` to start imaging.
+2. **Option A — Auto-generate filenames (recommended for quick starts):**
+   Leave Dest empty and press `s`.  Ferrite generates a filename from the drive
+   serial and today's date, e.g. `ST8000DM004_ABC12345_20260319.img`, and places
+   it in the current working directory.  A companion `.map` mapfile is also
+   generated automatically.
+   You can also type just a directory path in Dest (e.g. `m:\restore\`) and press
+   `s` — Ferrite will place the auto-named file inside that directory.
+3. **Option B — Explicit path:**
+   Press `d` to enter the full destination file path (e.g. `m:\restore\disk.img`).
+   Press `m` to enter a mapfile path (e.g. `m:\restore\disk.map`).
+   Press `s` to start.
+
+> **Path separators:** You may type either `\` or `\\` between path components;
+> Ferrite normalises consecutive backslashes automatically.
+
+> **File-exists protection:** If an auto-generated name already exists, Ferrite
+> appends `_1`, `_2`, … before the extension to avoid overwriting previous images.
 
 > **The destination file must not be on the same physical drive being imaged.**
 > Writing to the source drive could overwrite data you are trying to recover.
@@ -434,6 +479,26 @@ and a `[⚠ LOW RATE]` label appears in the title.  The rate line in the Statist
 panel is also shown in amber.  This is an early warning that the drive may be
 struggling; consider pausing to let it recover, or note that the remaining sectors
 may be bad.
+
+#### Watchdog — unresponsive drive detection
+
+If no `Progress` update arrives for **10 or more seconds** while imaging is
+running (and not paused), the Statistics panel shows:
+
+```
+⚠ No read progress for 47s — drive may be unresponsive (try Reverse mode with r, or cancel with c)
+```
+
+This most commonly occurs when a critically damaged drive's USB controller holds a
+pending read at the hardware level far longer than the 30-second software timeout.
+Recommended actions:
+
+1. Press `r` to enable **Reverse** mode (imaging from the end of the drive backwards),
+   then `s` to restart.  This bypasses bad sectors near the beginning of the drive.
+2. Press `c` to cancel, then check `smartctl -a` for reallocated sector count and
+   pending sector count to assess how much data is likely recoverable.
+3. If you have an image file from a previous partial run, open it with the `f` key
+   on the Drive Selection screen and proceed directly to carving.
 
 ### The five-pass imaging algorithm
 
@@ -504,7 +569,12 @@ crashes.
 |---|---|
 | `d` | Activate the destination path field for editing |
 | `m` | Activate the mapfile path field for editing |
-| `s` | Start imaging (no-op if already running or if destination is empty) |
+| `l` | Activate the start LBA field (leave empty for beginning of device) |
+| `e` | Activate the end LBA field (leave empty for end of device) |
+| `b` | Activate the block size field (KiB; default 512 KiB) |
+| `r` | Toggle Reverse mode (image from end to start — useful when start of drive is unresponsive) |
+| `p` | Pause / resume imaging manually |
+| `s` | Start imaging — auto-generates filename if Dest is empty or a directory |
 | `c` | Cancel imaging (marks cancel flag; the current block completes before stopping) |
 | `Esc` | Exit text-input edit mode (same as `Enter`) |
 
@@ -1418,10 +1488,67 @@ and pressing `Space` before starting the scan.  Consider enabling skip-corrupt m
 - **Footer not found:** The file may be fragmented or the data between the header
   and footer may have been overwritten.  The maximum extraction window (`max_size`)
   is used instead.
-- **Device read error:** The sectors containing the file may be bad.  Consider
-  imaging the device first and carving from the image file.
+- **Device read error:** Since Phase 87, Ferrite zero-fills bad sectors during
+  extraction rather than aborting.  Extracted files may contain zero-filled gaps
+  in place of unreadable sectors; post-validation will mark them `Truncated (~)` or
+  `Corrupt (✗)`.  Imaging the device first and carving from the image file gives the
+  best results on heavily damaged drives (see *Working with critically damaged drives*
+  below).
 - **Zero-byte cleanup:** Ferrite deletes zero-byte output files automatically.
   If many files are zero bytes, the source regions may be entirely unreadable.
+
+### Working with critically damaged drives
+
+When a drive shows **S.M.A.R.T. CRITICAL** and produces I/O errors at the very
+first sector (LBA 0), the Partitions and File Browser tabs will not be able to read
+partition or filesystem metadata.  The recommended approach is:
+
+**Step 1 — Image the drive**
+
+Go to the **Imaging** screen and start a session.  The 5-pass algorithm reads
+everything it can, skips unreadable sectors (marking them in the mapfile), and
+writes a partial `.img` file.  Even a 60% complete image contains useful data.
+
+Key tips:
+- Set a mapfile path so you can resume if Ferrite is interrupted.  Or leave Dest
+  empty and press `s` — Ferrite auto-generates a filename from the drive serial
+  and today's date and creates a matching mapfile alongside it.
+- **If the progress bar shows 0% for more than 10 seconds,** the watchdog line will
+  appear in Statistics: `⚠ No read progress for Xs — drive may be unresponsive`.
+  This usually means the first sector is physically dead.  Press `c` to cancel,
+  enable **Reverse** mode (`r` key), and restart — this images from the end of the
+  drive backwards, collecting data from the healthy regions before hitting the dead
+  zone near LBA 0.
+- The built-in ERC/TLER timeout (30 s per sector) will advance past bad sectors
+  automatically.  On a USB drive the xHCI host controller may hold the I/O at
+  hardware level for longer than the software timeout; the watchdog will alert you
+  when this happens.
+- For very slow drives, imaging over multiple short sessions reduces the risk of
+  complete failure mid-session.
+
+**Step 2 — Open the image file**
+
+Return to the **Drive Selection** screen and press `f`.  Type the full path to
+the `.img` file and press `Enter`.  All other tabs now operate on the image file —
+no further hardware reads hit the dying drive.
+
+**Step 3 — Carve from the image**
+
+Go to the **Carving** screen and start a new scan.  Because the source is now a
+regular file, reads are instant and reliable.  The carver will zero-fill any sectors
+that were unreadable during imaging, producing files with gaps rather than missing
+files entirely.
+
+**Step 4 — Check CarveQuality**
+
+After extraction, hits are tagged:
+- `✓` Complete — structure intact
+- `~` Truncated — file reached the end of device or a footer was not found
+- `✗` Corrupt — internal structure check failed (often indicates a zero-filled gap
+  landed inside a critical header or CRC block)
+
+Enable **skip-corrupt mode** (`Shift+C` on the Carving screen) to automatically
+discard structurally invalid files and keep only the usable ones.
 
 ### Quick Recover finds no deleted files
 

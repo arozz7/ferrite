@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::Arc;
+use std::time::Instant;
 
+use chrono::Local;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_blockdev::BlockDevice;
 use ferrite_imaging::write_blocker;
@@ -15,6 +17,49 @@ use ferrite_imaging::{
 };
 
 mod render;
+
+// ── Path helpers ──────────────────────────────────────────────────────────────
+
+/// Collapse consecutive backslashes to a single `\`, preserving the `\\.\`
+/// and `\\?\` UNC device-path prefixes that Windows uses for raw drives.
+fn normalize_path(path: &str) -> String {
+    // Preserve \\.\PhysicalDriveN style prefixes verbatim.
+    if path.starts_with(r"\\.\") || path.starts_with(r"\\?\") {
+        return path.to_string();
+    }
+    let mut out = String::with_capacity(path.len());
+    let mut prev_bs = false;
+    for ch in path.chars() {
+        if ch == '\\' {
+            if !prev_bs {
+                out.push(ch);
+            }
+            prev_bs = true;
+        } else {
+            out.push(ch);
+            prev_bs = false;
+        }
+    }
+    out
+}
+
+/// Return `path` unchanged if it does not exist, otherwise append `_1`, `_2`,
+/// … before the extension until a non-existing path is found.
+fn unique_path(path: &std::path::Path) -> std::path::PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("img");
+    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+    for i in 1u32..=9999 {
+        let candidate = parent.join(format!("{stem}_{i}.{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    path.to_path_buf()
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -161,6 +206,21 @@ pub struct ImagingState {
     pub user_paused: bool,
     /// `true` when the imaging session is resuming from an existing mapfile.
     pub imaging_resumed: bool,
+    /// Instant when any block was last processed (success OR failure).  Resets
+    /// on thread-spawn so the watchdog counts from the start even before the
+    /// first read completes.  The watchdog fires only when the engine is truly
+    /// frozen — not merely working through a run of bad sectors.
+    pub(crate) last_attempt_instant: Option<Instant>,
+    /// Total bytes processed in any outcome (finished + bad + non_trimmed +
+    /// non_scraped) at the last reset — used to detect when the engine stalls.
+    pub(crate) last_attempted_bytes: u64,
+    /// Last observed `bytes_finished` — kept separately for the stall message
+    /// so we can report "X MiB recovered so far" while the timer uses the
+    /// broader attempted-bytes metric.
+    pub(crate) last_bytes_finished: u64,
+    /// Seconds since the last block was processed.  Zero while not running or
+    /// paused.  Rendered in the Statistics panel when ≥ 90 s.
+    pub(crate) watchdog_secs: u64,
 }
 
 impl Default for ImagingState {
@@ -193,6 +253,10 @@ impl ImagingState {
             user_pause: Arc::new(AtomicBool::new(false)),
             user_paused: false,
             imaging_resumed: false,
+            last_attempt_instant: None,
+            last_attempted_bytes: 0,
+            last_bytes_finished: 0,
+            watchdog_secs: 0,
         }
     }
 
@@ -213,6 +277,10 @@ impl ImagingState {
         self.user_pause.store(false, Ordering::Relaxed);
         self.user_paused = false;
         self.imaging_resumed = false;
+        self.last_attempt_instant = None;
+        self.last_attempted_bytes = 0;
+        self.last_bytes_finished = 0;
+        self.watchdog_secs = 0;
 
         // Pre-flight: check write-blocker status in a background thread so the
         // UI stays responsive.  Result is drained by `tick()`.
@@ -238,6 +306,19 @@ impl ImagingState {
             }
         }
 
+        // Watchdog: seconds since any block was last processed (success or failure).
+        // Resets on finished bytes AND on failed bytes — if the failed counter is
+        // ticking up the engine is working normally through bad sectors and should
+        // not be flagged.  Only fires when the engine is truly frozen.
+        if self.status == ImagingStatus::Running && !self.user_paused && !self.thermal_paused {
+            self.watchdog_secs = self
+                .last_attempt_instant
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
+        } else {
+            self.watchdog_secs = 0;
+        }
+
         let rx = match &self.rx {
             Some(r) => r,
             None => return,
@@ -247,6 +328,22 @@ impl ImagingState {
                 Ok(ImagingMsg::Progress(u)) => {
                     if let Some(snapshot) = u.map_snapshot.clone() {
                         self.sector_map = snapshot;
+                    }
+                    // Reset the watchdog whenever any block is processed —
+                    // success (bytes_finished) OR failure (bad/non_trimmed/
+                    // non_scraped).  If the Failed counter is ticking up, the
+                    // engine is making progress through a bad region and should
+                    // not be flagged as frozen.
+                    let total_attempted =
+                        u.bytes_finished + u.bytes_bad + u.bytes_non_trimmed + u.bytes_non_scraped;
+                    if total_attempted > self.last_attempted_bytes {
+                        self.last_attempt_instant = Some(Instant::now());
+                        self.last_attempted_bytes = total_attempted;
+                        self.watchdog_secs = 0;
+                    }
+                    // Track finished bytes separately for the stall message display.
+                    if u.bytes_finished > self.last_bytes_finished {
+                        self.last_bytes_finished = u.bytes_finished;
                     }
                     self.latest = Some(u);
                 }
@@ -354,6 +451,46 @@ impl ImagingState {
             Some(d) => Arc::clone(d),
             None => return,
         };
+
+        // Normalise path separators: collapse \\ → \ (except \\.\  UNC prefix).
+        self.dest_path = normalize_path(&self.dest_path);
+        self.mapfile_path = normalize_path(&self.mapfile_path);
+
+        // Auto-generate a filename when the user left dest empty or provided
+        // only a directory.  Format: <serial>_<YYYYMMDD>.img
+        let dest_needs_filename = self.dest_path.is_empty()
+            || self.dest_path.ends_with('\\')
+            || self.dest_path.ends_with('/')
+            || std::path::Path::new(&self.dest_path).is_dir();
+        if dest_needs_filename {
+            let info = device.device_info();
+            let date_str = Local::now().format("%Y%m%d").to_string();
+            let raw_serial = info.serial.as_deref().unwrap_or("disk");
+            let serial: String = raw_serial
+                .trim()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                .collect();
+            let stem = if serial.trim_matches('_').is_empty() {
+                format!("disk_{date_str}")
+            } else {
+                format!("{serial}_{date_str}")
+            };
+            let base_dir = if self.dest_path.is_empty() {
+                std::path::PathBuf::from(".")
+            } else {
+                std::path::PathBuf::from(&self.dest_path)
+            };
+            let img_path = unique_path(&base_dir.join(format!("{stem}.img")));
+            // Auto-generate mapfile alongside image if not set.
+            if self.mapfile_path.is_empty() {
+                self.mapfile_path = unique_path(&img_path.with_extension("map"))
+                    .to_string_lossy()
+                    .to_string();
+            }
+            self.dest_path = img_path.to_string_lossy().to_string();
+        }
+
         if self.dest_path.is_empty() {
             self.status = ImagingStatus::Error("Set a destination path first (press d).".into());
             return;
@@ -413,6 +550,12 @@ impl ImagingState {
         self.user_pause.store(false, Ordering::Relaxed);
         self.user_paused = false;
         self.sector_map = Vec::new();
+        // Watchdog clock starts at thread-spawn so it counts even before the
+        // first Progress message (e.g. while the SMART pre-populate query runs).
+        self.last_attempt_instant = Some(Instant::now());
+        self.last_attempted_bytes = 0;
+        self.last_bytes_finished = 0;
+        self.watchdog_secs = 0;
         let cancel = Arc::clone(&self.cancel);
         let user_pause_reporter = Arc::clone(&self.user_pause);
         let (tx, rx) = mpsc::sync_channel::<ImagingMsg>(64);
@@ -459,10 +602,25 @@ impl ImagingState {
             };
 
             // Pre-populate known-bad sectors from S.M.A.R.T. error log (best-effort).
-            if let Ok(smart_data) = ferrite_smart::query(&device_path_for_smart, None) {
-                if !smart_data.bad_sector_lbas.is_empty() {
-                    let ss = engine.sector_size();
-                    engine.pre_populate_bad_sectors(ss as u64, &smart_data.bad_sector_lbas);
+            //
+            // IMPORTANT: smartctl may hang indefinitely on a dead/unresponsive USB drive
+            // (Command::output() blocks until the subprocess exits, and the subprocess
+            // may be waiting for an ATA response that never arrives).  We run the query
+            // in a sub-thread and wait at most 30 s; if it doesn't finish in time we
+            // simply skip pre-population and proceed directly to imaging.
+            {
+                let path = device_path_for_smart.clone();
+                let (smart_tx, smart_rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = smart_tx.send(ferrite_smart::query(&path, None));
+                });
+                if let Ok(Ok(smart_data)) =
+                    smart_rx.recv_timeout(std::time::Duration::from_secs(30))
+                {
+                    if !smart_data.bad_sector_lbas.is_empty() {
+                        let ss = engine.sector_size();
+                        engine.pre_populate_bad_sectors(ss as u64, &smart_data.bad_sector_lbas);
+                    }
                 }
             }
 
@@ -583,6 +741,94 @@ mod tests {
         wb_tx.send(false).unwrap();
         s.tick();
         assert_eq!(s.write_blocked, Some(false));
+    }
+
+    // ── normalize_path tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_path_collapses_double_backslash() {
+        assert_eq!(
+            normalize_path(r"m:\\restore\\image.img"),
+            r"m:\restore\image.img"
+        );
+    }
+
+    #[test]
+    fn normalize_path_single_backslash_unchanged() {
+        assert_eq!(
+            normalize_path(r"m:\restore\image.img"),
+            r"m:\restore\image.img"
+        );
+    }
+
+    #[test]
+    fn normalize_path_preserves_unc_device_prefix() {
+        let input = r"\\.\PhysicalDrive9";
+        assert_eq!(normalize_path(input), input);
+    }
+
+    #[test]
+    fn normalize_path_preserves_unc_question_prefix() {
+        let input = r"\\?\Volume{abc}";
+        assert_eq!(normalize_path(input), input);
+    }
+
+    #[test]
+    fn normalize_path_empty_string() {
+        assert_eq!(normalize_path(""), "");
+    }
+
+    // ── unique_path tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn unique_path_returns_original_when_not_exists() {
+        let p = std::path::Path::new(r"C:\this_path_definitely_does_not_exist_ferrite_test.img");
+        assert_eq!(unique_path(p), p);
+    }
+
+    // ── watchdog tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn watchdog_secs_zero_on_new_state() {
+        let s = ImagingState::new();
+        assert_eq!(s.watchdog_secs, 0);
+    }
+
+    #[test]
+    fn watchdog_secs_zero_when_idle_after_tick() {
+        let mut s = ImagingState::new();
+        s.tick(); // status is Idle
+        assert_eq!(s.watchdog_secs, 0);
+    }
+
+    #[test]
+    fn watchdog_resets_to_zero_on_progress_message() {
+        let (tx, rx) = mpsc::sync_channel::<ImagingMsg>(8);
+        let mut s = ImagingState::new();
+        s.status = ImagingStatus::Running;
+        s.rx = Some(rx);
+        // Simulate last block-attempt being 5 s ago with no blocks processed yet.
+        s.last_attempt_instant = Some(Instant::now() - std::time::Duration::from_secs(5));
+        // Send a progress update
+        let update = ferrite_imaging::ProgressUpdate {
+            phase: ferrite_imaging::ImagingPhase::Copy,
+            current_offset: 0,
+            device_size: 1024,
+            bytes_finished: 512,
+            bytes_bad: 0,
+            bytes_non_tried: 512,
+            bytes_non_trimmed: 0,
+            bytes_non_scraped: 0,
+            read_rate_bps: 1_000_000,
+            elapsed: std::time::Duration::from_secs(1),
+            map_snapshot: None,
+        };
+        tx.send(ImagingMsg::Progress(update)).unwrap();
+        s.tick();
+        assert_eq!(
+            s.watchdog_secs, 0,
+            "watchdog should reset when progress arrives"
+        );
     }
 
     #[test]

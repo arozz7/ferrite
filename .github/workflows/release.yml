@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write   # needed to create releases and upload assets
+
+jobs:
+  # ── Build Windows binary ──────────────────────────────────────────────────
+  build-windows:
+    name: Build (Windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: windows-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin ferrite
+
+      - name: Package binary
+        shell: pwsh
+        run: |
+          $tag  = "${{ github.ref_name }}"
+          $name = "ferrite-${tag}-x86_64-windows"
+          New-Item -ItemType Directory -Path "$name" | Out-Null
+          Copy-Item "target\release\ferrite.exe" "$name\"
+          Copy-Item "README.md" "$name\"
+          Compress-Archive -Path "$name" -DestinationPath "${name}.zip"
+          echo "ASSET=${name}.zip" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binary
+          path: ${{ env.ASSET }}
+          retention-days: 1
+
+  # ── Build Linux binary ────────────────────────────────────────────────────
+  build-linux:
+    name: Build (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin ferrite
+
+      - name: Strip binary
+        run: strip target/release/ferrite
+
+      - name: Package binary
+        run: |
+          TAG="${{ github.ref_name }}"
+          NAME="ferrite-${TAG}-x86_64-linux"
+          mkdir "$NAME"
+          cp target/release/ferrite "$NAME/"
+          cp README.md "$NAME/"
+          tar -czf "${NAME}.tar.gz" "$NAME"
+          echo "ASSET=${NAME}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: ${{ env.ASSET }}
+          retention-days: 1
+
+  # ── Create GitHub Release ─────────────────────────────────────────────────
+  release:
+    name: Create Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-binary
+          path: dist/
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binary
+          path: dist/
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          # Extract version without the leading 'v' for the title.
+          VERSION="${TAG#v}"
+
+          gh release create "$TAG" dist/* \
+            --title "Ferrite ${VERSION}" \
+            --notes "$(cat <<'NOTES'
+          ## Installation
+
+          Download the archive for your platform, extract it, and run the `ferrite` binary.
+
+          ### Prerequisites
+
+          - **Windows:** Run as Administrator (required for raw device access).
+          - **Linux:** Run as `root` or with `CAP_SYS_RAWIO`.
+          - **`smartctl`** from [smartmontools](https://www.smartmontools.org/) must be on `PATH` for S.M.A.R.T. features.
+
+          ## What's included
+
+          - `ferrite` / `ferrite.exe` — the Ferrite binary
+          - `README.md` — quick-start guide
+
+          See [docs/user-manual.md](https://github.com/arozz7/ferrite/blob/master/docs/user-manual.md) for the full user manual.
+          NOTES
+          )"

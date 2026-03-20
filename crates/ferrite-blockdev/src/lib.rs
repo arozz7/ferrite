@@ -6,6 +6,8 @@ pub mod mock;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "windows")]
+pub mod volume_guard;
+#[cfg(target_os = "windows")]
 mod windows;
 
 pub use aligned::AlignedBuffer;
@@ -15,6 +17,8 @@ pub use mock::{ErrorPolicy, MockBlockDevice};
 
 #[cfg(target_os = "linux")]
 pub use linux::{enumerate_devices, LinuxBlockDevice};
+#[cfg(target_os = "windows")]
+pub use volume_guard::{parse_disk_number, VolsStatus, VolumeGuard};
 #[cfg(target_os = "windows")]
 pub use windows::{enumerate_devices, WindowsBlockDevice};
 
