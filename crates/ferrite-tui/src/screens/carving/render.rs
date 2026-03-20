@@ -246,11 +246,9 @@ impl CarvingState {
         let title_str = if self.extract_progress.is_some() {
             format!(" Hits ({hits_label}){auto_str}{live_str}  {done_count} extracted — p: pause  c: cancel ")
         } else if sel_count > 0 {
-            format!(" Hits ({hits_label}){auto_str}{live_str}  {sel_count} selected — Space: toggle  a: all  e: extract  E: extract selected  PgUp/Dn: page  Home: live  End: oldest ")
+            format!(" Hits ({hits_label}){auto_str}{live_str}  {sel_count} selected — Spc: toggle  a: all  e: extract  E: extract sel  PgUp/Dn  Home/End ")
         } else {
-            format!(
-                " Hits ({hits_label}){auto_str}{live_str} — Space: select  a: all  E: extract selected  x: auto-extract  D: dedup  PgUp/Dn: page  Home: live  End: oldest "
-            )
+            format!(" Hits ({hits_label}){auto_str}{live_str} — Spc: select  a: all  E: extract  x: auto  D: dedup  PgUp/Dn  Home/End ")
         };
         let block = Block::default()
             .borders(Borders::ALL)

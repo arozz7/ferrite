@@ -52,6 +52,7 @@ impl CarvingState {
             auto_extract: self.auto_extract,
             skip_truncated: self.skip_truncated,
             skip_corrupt: self.skip_corrupt,
+            device_path: info.path.clone(),
         }
     }
 

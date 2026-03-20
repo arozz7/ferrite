@@ -14,8 +14,17 @@ use ratatui::{
     Frame,
 };
 
+use ferrite_blockdev::FileBlockDevice;
+
 use crate::carving_session::CarvingSession;
 use crate::screens::drive_select::{platform_enumerate, platform_get_info, platform_open};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Returns `true` for `\\.\PhysicalDriveN` paths, `false` for image files.
+fn is_physical_drive(path: &str) -> bool {
+    path.to_lowercase().starts_with(r"\\.\physicaldrive")
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -80,13 +89,22 @@ impl SessionManagerState {
             self.verify = VerifyState::Unknown;
             return;
         };
+        // Physical drive: match by serial + size.
         if let Some((path, _)) = self.connected.iter().find(|(_, info)| {
             s.matches_drive(info.serial.as_deref().unwrap_or(""), info.size_bytes)
         }) {
             self.verify = VerifyState::Matched(path.clone());
-        } else {
-            self.verify = VerifyState::NotFound;
+            return;
         }
+        // Image file: check that the stored path still exists on disk.
+        if !s.device_path.is_empty()
+            && !is_physical_drive(&s.device_path)
+            && std::path::Path::new(&s.device_path).exists()
+        {
+            self.verify = VerifyState::Matched(s.device_path.clone());
+            return;
+        }
+        self.verify = VerifyState::NotFound;
     }
 
     /// Handle a key event.  Returns a [`SessionMsg`] when an action is taken.
@@ -123,7 +141,15 @@ impl SessionManagerState {
                 if let VerifyState::Matched(path) = &self.verify {
                     let path = path.clone();
                     let session = self.sessions[self.selected].clone();
-                    if let Some(device) = platform_open(&path) {
+                    // Open as image file or physical drive depending on path type.
+                    let device = if is_physical_drive(&path) {
+                        platform_open(&path)
+                    } else {
+                        FileBlockDevice::open(&path)
+                            .ok()
+                            .map(|d| Arc::new(d) as Arc<dyn BlockDevice>)
+                    };
+                    if let Some(device) = device {
                         self.visible = false;
                         return Some(SessionMsg::Resume { session, device });
                     }
@@ -241,7 +267,7 @@ impl SessionManagerState {
                 format!(" \u{2713} Drive connected at {path}  \u{2014}  press Enter to resume")
             }
             VerifyState::NotFound => {
-                " Drive not found.  Connect the drive and press r to refresh.".to_string()
+                " Drive or image file not found.  Connect the drive (or check the image path) and press r to refresh.".to_string()
             }
         };
         let color = match &self.verify {
