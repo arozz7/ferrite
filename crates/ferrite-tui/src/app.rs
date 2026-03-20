@@ -469,7 +469,7 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
         4 => " ↑/↓: navigate  Enter: open dir  Backspace: go up  d: toggle deleted  o: open fs  Tab: next  q: quit",
         5 => " ↑/↓: navigate  Space: select hit  a: all  o: output dir  s: start  p: pause/resume  c: stop  e: extract one  E: extract selected  h: hex  v: preview  Tab: next  q: quit",
         6 => " ↑/↓: sector  PgUp/PgDn: ±16  Home/End  g: jump to LBA  b: jump to offset  Tab: next  q: quit",
-        7 => " ↑/↓: navigate  Space: check  R: recover  /: filter  a: check-high  A: check-all  Esc: clear  Tab: next  q: quit",
+        7 => " ↑/↓: navigate  Space: check  r: rescan  R: recover  /: filter  a: check-high  A: check-all  Esc: clear  Tab: next  q: quit",
         8 => " ↑/↓: navigate  s: scan  c: cancel  e: export CSV  o: output dir  0-6: filter kind  Tab: next  q: quit",
         9 => " ↑/↓: navigate  s: scan  c: cancel  e: export files  o: output dir  0-8: filter kind  Tab: next  q: quit",
         _ => " Tab: next  q: quit",
