@@ -279,7 +279,10 @@ fn try_offline(vol_path: &[u16]) -> OfflineResult {
 fn try_online(vol_path: &[u16]) {
     let h = open_volume_rw(vol_path);
     if h == INVALID_HANDLE_VALUE {
-        warn!(err = unsafe { GetLastError() }, "could not open volume for re-online");
+        warn!(
+            err = unsafe { GetLastError() },
+            "could not open volume for re-online"
+        );
         return;
     }
 
@@ -298,7 +301,10 @@ fn try_online(vol_path: &[u16]) {
         )
     };
     if ok == 0 {
-        warn!(err = unsafe { GetLastError() }, "IOCTL_VOLUME_ONLINE failed");
+        warn!(
+            err = unsafe { GetLastError() },
+            "IOCTL_VOLUME_ONLINE failed"
+        );
     }
 
     // SAFETY: h is valid.
@@ -416,7 +422,10 @@ mod tests {
         // Last non-NUL char should not be backslash.
         let last_non_nul = result.iter().rposition(|&c| c != 0);
         if let Some(i) = last_non_nul {
-            assert_ne!(result[i], b'\\' as u16, "trailing backslash should be stripped");
+            assert_ne!(
+                result[i], b'\\' as u16,
+                "trailing backslash should be stripped"
+            );
         }
     }
 
