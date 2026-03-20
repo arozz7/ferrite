@@ -65,6 +65,9 @@ pub struct QuickRecoverState {
 
     // load channel
     load_rx: Option<Receiver<LoadMsg>>,
+    /// Error from the last scan attempt (filesystem not detected, I/O error,
+    /// etc.).  `None` while scanning or when scan succeeded.
+    load_error: Option<String>,
 
     // extraction state
     status: RecoverStatus,
@@ -93,6 +96,7 @@ impl QuickRecoverState {
             filter: String::new(),
             filter_editing: false,
             load_rx: None,
+            load_error: None,
             status: RecoverStatus::Idle,
             recover_rx: None,
             recover_progress: None,
@@ -101,7 +105,7 @@ impl QuickRecoverState {
         }
     }
 
-    /// Attach a new device: reset state and spawn background load thread.
+    /// Attach a new device: reset state and spawn background scan.
     pub fn set_device(&mut self, device: Arc<dyn BlockDevice>) {
         // Cancel any in-progress recovery before discarding parser.
         self.recover_cancel.store(true, Ordering::Relaxed);
@@ -116,12 +120,46 @@ impl QuickRecoverState {
         self.filter.clear();
         self.filter_editing = false;
         self.load_rx = None;
+        self.load_error = None;
         self.status = RecoverStatus::Loading;
         self.recover_rx = None;
         self.recover_progress = None;
         self.recover_cancel = Arc::new(AtomicBool::new(false));
         self.last_result = None;
 
+        self.spawn_scan(device);
+    }
+
+    /// Re-scan the current device for deleted files (r key).
+    ///
+    /// No-op if no device is attached or a scan/recovery is already running.
+    fn start_scan(&mut self) {
+        if matches!(
+            self.status,
+            RecoverStatus::Loading | RecoverStatus::Recovering
+        ) {
+            return;
+        }
+        let device = match self.device.as_ref() {
+            Some(d) => Arc::clone(d),
+            None => return,
+        };
+        self.parser = None;
+        self.fs_type = FilesystemType::Unknown;
+        self.entries.clear();
+        self.selected = 0;
+        self.scroll = 0;
+        self.checked.clear();
+        self.load_rx = None;
+        self.load_error = None;
+        self.status = RecoverStatus::Loading;
+        self.last_result = None;
+
+        self.spawn_scan(device);
+    }
+
+    /// Spawn the background filesystem scan thread.
+    fn spawn_scan(&mut self, device: Arc<dyn BlockDevice>) {
         let (tx, rx) = mpsc::channel();
         self.load_rx = Some(rx);
 
@@ -165,6 +203,7 @@ impl QuickRecoverState {
                 }
                 Ok(LoadMsg::Error(e)) => {
                     tracing::warn!(error = %e, "quick_recover: filesystem load failed");
+                    self.load_error = Some(e);
                     self.status = RecoverStatus::Idle;
                     self.load_rx = None;
                 }
@@ -252,6 +291,7 @@ impl QuickRecoverState {
             KeyCode::Esc => {
                 self.checked.clear();
             }
+            KeyCode::Char('r') => self.start_scan(),
             KeyCode::Char('R') => self.start_recovery(),
             KeyCode::Char('/') => {
                 self.filter_editing = true;
@@ -490,14 +530,19 @@ impl QuickRecoverState {
         ];
 
         if rows.is_empty() {
-            frame.render_widget(
-                Paragraph::new(if self.filter.is_empty() {
-                    " No deleted files found."
-                } else {
-                    " No files match the current filter."
-                }),
-                chunks[list_idx],
-            );
+            let msg = if let Some(err) = &self.load_error {
+                format!(" Scan failed: {err}\n\n Press r to retry.")
+            } else if self.filter.is_empty() {
+                " No deleted files found.  Press r to rescan.".to_string()
+            } else {
+                " No files match the current filter.".to_string()
+            };
+            let style = if self.load_error.is_some() {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default()
+            };
+            frame.render_widget(Paragraph::new(msg).style(style), chunks[list_idx]);
         } else {
             let table = Table::new(rows, widths)
                 .header(header)
