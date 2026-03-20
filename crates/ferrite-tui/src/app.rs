@@ -506,46 +506,6 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tab_forward_wraps() {
-        let mut app = App::new();
-        for _ in 0..SCREEN_NAMES.len() {
-            app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
-        }
-        assert_eq!(app.screen_idx, 0);
-    }
-
-    #[test]
-    fn tab_backward_wraps() {
-        let mut app = App::new();
-        app.handle_key(KeyCode::BackTab, KeyModifiers::NONE);
-        assert_eq!(app.screen_idx, SCREEN_NAMES.len() - 1);
-    }
-
-    #[test]
-    fn quit_key_sets_flag() {
-        let mut app = App::new();
-        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
-        assert!(app.should_quit);
-    }
-
-    #[test]
-    fn ctrl_c_quits_unconditionally() {
-        let mut app = App::new();
-        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert!(app.should_quit);
-    }
-
-    #[test]
-    fn screen_count_matches_names() {
-        assert_eq!(SCREEN_NAMES.len(), 10);
-    }
-}
-
 // ── Clipboard helper ──────────────────────────────────────────────────────────
 
 /// Read plain text from the system clipboard.
@@ -596,4 +556,44 @@ fn read_clipboard() -> Option<String> {
 #[cfg(not(target_os = "windows"))]
 fn read_clipboard() -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_forward_wraps() {
+        let mut app = App::new();
+        for _ in 0..SCREEN_NAMES.len() {
+            app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        }
+        assert_eq!(app.screen_idx, 0);
+    }
+
+    #[test]
+    fn tab_backward_wraps() {
+        let mut app = App::new();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(app.screen_idx, SCREEN_NAMES.len() - 1);
+    }
+
+    #[test]
+    fn quit_key_sets_flag() {
+        let mut app = App::new();
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_unconditionally() {
+        let mut app = App::new();
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn screen_count_matches_names() {
+        assert_eq!(SCREEN_NAMES.len(), 10);
+    }
 }
