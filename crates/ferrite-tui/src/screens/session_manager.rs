@@ -130,7 +130,7 @@ impl SessionManagerState {
     }
 
     /// Handle a key event.  Returns a [`SessionMsg`] when an action is taken.
-    pub fn handle_key(&mut self, code: KeyCode, _mods: KeyModifiers) -> Option<SessionMsg> {
+    pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<SessionMsg> {
         // Image-link overlay takes priority.
         if let Some(ref mut input) = self.image_input {
             match code {
@@ -142,7 +142,9 @@ impl SessionManagerState {
                     input.pop();
                     self.image_error = None;
                 }
-                KeyCode::Char(c) => {
+                // Only push printable characters; modifier combos (Ctrl+V etc.)
+                // are handled at the App level before reaching here.
+                KeyCode::Char(c) if mods.is_empty() => {
                     input.push(c);
                     self.image_error = None;
                 }

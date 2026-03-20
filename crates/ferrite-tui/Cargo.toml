@@ -29,5 +29,12 @@ toml               = { workspace = true }
 fs2                = { workspace = true }
 filetime           = { workspace = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+] }
+
 [dev-dependencies]
 tempfile = { workspace = true }

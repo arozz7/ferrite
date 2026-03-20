@@ -229,6 +229,14 @@ impl App {
             return;
         }
 
+        // Ctrl+V: read clipboard and route to whichever text field is active.
+        // Crossterm delivers Ctrl+V as a key event (not Event::Paste) in some
+        // terminals; this makes it behave identically to a bracketed paste.
+        if code == KeyCode::Char('v') && modifiers == KeyModifiers::CONTROL {
+            self.ctrl_v_paste();
+            return;
+        }
+
         // 'q' quits unless a text-input field on the current screen is active.
         if code == KeyCode::Char('q') && modifiers.is_empty() {
             let in_edit = match self.screen_idx {
@@ -329,6 +337,12 @@ impl App {
                 self.screen_idx = 1;
                 self.on_screen_enter();
             }
+        }
+    }
+
+    fn ctrl_v_paste(&mut self) {
+        if let Some(text) = read_clipboard() {
+            self.handle_paste(text);
         }
     }
 
@@ -530,4 +544,54 @@ mod tests {
     fn screen_count_matches_names() {
         assert_eq!(SCREEN_NAMES.len(), 10);
     }
+}
+
+// ── Clipboard helper ──────────────────────────────────────────────────────────
+
+/// Read plain text from the system clipboard.
+///
+/// On Windows this uses the Win32 clipboard API directly.  Returns `None` if
+/// the clipboard is empty, holds non-text data, or the API call fails.
+///
+/// On non-Windows platforms bracketed paste (`Event::Paste`) already handles
+/// terminal paste; this stub keeps the call site unconditional.
+#[cfg(target_os = "windows")]
+fn read_clipboard() -> Option<String> {
+    use std::ptr;
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+
+    const CF_UNICODETEXT: u32 = 13;
+
+    // SAFETY: All Win32 handles are checked for validity before use.
+    unsafe {
+        if OpenClipboard(ptr::null_mut()) == 0 {
+            return None;
+        }
+        let h = GetClipboardData(CF_UNICODETEXT);
+        if h.is_null() {
+            CloseClipboard();
+            return None;
+        }
+        let ptr = GlobalLock(h as _) as *const u16;
+        if ptr.is_null() {
+            CloseClipboard();
+            return None;
+        }
+        // Walk to the null terminator.
+        let mut len = 0usize;
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        let text = String::from_utf16_lossy(slice);
+        GlobalUnlock(h as _);
+        CloseClipboard();
+        Some(text)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn read_clipboard() -> Option<String> {
+    None
 }
