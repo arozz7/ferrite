@@ -13,9 +13,7 @@ use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 use ferrite_carver::{post_validate, CarveHit, CarveQuality, Carver, CarvingConfig};
 use ferrite_filesystem::MetadataIndex;
 
-use super::{
-    CarveMsg, CarveStatus, CarvingState, ExtractProgress, HitStatus, AUTO_EXTRACT_LOW_WATER,
-};
+use super::{CarveMsg, CarveStatus, CarvingState, ExtractProgress, HitStatus};
 
 // ── CancelWriter ──────────────────────────────────────────────────────────────
 
@@ -345,23 +343,23 @@ impl CarvingState {
     }
 
     /// Drain the auto-extract queue and start a new extraction batch if none
-    /// is currently running.  Also lifts the back-pressure scan pause once the
-    /// queue drains below `AUTO_EXTRACT_LOW_WATER`.
+    /// is currently running.  Lifts the back-pressure scan pause only when the
+    /// queue is fully empty (no remaining items to extract).
     pub(super) fn pump_auto_extract(&mut self) {
         if self.extract_progress.is_some() {
             return; // a batch is already in flight
         }
 
-        // Low-water resume: if the queue has drained enough, let the scan continue.
-        if self.backpressure_paused && self.auto_extract_queue.len() < AUTO_EXTRACT_LOW_WATER {
-            self.backpressure_paused = false;
-            // Only clear the pause flag if the user hasn't manually paused too.
-            if self.status == CarveStatus::Running {
-                self.pause.store(false, Ordering::Relaxed);
-            }
-        }
-
+        // Queue empty: lift back-pressure and let the scan continue.
+        // We only resume here — never mid-batch — so scanning is fully
+        // paused while any extraction work remains in the queue.
         if self.auto_extract_queue.is_empty() {
+            if self.backpressure_paused {
+                self.backpressure_paused = false;
+                if self.status == CarveStatus::Running {
+                    self.pause.store(false, Ordering::Relaxed);
+                }
+            }
             return;
         }
         const BATCH: usize = 500;

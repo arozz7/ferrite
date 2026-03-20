@@ -38,9 +38,6 @@ pub(crate) const DISPLAY_CAP: usize = 100_000;
 /// normal density scan never triggers back-pressure prematurely.
 const AUTO_EXTRACT_HIGH_WATER: usize = 500;
 
-/// Auto-extract queue length below which a back-pressure pause is lifted and
-/// the scan resumes.
-const AUTO_EXTRACT_LOW_WATER: usize = 50;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -334,8 +331,8 @@ pub struct CarvingState {
 
     /// `true` when the scan has been automatically paused because the
     /// auto-extract queue exceeded `AUTO_EXTRACT_HIGH_WATER`.  Cleared when
-    /// the queue drains below `AUTO_EXTRACT_LOW_WATER`, or when the user
-    /// manually presses `p` (which takes over pause ownership).
+    /// the queue fully drains (is empty) and no batch is in flight, or when
+    /// the user manually presses `p` (which takes over pause ownership).
     backpressure_paused: bool,
     /// Absolute byte offset to resume a scan from when loading a saved session.
     /// Set by `restore_from_session`; consumed (and cleared to 0) when the next

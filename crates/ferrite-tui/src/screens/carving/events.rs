@@ -210,12 +210,8 @@ impl CarvingState {
                     self.extract_progress = None;
                     self.extract_cancel.store(false, Ordering::Relaxed);
                     self.extract_pause.store(false, Ordering::Relaxed);
-                    // Lift back-pressure so the scan can resume between batches.
-                    // Only clear the scan pause when no manual pause is active.
-                    if self.backpressure_paused && self.status == CarveStatus::Running {
-                        self.backpressure_paused = false;
-                        self.pause.store(false, Ordering::Relaxed);
-                    }
+                    // Back-pressure is lifted by pump_auto_extract once the
+                    // queue is fully drained — do not resume here.
                     // Only show summary when at least one file was attempted.
                     if succeeded + truncated + failed + duplicates + skipped_trunc + skipped_corrupt
                         > 0
