@@ -218,6 +218,17 @@ impl App {
             return;
         }
 
+        // Ctrl+C always quits — it must be handled before the text-edit guard
+        // so the user can escape even when a field is focused.  Crossterm
+        // delivers Ctrl+C as a key event in raw mode (it does not terminate
+        // the process), so without this handler it would be silently swallowed,
+        // leaving the user unable to exit and likely to resort to force-killing
+        // the process (which skips VolumeGuard::drop, leaving volumes offline).
+        if code == KeyCode::Char('c') && modifiers == KeyModifiers::CONTROL {
+            self.should_quit = true;
+            return;
+        }
+
         // 'q' quits unless a text-input field on the current screen is active.
         if code == KeyCode::Char('q') && modifiers.is_empty() {
             let in_edit = match self.screen_idx {
@@ -505,6 +516,13 @@ mod tests {
     fn quit_key_sets_flag() {
         let mut app = App::new();
         app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_unconditionally() {
+        let mut app = App::new();
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit);
     }
 

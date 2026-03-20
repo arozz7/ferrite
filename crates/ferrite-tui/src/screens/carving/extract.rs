@@ -384,6 +384,12 @@ impl CarvingState {
             Some(d) => Arc::clone(d),
             None => return,
         };
+        // For file-backed image sources, open a second independent handle so
+        // the extractor thread and the scanner thread can call read_at
+        // concurrently without blocking each other on the shared Mutex<File>.
+        let device = device
+            .try_clone_handle()
+            .unwrap_or_else(|| Arc::clone(&device));
         let tx = match &self.tx {
             Some(t) => t.clone(),
             None => return,
