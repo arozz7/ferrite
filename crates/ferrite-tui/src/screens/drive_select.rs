@@ -6,10 +6,11 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_blockdev::BlockDevice;
 use ferrite_core::types::DeviceInfo;
+#[cfg(target_os = "windows")]
+use ratatui::text::Span;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Span,
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
