@@ -441,21 +441,14 @@ impl CarvingState {
             start: Instant::now(),
         });
 
-        // Concurrency: for file-backed image sources we can open an independent
-        // handle per worker (try_clone_handle succeeds), allowing parallel reads
-        // from different offsets with no Mutex contention between workers.
-        // Physical/damaged drives stay at 1 to avoid thrashing read heads.
-        let concurrency = if device.try_clone_handle().is_some() { 3 } else { 1 };
-
-        // Pre-open one handle per worker so each thread owns its own Mutex<File>.
-        // Worker 0 uses the already-cloned `device`; workers 1+ get fresh handles
-        // (fall back to Arc::clone if a clone fails).
-        let worker_devices: Vec<Arc<dyn BlockDevice>> = std::iter::once(Arc::clone(&device))
-            .chain(
-                (1..concurrency)
-                    .map(|_| device.try_clone_handle().unwrap_or_else(|| Arc::clone(&device))),
-            )
-            .collect();
+        // Single extraction worker.  Extraction involves creating many small
+        // files, which on an HDD (including external USB HDDs) generates random
+        // metadata I/O (MFT updates, directory entries) that serialises at the
+        // platter regardless of how many writers are open.  Multiple concurrent
+        // writers multiply the seek penalty and actually reduce throughput.
+        // The scanner and extractor now use independent file handles (see
+        // try_clone_handle above), so the scanner is never blocked by writes.
+        let worker_devices: Vec<Arc<dyn BlockDevice>> = vec![Arc::clone(&device)];
 
         // Shared work queue drained by all workers.
         let queue: Arc<Mutex<VecDeque<(usize, CarveHit, String)>>> =
