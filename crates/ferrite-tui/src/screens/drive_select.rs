@@ -9,10 +9,14 @@ use ferrite_core::types::DeviceInfo;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::Span,
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
 use tracing::debug;
+
+#[cfg(target_os = "windows")]
+use ferrite_blockdev::VolsStatus;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,6 +75,9 @@ pub struct DriveSelectState {
     image_input: Option<String>,
     /// Error message from the last failed image open attempt.
     image_error: Option<String>,
+    /// Result of the last volume quiesce attempt (Windows only).
+    #[cfg(target_os = "windows")]
+    pub vols_status: Option<VolsStatus>,
 }
 
 impl Default for DriveSelectState {
@@ -91,6 +98,8 @@ impl DriveSelectState {
             filtering: false,
             image_input: None,
             image_error: None,
+            #[cfg(target_os = "windows")]
+            vols_status: None,
         }
     }
 
@@ -436,6 +445,39 @@ impl DriveSelectState {
                     frame.render_widget(Paragraph::new(filter_text).style(style), filter_area);
                 }
             }
+        }
+
+        // Volume quiesce status badge (Windows only).
+        #[cfg(target_os = "windows")]
+        if let Some(ref vs) = self.vols_status {
+            let (label, color) = match vs {
+                VolsStatus::Quiesced(n) => (
+                    format!(" ⬛ VOLUMES OFFLINE: {n} — background I/O suppressed "),
+                    Color::Green,
+                ),
+                VolsStatus::Partial { n_ok, n_total } => (
+                    format!(" ⚠ VOLUMES OFFLINE: {n_ok}/{n_total} — system volumes skipped "),
+                    Color::Yellow,
+                ),
+                VolsStatus::NoVolumes => (
+                    " ○ No mounted volumes — drive is already quiet ".to_string(),
+                    Color::DarkGray,
+                ),
+                VolsStatus::NeedAdmin => (
+                    " ✗ Cannot offline volumes — run Ferrite as Administrator ".to_string(),
+                    Color::Red,
+                ),
+            };
+            let badge_area = Rect {
+                x: area.x + 1,
+                y: area.y + area.height.saturating_sub(2),
+                width: area.width.saturating_sub(2),
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(label, Style::default().fg(color))),
+                badge_area,
+            );
         }
 
         // Image-open overlay: rendered last so it floats above everything.

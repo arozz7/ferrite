@@ -14,6 +14,8 @@ use ratatui::{
 };
 
 use ferrite_blockdev::BlockDevice;
+#[cfg(target_os = "windows")]
+use ferrite_blockdev::{parse_disk_number, VolumeGuard};
 
 use crate::session::Session;
 use crate::{
@@ -53,6 +55,11 @@ pub struct App {
     pub should_quit: bool,
     /// The currently active device (set from the Drive Selection screen).
     pub selected_device: Option<Arc<dyn BlockDevice>>,
+    /// Holds volumes offline for the currently selected physical drive.
+    /// Dropped automatically when the device changes or Ferrite exits,
+    /// which re-onlines all volumes via the RAII `Drop` impl.
+    #[cfg(target_os = "windows")]
+    volume_guard: Option<VolumeGuard>,
     pub drive_select: DriveSelectState,
     pub health: HealthState,
     pub imaging: ImagingState,
@@ -76,6 +83,8 @@ impl App {
             screen_idx: 0,
             should_quit: false,
             selected_device: None,
+            #[cfg(target_os = "windows")]
+            volume_guard: None,
             drive_select: DriveSelectState::new(),
             health: HealthState::new(),
             imaging: ImagingState::new(),
@@ -152,6 +161,8 @@ impl App {
                     SessionMsg::Resume { session, device } => {
                         let path = device.device_info().path.clone();
                         self.selected_device = Some(Arc::clone(&device));
+                        // Take volumes offline to stop Windows background I/O.
+                        self.quiesce_volumes(&path);
                         self.health.set_device(path);
                         self.imaging.set_device(Arc::clone(&device));
                         self.partition.set_device(Arc::clone(&device));
@@ -227,6 +238,8 @@ impl App {
                 if let Some(dev) = self.drive_select.handle_key(code, modifiers) {
                     let path = dev.device_info().path.clone();
                     self.selected_device = Some(Arc::clone(&dev));
+                    // Take volumes offline to stop Windows background I/O.
+                    self.quiesce_volumes(&path);
                     // Propagate device to all dependent screens.
                     self.health.set_device(path);
                     self.imaging.set_device(Arc::clone(&dev));
@@ -304,6 +317,29 @@ impl App {
         self.quick_recover.tick();
         self.artifacts.tick();
         self.text_scan.tick();
+    }
+
+    /// Acquire a volume quiesce guard for `path` (Windows only).
+    ///
+    /// If `path` is a `\\.\PhysicalDriveN` path, all volumes on that disk are
+    /// taken offline to stop Windows Search, AutoPlay, and Explorer from
+    /// competing with Ferrite's I/O.  Image files are silently skipped.
+    /// The previous guard (if any) is dropped first, re-onlining the old drive.
+    fn quiesce_volumes(&mut self, path: &str) {
+        #[cfg(target_os = "windows")]
+        {
+            // Drop old guard first — re-onlines the previous drive's volumes.
+            self.volume_guard = None;
+            self.drive_select.vols_status = None;
+
+            if let Some(disk_num) = parse_disk_number(path) {
+                let (guard, status) = VolumeGuard::acquire(disk_num);
+                self.drive_select.vols_status = Some(status);
+                self.volume_guard = Some(guard);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = path;
     }
 
     /// Called whenever the active screen changes so screens can react on entry.
