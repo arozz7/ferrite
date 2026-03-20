@@ -43,6 +43,11 @@ pub struct CarvingSession {
     /// to re-open image files, which have no serial number to match against.
     #[serde(default)]
     pub device_path: String,
+    /// Names of signatures that were disabled when the session was saved.
+    /// Only disabled sigs are stored (omission = enabled) so newly added
+    /// signatures are enabled by default on resume.
+    #[serde(default)]
+    pub disabled_sigs: Vec<String>,
 }
 
 impl CarvingSession {

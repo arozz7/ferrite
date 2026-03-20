@@ -285,6 +285,9 @@ pub struct CarvingState {
     checkpoint_path: Option<String>,
     /// Index of the last hit that was written to the checkpoint file.
     checkpoint_flushed: usize,
+    /// Indices of hits whose extraction status changed since the last
+    /// checkpoint flush.  Drained and written to disk at `ExtractionDone`.
+    checkpoint_extract_pending: Vec<usize>,
     /// Whether the preview panel is visible.
     pub(crate) show_preview: bool,
     /// Cached preview for the currently selected hit.
@@ -405,6 +408,7 @@ impl CarvingState {
             scan_range_field: ScanRangeField::None,
             checkpoint_path: None,
             checkpoint_flushed: 0,
+            checkpoint_extract_pending: Vec::new(),
             show_preview: false,
             current_preview: None,
             preview_hit_idx: None,
@@ -666,6 +670,7 @@ impl CarvingState {
         self.paused_since = None;
         self.checkpoint_path = None;
         self.checkpoint_flushed = 0;
+        self.checkpoint_extract_pending.clear();
         self.show_preview = false;
         self.current_preview = None;
         self.preview_hit_idx = None;

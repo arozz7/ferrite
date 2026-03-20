@@ -32,7 +32,7 @@ fn is_physical_drive(path: &str) -> bool {
 pub enum SessionMsg {
     /// User pressed Enter on a session whose drive is connected.
     Resume {
-        session: CarvingSession,
+        session: Box<CarvingSession>,
         device: Arc<dyn BlockDevice>,
     },
     /// User dismissed the overlay without resuming.
@@ -214,7 +214,10 @@ impl SessionManagerState {
                     };
                     if let Some(device) = device {
                         self.visible = false;
-                        return Some(SessionMsg::Resume { session, device });
+                        return Some(SessionMsg::Resume {
+                            session: Box::new(session),
+                            device,
+                        });
                     }
                 }
             }

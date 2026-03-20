@@ -438,13 +438,21 @@ impl CarvingState {
             end_byte,
         };
 
-        // Set up checkpoint path based on output dir.
+        // Set up a per-session checkpoint path so different sessions using
+        // the same output directory do not share (or pollute) each other's
+        // hit files.  The filename embeds a seconds-since-epoch timestamp
+        // so each scan start produces a unique file.  On resume the path
+        // is set by restore_from_session and this block is not reached.
         let dir = if self.output_dir.is_empty() {
             "carved".to_string()
         } else {
             self.output_dir.clone()
         };
-        let cp_path = format!("{dir}\\ferrite-hits.jsonl");
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cp_path = format!("{dir}\\ferrite-hits-{ts}.jsonl");
         self.checkpoint_path = Some(cp_path);
         self.checkpoint_flushed = 0;
 
