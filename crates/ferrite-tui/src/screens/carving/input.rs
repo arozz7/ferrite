@@ -8,7 +8,7 @@ use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
 
 use super::{
     preview, user_sig_panel, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow, FormMode,
-    ScanRangeField, UserSigForm,
+    HitStatus, ScanRangeField, UserSigForm,
 };
 
 impl CarvingState {
@@ -424,7 +424,54 @@ impl CarvingState {
         } else {
             window_start
         };
+
+        // Short-circuit: if the scan was already complete (resume position is
+        // at or past the end of the device), don't re-scan.  Instead, keep the
+        // checkpoint-loaded hits, set up extraction channels, re-queue any
+        // Unextracted hits for auto-extraction, and transition straight to Done.
+        let was_resumed = self.resume_from_byte > 0;
+        let device_size = device.size();
         self.resume_from_byte = 0;
+
+        if was_resumed && start_byte >= device_size {
+            self.cancel.store(false, Ordering::Relaxed);
+            self.pause.store(false, Ordering::Relaxed);
+            self.hit_sel = self.hits.len().saturating_sub(1);
+            self.auto_follow = false;
+            self.scan_progress = None;
+            self.scan_start = Some(Instant::now());
+            self.paused_elapsed = std::time::Duration::ZERO;
+            self.paused_since = None;
+            self.status = CarveStatus::Done;
+
+            // Set up channels so extraction results can flow back to the TUI.
+            let (tx, rx) = mpsc::channel::<CarveMsg>();
+            self.tx = Some(tx);
+            self.rx = Some(rx);
+
+            // Re-queue all Unextracted hits for auto-extraction if enabled.
+            if self.auto_extract {
+                let dir = if self.output_dir.is_empty() {
+                    "carved".to_string()
+                } else {
+                    self.output_dir.clone()
+                };
+                let unextracted: Vec<(usize, ferrite_carver::CarveHit)> = self
+                    .hits
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.status == HitStatus::Unextracted)
+                    .map(|(i, e)| (i, e.hit.clone()))
+                    .collect();
+                for (i, hit) in unextracted {
+                    let path = self.filename_for_hit(&hit, &dir);
+                    self.auto_extract_queue.push_back((i, hit, path));
+                }
+                self.pump_auto_extract();
+            }
+            return;
+        }
+
         let end_byte = self
             .scan_end_lba_str
             .trim()
