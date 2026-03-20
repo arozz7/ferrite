@@ -185,6 +185,31 @@ impl DriveSelectState {
         self.filtering || self.image_input.is_some()
     }
 
+    /// Returns `true` when the image-open overlay is visible and owns input.
+    pub fn image_overlay_active(&self) -> bool {
+        self.image_input.is_some()
+    }
+
+    /// Append pasted text into whichever text field is currently active.
+    ///
+    /// Returns a device if paste completed a valid image path (unlikely but
+    /// handled for symmetry with `handle_key`).
+    pub fn handle_paste(&mut self, text: &str) -> Option<Arc<dyn BlockDevice>> {
+        if let Some(ref mut input) = self.image_input {
+            // Strip common terminal paste artefacts (newlines, carriage returns).
+            let clean: String = text.chars().filter(|&c| c != '\n' && c != '\r').collect();
+            input.push_str(&clean);
+            self.image_error = None;
+            return None;
+        }
+        if self.filtering {
+            let clean: String = text.chars().filter(|&c| c != '\n' && c != '\r').collect();
+            self.filter_input.push_str(&clean);
+            self.selected = 0;
+        }
+        None
+    }
+
     /// Handle key events.  Returns `Some(Arc<dyn BlockDevice>)` when the user
     /// presses Enter to select a device or confirms an image-file path.
     pub fn handle_key(

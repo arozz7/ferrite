@@ -117,10 +117,14 @@ impl App {
         loop {
             terminal.draw(|f| self.render(f))?;
             if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_key(key.code, key.modifiers);
                     }
+                    Event::Paste(text) => {
+                        self.handle_paste(text);
+                    }
+                    _ => {}
                 }
             }
             self.tick();
@@ -182,23 +186,33 @@ impl App {
             return;
         }
 
-        // Tab / Shift-Tab always switch screens.
-        match (code, modifiers) {
-            (KeyCode::Tab, _) => {
-                self.screen_idx = (self.screen_idx + 1) % SCREEN_NAMES.len();
-                self.on_screen_enter();
-                return;
+        // When a text overlay owns the keyboard (e.g. image-open overlay on the
+        // Drives screen), suppress all global shortcuts so typed characters don't
+        // trigger actions.
+        let overlay_active = self.screen_idx == 0 && self.drive_select.image_overlay_active();
+
+        // Tab / Shift-Tab switch screens — suppressed when overlay is active.
+        if !overlay_active {
+            match (code, modifiers) {
+                (KeyCode::Tab, _) => {
+                    self.screen_idx = (self.screen_idx + 1) % SCREEN_NAMES.len();
+                    self.on_screen_enter();
+                    return;
+                }
+                (KeyCode::BackTab, _) => {
+                    self.screen_idx =
+                        (self.screen_idx + SCREEN_NAMES.len() - 1) % SCREEN_NAMES.len();
+                    self.on_screen_enter();
+                    return;
+                }
+                _ => {}
             }
-            (KeyCode::BackTab, _) => {
-                self.screen_idx = (self.screen_idx + SCREEN_NAMES.len() - 1) % SCREEN_NAMES.len();
-                self.on_screen_enter();
-                return;
-            }
-            _ => {}
         }
 
-        // Shift+R generates a recovery report from any screen.
-        if code == KeyCode::Char('R') && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+        // Shift+R generates a recovery report — suppressed when overlay is active.
+        if !overlay_active
+            && code == KeyCode::Char('R')
+            && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
         {
             self.generate_report_to_file();
             return;
@@ -224,8 +238,10 @@ impl App {
 
         match self.screen_idx {
             0 => {
-                // 'o' opens the saved session manager overlay.
-                if code == KeyCode::Char('o') && modifiers.is_empty() {
+                // 'o' opens the saved session manager overlay — suppressed when
+                // the image-open overlay is active (user may be typing a path
+                // that contains the letter 'o').
+                if !overlay_active && code == KeyCode::Char('o') && modifiers.is_empty() {
                     if crate::carving_session::CarvingSession::load_all().is_empty() {
                         self.report_status = Some(
                             "No saved sessions — sessions are created automatically when you carve a drive and quit.".into(),
@@ -275,6 +291,28 @@ impl App {
             8 => self.artifacts.handle_key(code, modifiers),
             9 => self.text_scan.handle_key(code, modifiers),
             _ => {}
+        }
+    }
+
+    fn handle_paste(&mut self, text: String) {
+        // Route paste to the Drives screen if it has an active text field.
+        if self.screen_idx == 0 {
+            if let Some(dev) = self.drive_select.handle_paste(&text) {
+                let path = dev.device_info().path.clone();
+                self.selected_device = Some(Arc::clone(&dev));
+                self.quiesce_volumes(&path);
+                self.health.set_device(path);
+                self.imaging.set_device(Arc::clone(&dev));
+                self.partition.set_device(Arc::clone(&dev));
+                self.file_browser.set_device(Arc::clone(&dev));
+                self.carving.set_device(Arc::clone(&dev));
+                self.quick_recover.set_device(Arc::clone(&dev));
+                self.artifacts.set_device(Arc::clone(&dev));
+                self.text_scan.set_device(Arc::clone(&dev));
+                self.hex_viewer.set_device(dev);
+                self.screen_idx = 1;
+                self.on_screen_enter();
+            }
         }
     }
 
