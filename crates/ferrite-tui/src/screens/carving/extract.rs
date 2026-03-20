@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use ferrite_blockdev::AlignedBuffer;
+use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 use ferrite_carver::{post_validate, CarveHit, CarveQuality, Carver, CarvingConfig};
 use ferrite_filesystem::MetadataIndex;
 
@@ -441,13 +441,21 @@ impl CarvingState {
             start: Instant::now(),
         });
 
-        // Single worker: on a spinning disk (HDD/USB) multiple concurrent
-        // workers issuing I/O at different offsets force constant head seeks,
-        // making throughput worse than serial extraction.  A single worker
-        // drains the offset-sorted queue in forward address order, giving the
-        // best possible sequential-read behaviour.  This is also gentler on
-        // potentially damaged recovery targets.
-        let concurrency = 1;
+        // Concurrency: for file-backed image sources we can open an independent
+        // handle per worker (try_clone_handle succeeds), allowing parallel reads
+        // from different offsets with no Mutex contention between workers.
+        // Physical/damaged drives stay at 1 to avoid thrashing read heads.
+        let concurrency = if device.try_clone_handle().is_some() { 3 } else { 1 };
+
+        // Pre-open one handle per worker so each thread owns its own Mutex<File>.
+        // Worker 0 uses the already-cloned `device`; workers 1+ get fresh handles
+        // (fall back to Arc::clone if a clone fails).
+        let worker_devices: Vec<Arc<dyn BlockDevice>> = std::iter::once(Arc::clone(&device))
+            .chain(
+                (1..concurrency)
+                    .map(|_| device.try_clone_handle().unwrap_or_else(|| Arc::clone(&device))),
+            )
+            .collect();
 
         // Shared work queue drained by all workers.
         let queue: Arc<Mutex<VecDeque<(usize, CarveHit, String)>>> =
@@ -497,9 +505,9 @@ impl CarvingState {
             }
             let (done_tx, done_rx) = std::sync::mpsc::channel::<WorkerMsg>();
 
-            for _ in 0..concurrency {
+            for worker_device in worker_devices {
                 let queue = Arc::clone(&queue);
-                let device = Arc::clone(&device);
+                let device = worker_device;
                 let done_tx = done_tx.clone();
                 let cancel = Arc::clone(&cancel);
                 let pause = Arc::clone(&pause);

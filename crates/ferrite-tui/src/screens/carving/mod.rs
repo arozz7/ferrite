@@ -33,15 +33,14 @@ pub(crate) use preview::ColorCap;
 pub(crate) const DISPLAY_CAP: usize = 100_000;
 
 /// Auto-extract queue length at which the scan is automatically paused to let
-/// extraction catch up.  Kept intentionally small: at high hit densities the
-/// scan can enqueue thousands of hits per second, so the primary trigger is
-/// whether an extraction batch is already running (see events.rs).
-const AUTO_EXTRACT_HIGH_WATER: usize = 100;
+/// extraction catch up.  A single 4 MiB scan chunk can produce hundreds of
+/// hits in one batch message, so the threshold must be large enough that a
+/// normal density scan never triggers back-pressure prematurely.
+const AUTO_EXTRACT_HIGH_WATER: usize = 500;
 
 /// Auto-extract queue length below which a back-pressure pause is lifted and
-/// the scan resumes.  Using a near-zero value means we only resume once the
-/// queue is essentially empty.
-const AUTO_EXTRACT_LOW_WATER: usize = 10;
+/// the scan resumes.
+const AUTO_EXTRACT_LOW_WATER: usize = 50;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
