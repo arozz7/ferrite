@@ -42,7 +42,6 @@ pub fn run_scan(
 
     let mut scanner = BlockScanner {
         config: &config,
-        device: device.as_ref(),
         tx: &tx,
         seen_hashes: HashSet::new(),
         total_blocks: 0,
@@ -88,6 +87,10 @@ pub fn run_scan(
 
         scanner.process_window(&window, window_abs_base, chunk_offset == chunk_end);
 
+        // Time-based batch flush — checked once per chunk (not per byte) to
+        // avoid calling Instant::elapsed() millions of times per second.
+        scanner.flush_batch_if_stale();
+
         // Save tail for next iteration.
         let tail_start = raw.len().saturating_sub(overlap);
         overlap_tail = raw[tail_start..].to_vec();
@@ -115,7 +118,6 @@ pub fn run_scan(
 
 struct BlockScanner<'a> {
     config: &'a TextScanConfig,
-    device: &'a dyn BlockDevice,
     tx: &'a Sender<TextScanMsg>,
     seen_hashes: HashSet<u64>,
     total_blocks: usize,
@@ -202,10 +204,10 @@ impl<'a> BlockScanner<'a> {
                 }
             }
 
-            // Periodically flush batch (every ~50 blocks or 5 s).
-            if self.batch.len() >= 50
-                || (self.last_batch_time.elapsed().as_secs() >= 5 && !self.batch.is_empty())
-            {
+            // Count-based flush: every 50 blocks.  Time-based flushing is
+            // handled at the chunk level (flush_batch_if_stale) to avoid
+            // calling Instant::elapsed() once per byte.
+            if self.batch.len() >= 50 {
                 self.flush_batch();
             }
         }
@@ -248,11 +250,9 @@ impl<'a> BlockScanner<'a> {
             return;
         }
 
-        // Read the block content for classification and preview.
-        let content = read_chunk(self.device, self.block_start_abs, length as usize);
-        if content.is_empty() {
-            return;
-        }
+        // block_buf already holds the accumulated content — no need to
+        // re-read from device.  Clone only after the dedup check passes.
+        let content = buf.to_vec();
 
         let (kind, confidence, extension) = classify(&content);
         let preview = make_preview(&content, 80);
@@ -278,6 +278,16 @@ impl<'a> BlockScanner<'a> {
         let batch = std::mem::take(&mut self.batch);
         let _ = self.tx.send(TextScanMsg::BlockBatch(batch));
         self.last_batch_time = Instant::now();
+    }
+
+    /// Flush the batch if it has been more than 5 s since the last send.
+    ///
+    /// Called once per chunk (not per byte) so `Instant::elapsed()` is not
+    /// invoked millions of times per second through the hot inner loop.
+    fn flush_batch_if_stale(&mut self) {
+        if !self.batch.is_empty() && self.last_batch_time.elapsed().as_secs() >= 5 {
+            self.flush_batch();
+        }
     }
 }
 
