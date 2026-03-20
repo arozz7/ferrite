@@ -119,10 +119,7 @@ fn validate_jpeg(head: &[u8], tail: &[u8]) -> CarveQuality {
             4 // no recognised APP segment — skip past the opening SOI only
         };
         // Any SOI after the first APP segment is a fragment boundary.
-        if head[app_seg_end..]
-            .windows(2)
-            .any(|w| w == [0xFF, 0xD8])
-        {
+        if head[app_seg_end..].windows(2).any(|w| w == [0xFF, 0xD8]) {
             return CarveQuality::Corrupt;
         }
     }

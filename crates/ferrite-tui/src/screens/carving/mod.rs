@@ -38,7 +38,6 @@ pub(crate) const DISPLAY_CAP: usize = 100_000;
 /// normal density scan never triggers back-pressure prematurely.
 const AUTO_EXTRACT_HIGH_WATER: usize = 500;
 
-
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// Which scan-range LBA field is currently being edited.

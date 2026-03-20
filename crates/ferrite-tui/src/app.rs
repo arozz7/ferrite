@@ -558,7 +558,9 @@ mod tests {
 #[cfg(target_os = "windows")]
 fn read_clipboard() -> Option<String> {
     use std::ptr;
-    use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, OpenClipboard,
+    };
     use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 
     const CF_UNICODETEXT: u32 = 13;

@@ -3075,7 +3075,7 @@ mod tests {
         data[0..4].copy_from_slice(b"II\x2A\x00");
         data[4..8].copy_from_slice(&8u32.to_le_bytes()); // IFD at 8
         data[8..10].copy_from_slice(&3u16.to_le_bytes()); // 3 entries
-        // Entry 0: Make (tag 271) — not ImageWidth
+                                                          // Entry 0: Make (tag 271) — not ImageWidth
         let e0 = 10usize;
         data[e0..e0 + 2].copy_from_slice(&271u16.to_le_bytes());
         // Entry 1: Model (tag 272)
@@ -3106,7 +3106,7 @@ mod tests {
         data[0..4].copy_from_slice(b"MM\x00\x2A");
         data[4..8].copy_from_slice(&8u32.to_be_bytes()); // IFD at 8
         data[8..10].copy_from_slice(&10u16.to_be_bytes()); // 10 entries
-        // ImageWidth (tag 256) as first IFD entry (BE)
+                                                           // ImageWidth (tag 256) as first IFD entry (BE)
         data[10..12].copy_from_slice(&256u16.to_be_bytes()); // tag
         data[12..14].copy_from_slice(&3u16.to_be_bytes()); // SHORT
         data[14..18].copy_from_slice(&1u32.to_be_bytes()); // count=1
