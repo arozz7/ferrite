@@ -295,6 +295,11 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: String) {
+        // Session manager image-link overlay takes priority over everything else.
+        if self.session_manager.visible && self.session_manager.image_input_active() {
+            self.session_manager.handle_paste(&text);
+            return;
+        }
         // Route paste to the Drives screen if it has an active text field.
         if self.screen_idx == 0 {
             if let Some(dev) = self.drive_select.handle_paste(&text) {
