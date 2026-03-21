@@ -502,16 +502,19 @@ pre_validate = "webm"
 size_hint_kind = "ebml"
 
 [[signature]]
-name         = "Windows Media Video / ASF"
-extension    = "wmv"
+name           = "Windows Media Video / ASF"
+extension      = "wmv"
 # ASF (Advanced Systems Format) Header Object — used by WMV, WMA, and ASF
 # files.  The 16-byte GUID is globally unique; no other format shares it.
-header       = "30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C"
-footer       = ""
-min_size     = 4096
-max_size     = 4_294_967_296  # 4 GiB
+header         = "30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C"
+footer         = ""
+min_size       = 4096
+max_size       = 4_294_967_296  # 4 GiB
+# Walks ASF sub-objects to find the File Properties Object; reads exact file
+# size (u64 LE at FPO+40) — prevents extracting up to 4 GiB of garbage.
+size_hint_kind = "asf"
 # Validates ASF object size (u64 LE @16) is ≥ 30 bytes.
-pre_validate = "wmv"
+pre_validate   = "wmv"
 
 [[signature]]
 name         = "Flash Video (FLV)"
@@ -526,20 +529,24 @@ max_size     = 4_294_967_296  # 4 GiB
 pre_validate = "flv"
 
 [[signature]]
-name         = "MPEG-2 / MPEG-1 Program Stream"
-extension    = "mpg"
+name           = "MPEG-2 / MPEG-1 Program Stream"
+extension      = "mpg"
 # MPEG Program Stream pack header: 00 00 01 BA.
 # Byte @+4: top-2-bits == 01 → MPEG-2; top-4-bits == 0010 → MPEG-1.
-header       = "00 00 01 BA"
-footer       = ""
-min_size     = 4096
-max_size     = 4_294_967_296  # 4 GiB
+header         = "00 00 01 BA"
+footer         = ""
+min_size       = 4096
+max_size       = 4_294_967_296  # 4 GiB
+# Scans forward through pack headers (00 00 01 BA) and stops at the Program
+# End code (00 00 01 B9) or when sync is lost — prevents extracting 4 GiB of
+# trailing garbage from unrelated data.
+size_hint_kind = "mpeg_ps"
 # Validates MPEG-2 (0x40–0x7F) or MPEG-1 (0x20–0x2F) pack-byte pattern.
-pre_validate = "mpeg"
+pre_validate   = "mpeg"
 # Pack start code appears at every pack boundary within the stream (~every 2KB
 # on DVD), so suppress hits within 16 MiB of each other to avoid flooding the
 # hit list with intra-file duplicates.
-min_hit_gap  = 16_777_216     # 16 MiB
+min_hit_gap    = 16_777_216     # 16 MiB
 
 [[signature]]
 name         = "WebP Image"
@@ -1228,17 +1235,20 @@ header_offset = 128
 pre_validate  = "dicom"
 
 [[signature]]
-name          = "TAR Archive (POSIX ustar)"
-extension     = "tar"
+name           = "TAR Archive (POSIX ustar)"
+extension      = "tar"
 # POSIX ustar magic "ustar\0" at offset 257 within the first 512-byte header block.
 # Version string "00" or "  " at offset 263 (6 bytes after the magic).
-header        = "75 73 74 61 72 00"
-footer        = ""
-min_size      = 512          # Minimum: one 512-byte header block
-max_size      = 2_147_483_648 # 2 GiB
-header_offset = 257
+header         = "75 73 74 61 72 00"
+footer         = ""
+min_size       = 512          # Minimum: one 512-byte header block
+max_size       = 2_147_483_648 # 2 GiB
+header_offset  = 257
+# Walks 512-byte header+data blocks and stops at the double-zero end-of-archive
+# marker — extracts the exact archive size rather than up to 2 GiB.
+size_hint_kind = "tar"
 # Validates version string at offset 6 from magic is "00" or "  ".
-pre_validate  = "tar"
+pre_validate   = "tar"
 
 [[signature]]
 name         = "PHP Script"
