@@ -62,20 +62,26 @@ pub fn assess_health(data: &SmartData, thresholds: &SmartThresholds) -> HealthVe
         &mut criticals,
     );
 
-    // ID 3 — Spin_Up_Time (HDD only; raw value is milliseconds)
-    if let Some(attr) = data.attribute(3) {
-        let ms = attr.raw_value;
-        let t = &thresholds.spin_up_time_ms;
-        if ms >= t.critical_ms {
-            criticals.push(format!(
-                "Spin-up time {ms}ms ≥ critical threshold {}",
-                t.critical_ms
-            ));
-        } else if ms >= t.warning_ms {
-            warnings.push(format!(
-                "Spin-up time {ms}ms ≥ warning threshold {}",
-                t.warning_ms
-            ));
+    // ID 3 — Spin_Up_Time (spinning HDDs only; skip for SSDs and USB bridges).
+    // SSDs report rotation_rate == Some(0); USB bridge-connected drives often
+    // report None or garbage values for this attribute — checking it causes
+    // spurious CRITICAL verdicts on flash drives and external SSDs.
+    let is_spinning_hdd = matches!(data.rotation_rate, Some(rpm) if rpm > 0);
+    if is_spinning_hdd {
+        if let Some(attr) = data.attribute(3) {
+            let ms = attr.raw_value;
+            let t = &thresholds.spin_up_time_ms;
+            if ms >= t.critical_ms {
+                criticals.push(format!(
+                    "Spin-up time {ms}ms ≥ critical threshold {}",
+                    t.critical_ms
+                ));
+            } else if ms >= t.warning_ms {
+                warnings.push(format!(
+                    "Spin-up time {ms}ms ≥ warning threshold {}",
+                    t.warning_ms
+                ));
+            }
         }
     }
 
