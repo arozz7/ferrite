@@ -55,6 +55,9 @@ pub struct QuickRecoverState {
     entries: Vec<FileEntry>,
     selected: usize,
     scroll: usize,
+    /// Number of visible table rows in the last rendered frame (excludes header).
+    /// Updated by render(); used by move_selection() to keep the cursor in view.
+    visible_rows: usize,
 
     // multi-select
     checked: HashSet<usize>,
@@ -92,6 +95,7 @@ impl QuickRecoverState {
             entries: Vec::new(),
             selected: 0,
             scroll: 0,
+            visible_rows: 20,
             checked: HashSet::new(),
             filter: String::new(),
             filter_editing: false,
@@ -285,6 +289,10 @@ impl QuickRecoverState {
         match code {
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
+            KeyCode::PageUp => self.move_selection(-(self.visible_rows as i32)),
+            KeyCode::PageDown => self.move_selection(self.visible_rows as i32),
+            KeyCode::Home => self.move_selection(i32::MIN / 2),
+            KeyCode::End => self.move_selection(i32::MAX / 2),
             KeyCode::Char(' ') => self.toggle_check(),
             KeyCode::Char('a') => self.check_all_high(),
             KeyCode::Char('A') => self.check_all(),
@@ -308,10 +316,32 @@ impl QuickRecoverState {
             return;
         }
         let len = visible.len();
+        let step = delta.unsigned_abs() as usize;
         if delta < 0 {
-            self.selected = self.selected.saturating_sub(1);
+            self.selected = self.selected.saturating_sub(step);
         } else {
-            self.selected = (self.selected + 1).min(len - 1);
+            self.selected = (self.selected + step).min(len - 1);
+        }
+        self.clamp_scroll(len);
+    }
+
+    /// Adjust `scroll` so that `selected` is always within the visible viewport.
+    fn clamp_scroll(&mut self, list_len: usize) {
+        if list_len == 0 {
+            self.scroll = 0;
+            return;
+        }
+        self.selected = self.selected.min(list_len - 1);
+
+        // Scroll up if the cursor is above the viewport.
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        }
+
+        // Scroll down if the cursor is below the viewport.
+        let page = self.visible_rows.max(1);
+        if self.selected >= self.scroll + page {
+            self.scroll = self.selected + 1 - page;
         }
     }
 
@@ -528,6 +558,15 @@ impl QuickRecoverState {
             Constraint::Length(12), // date
             Constraint::Min(20),    // name
         ];
+
+        // Track how many rows fit so PageUp/PageDown works correctly.
+        // The table header occupies 1 line; the rest are data rows.
+        let area_height = chunks[list_idx].height as usize;
+        self.visible_rows = area_height.saturating_sub(1).max(1);
+
+        // Keep scroll in sync after a resize (area may have grown or shrunk).
+        let list_len = visible_indices.len();
+        self.clamp_scroll(list_len);
 
         if rows.is_empty() {
             let msg = if let Some(err) = &self.load_error {

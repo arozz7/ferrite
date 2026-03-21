@@ -214,6 +214,22 @@ pub enum SizeHint {
     /// false-positive IEND matches inside compressed IDAT data that cause
     /// premature truncation.
     Png,
+
+    /// ISO 9660 disc image size hint.
+    ///
+    /// Reads the Primary Volume Descriptor (PVD) at sector 16 (file offset
+    /// 32 768) and computes the exact image size from two embedded fields:
+    ///
+    /// ```text
+    /// Volume Space Size  — u32 LE at PVD+80  (total logical blocks)
+    /// Logical Block Size — u16 LE at PVD+128 (typically 2048 bytes)
+    /// total_size = Volume_Space_Size × Logical_Block_Size
+    /// ```
+    ///
+    /// Without this hint the ISO signature falls back to its 8.75 GiB
+    /// `max_size`, writing gigabytes of trailing garbage that prevents
+    /// the OS from mounting the image.
+    Iso9660,
 }
 
 impl SizeHint {
@@ -239,6 +255,7 @@ impl SizeHint {
             SizeHint::Pdf => "pdf",
             SizeHint::Gif => "gif",
             SizeHint::Png => "png",
+            SizeHint::Iso9660 => "iso9660",
         }
     }
 }
@@ -437,6 +454,7 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("pdf") => Some(SizeHint::Pdf),
                     Some(k) if k.eq_ignore_ascii_case("png") => Some(SizeHint::Png),
                     Some(k) if k.eq_ignore_ascii_case("gif") => Some(SizeHint::Gif),
+                    Some(k) if k.eq_ignore_ascii_case("iso9660") => Some(SizeHint::Iso9660),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
                         match (r.size_hint_ts_offset, r.size_hint_stride) {
                             (Some(ts_offset), Some(stride)) => {
