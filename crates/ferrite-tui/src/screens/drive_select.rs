@@ -215,7 +215,7 @@ impl DriveSelectState {
     pub fn handle_key(
         &mut self,
         code: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
     ) -> Option<Arc<dyn BlockDevice>> {
         // Image-open overlay takes priority over all other key handling.
         if let Some(ref mut input) = self.image_input {
@@ -228,7 +228,9 @@ impl DriveSelectState {
                     input.pop();
                     self.image_error = None;
                 }
-                KeyCode::Char(c) => {
+                // Only push printable characters; modifier combos (Ctrl+V etc.)
+                // are handled at the App level before reaching here.
+                KeyCode::Char(c) if modifiers.is_empty() => {
                     input.push(c);
                     self.image_error = None;
                 }

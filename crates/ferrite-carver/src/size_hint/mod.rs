@@ -9,6 +9,7 @@ mod ebml;
 mod elf;
 mod gif;
 pub(crate) mod helpers;
+mod iso9660;
 mod isobmff;
 mod linear;
 mod mpeg_ts;
@@ -99,6 +100,8 @@ pub(crate) fn read_size_hint(
         SizeHint::Gif => gif::gif_hint(device, file_offset, max_size),
 
         SizeHint::Png => png::png_hint(device, file_offset),
+
+        SizeHint::Iso9660 => iso9660::iso9660_hint(device, file_offset),
     }
 }
 

@@ -38,6 +38,16 @@ pub struct CarvingSession {
     /// Whether skip-corrupt mode was enabled when the session was saved.
     #[serde(default)]
     pub skip_corrupt: bool,
+    /// Full device path used when the session was created (e.g.
+    /// `\\.\PhysicalDrive2` or `M:\backup.img`).  Used by the session manager
+    /// to re-open image files, which have no serial number to match against.
+    #[serde(default)]
+    pub device_path: String,
+    /// Names of signatures that were disabled when the session was saved.
+    /// Only disabled sigs are stored (omission = enabled) so newly added
+    /// signatures are enabled by default on resume.
+    #[serde(default)]
+    pub disabled_sigs: Vec<String>,
 }
 
 impl CarvingSession {

@@ -1193,6 +1193,8 @@ fn validate_tiff_le(data: &[u8], pos: usize) -> bool {
     // 3. Reject Canon CR2 (CR\x02\x00 at offset +8 — use dedicated .cr2 signature).
     // 4. Reject Nikon NEF ("NIKON" in first 512 bytes — use dedicated .nef signature).
     // 5. IFD entry count at IFD0 offset must be in [1, 500] (if within chunk).
+    // 6. IFD0 must contain ImageWidth (tag 256) — rejects EXIF blocks embedded in
+    //    JPEGs, which share the TIFF magic but only carry metadata in IFD0.
     if need(data, pos, 8) {
         return true;
     }
@@ -1219,12 +1221,24 @@ fn validate_tiff_le(data: &[u8], pos: usize) -> bool {
     if window.windows(5).any(|w| w == b"Kodak" || w == b"KODAK") {
         return false;
     }
-    // Plausible IFD entry count
+    // Plausible IFD entry count; require ImageWidth (tag 256) in IFD0.
     if data.len() >= pos + ifd_off + 2 {
         let entry_count =
             u16::from_le_bytes([data[pos + ifd_off], data[pos + ifd_off + 1]]) as usize;
         if !(1..=500).contains(&entry_count) {
             return false;
+        }
+        // Walk IFD0 entries: each is 12 bytes, tag is u16 LE at entry base.
+        // If all entries fit in the available data, require ImageWidth (256).
+        let entries_end = pos + ifd_off + 2 + entry_count * 12;
+        if data.len() >= entries_end {
+            let has_image_width = (0..entry_count).any(|i| {
+                let e = pos + ifd_off + 2 + i * 12;
+                u16::from_le_bytes([data[e], data[e + 1]]) == 256
+            });
+            if !has_image_width {
+                return false;
+            }
         }
     }
     true
@@ -1234,6 +1248,7 @@ fn validate_tiff_be(data: &[u8], pos: usize) -> bool {
     // Generic big-endian TIFF (MM\x00\x2A).
     // IFD0 offset (u32 BE @ +4) must be in [8, 65536].
     // IFD entry count at IFD0 must be in [1, 500] (if within chunk).
+    // IFD0 must contain ImageWidth (tag 256) — same EXIF-in-JPEG rejection as LE.
     if need(data, pos, 8) {
         return true;
     }
@@ -1247,6 +1262,16 @@ fn validate_tiff_be(data: &[u8], pos: usize) -> bool {
             u16::from_be_bytes([data[pos + ifd_off], data[pos + ifd_off + 1]]) as usize;
         if !(1..=500).contains(&entry_count) {
             return false;
+        }
+        let entries_end = pos + ifd_off + 2 + entry_count * 12;
+        if data.len() >= entries_end {
+            let has_image_width = (0..entry_count).any(|i| {
+                let e = pos + ifd_off + 2 + i * 12;
+                u16::from_be_bytes([data[e], data[e + 1]]) == 256
+            });
+            if !has_image_width {
+                return false;
+            }
         }
     }
     true
@@ -2993,6 +3018,15 @@ mod tests {
         if ifd_off < 512 {
             let pos = ifd_off as usize;
             v[pos..pos + 2].copy_from_slice(&entry_count.to_le_bytes());
+            // Write a minimal ImageWidth (tag 256, SHORT, count=1, value=100) as
+            // the first IFD entry so the ImageWidth presence check passes.
+            if entry_count >= 1 && pos + 2 + 12 <= 512 {
+                let e = pos + 2;
+                v[e..e + 2].copy_from_slice(&256u16.to_le_bytes()); // tag
+                v[e + 2..e + 4].copy_from_slice(&3u16.to_le_bytes()); // SHORT
+                v[e + 4..e + 8].copy_from_slice(&1u32.to_le_bytes()); // count=1
+                v[e + 8..e + 12].copy_from_slice(&100u32.to_le_bytes()); // value
+            }
         }
         if let Some(m) = maker {
             v[100..100 + m.len()].copy_from_slice(m);
@@ -3032,6 +3066,38 @@ mod tests {
         assert!(!validate_tiff_le(&data, 0));
     }
 
+    #[test]
+    fn tiff_le_rejects_exif_only_ifd0() {
+        // Simulates an EXIF block embedded inside a JPEG: IFD0 has metadata tags
+        // but no ImageWidth (tag 256).  This is the false-positive produced when
+        // the scanner finds II\x2A\x00 inside a JPEG APP1 segment.
+        let mut data = vec![0u8; 512];
+        data[0..4].copy_from_slice(b"II\x2A\x00");
+        data[4..8].copy_from_slice(&8u32.to_le_bytes()); // IFD at 8
+        data[8..10].copy_from_slice(&3u16.to_le_bytes()); // 3 entries
+                                                          // Entry 0: Make (tag 271) — not ImageWidth
+        let e0 = 10usize;
+        data[e0..e0 + 2].copy_from_slice(&271u16.to_le_bytes());
+        // Entry 1: Model (tag 272)
+        let e1 = e0 + 12;
+        data[e1..e1 + 2].copy_from_slice(&272u16.to_le_bytes());
+        // Entry 2: ExifIFD (tag 34665) — still no ImageWidth
+        let e2 = e1 + 12;
+        data[e2..e2 + 2].copy_from_slice(&34665u16.to_le_bytes());
+        assert!(!validate_tiff_le(&data, 0));
+    }
+
+    #[test]
+    fn tiff_le_accepts_when_ifd_beyond_chunk() {
+        // IFD falls outside the available data — validator must pass through
+        // rather than rejecting, because it cannot know yet.
+        let mut data = vec![0u8; 16]; // only 16 bytes available
+        data[0..4].copy_from_slice(b"II\x2A\x00");
+        data[4..8].copy_from_slice(&8u32.to_le_bytes());
+        data[8..10].copy_from_slice(&3u16.to_le_bytes()); // entries beyond 16 bytes
+        assert!(validate_tiff_le(&data, 0));
+    }
+
     // ── TIFF BE ───────────────────────────────────────────────────────────────
 
     #[test]
@@ -3040,6 +3106,11 @@ mod tests {
         data[0..4].copy_from_slice(b"MM\x00\x2A");
         data[4..8].copy_from_slice(&8u32.to_be_bytes()); // IFD at 8
         data[8..10].copy_from_slice(&10u16.to_be_bytes()); // 10 entries
+                                                           // ImageWidth (tag 256) as first IFD entry (BE)
+        data[10..12].copy_from_slice(&256u16.to_be_bytes()); // tag
+        data[12..14].copy_from_slice(&3u16.to_be_bytes()); // SHORT
+        data[14..18].copy_from_slice(&1u32.to_be_bytes()); // count=1
+        data[18..22].copy_from_slice(&100u32.to_be_bytes()); // value
         assert!(validate_tiff_be(&data, 0));
     }
 

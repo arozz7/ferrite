@@ -109,6 +109,53 @@ fn jpeg_complete_with_ff_fill_bytes() {
     );
 }
 
+// ── JPEG fragmentation (embedded SOI) ───────────────────────────────────
+
+#[test]
+fn jpeg_corrupt_when_second_soi_after_app1() {
+    // Simulates ferrite_jpg_7875403264.jpg pattern:
+    // bytes 0-3: SOI + APP1 marker
+    // bytes 4-5: APP1 length = 10 (ends at offset 2 + 10 = 12)
+    // bytes 12+: second SOI — outside APP1, signals fragmentation
+    let mut head = vec![
+        0xFF, 0xD8, // SOI
+        0xFF, 0xE1, // APP1 marker
+        0x00, 0x0A, // APP1 length = 10
+        0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" (8 bytes body)
+        0xFF, 0xD8, // second SOI — after APP1 ends at byte 12
+        0x00, 0x01, // padding
+    ];
+    let tail = &[0xFF, 0xD9];
+    head.extend_from_slice(tail);
+    assert_eq!(
+        validate_extracted("jpg", &head, tail, false, head.len() as u64),
+        CarveQuality::Corrupt
+    );
+}
+
+#[test]
+fn jpeg_complete_when_soi_inside_app1_thumbnail() {
+    // A second SOI that falls within the APP1 block should NOT be flagged —
+    // Exif thumbnails legitimately embed a full JPEG inside APP1.
+    // APP1 length = 20, so segment ends at offset 2 + 20 = 22.
+    // Embed FF D8 at offset 14 (inside APP1).
+    let mut head = vec![
+        0xFF, 0xD8, // SOI
+        0xFF, 0xE1, // APP1 marker
+        0x00, 0x14, // APP1 length = 20 → ends at byte 22
+        0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0"
+        0xFF, 0xD8, // thumbnail SOI at offset 12 — inside APP1 (ok)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding to reach byte 22
+    ];
+    // After APP1: valid scan data + EOI (no second SOI outside APP1)
+    let tail = &[0x12u8, 0x34, 0xFF, 0xD9];
+    head.extend_from_slice(&[0x12, 0x34]); // scan data bytes after APP1
+    assert_eq!(
+        validate_extracted("jpg", &head, tail, false, (head.len() + 2) as u64),
+        CarveQuality::Complete
+    );
+}
+
 // ── PNG ──────────────────────────────────────────────────────────────────
 
 #[test]

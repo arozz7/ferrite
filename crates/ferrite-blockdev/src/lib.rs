@@ -22,6 +22,8 @@ pub use volume_guard::{parse_disk_number, VolsStatus, VolumeGuard};
 #[cfg(target_os = "windows")]
 pub use windows::{enumerate_devices, WindowsBlockDevice};
 
+use std::sync::Arc;
+
 use ferrite_core::types::DeviceInfo;
 
 /// Core abstraction over a block storage device.
@@ -44,4 +46,16 @@ pub trait BlockDevice: Send + Sync {
 
     /// Static device metadata (path, model, serial, capacity).
     fn device_info(&self) -> &DeviceInfo;
+
+    /// Try to open a second, independent handle to the same device.
+    ///
+    /// File-backed devices return a new handle that shares no mutex with the
+    /// original, allowing a scanner thread and an extractor thread to read
+    /// concurrently without blocking each other.
+    ///
+    /// Physical device implementations and the mock return `None`; callers
+    /// must fall back to sharing the original `Arc`.
+    fn try_clone_handle(&self) -> Option<Arc<dyn BlockDevice>> {
+        None
+    }
 }

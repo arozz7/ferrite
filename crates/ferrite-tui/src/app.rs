@@ -218,6 +218,25 @@ impl App {
             return;
         }
 
+        // Ctrl+C always quits — it must be handled before the text-edit guard
+        // so the user can escape even when a field is focused.  Crossterm
+        // delivers Ctrl+C as a key event in raw mode (it does not terminate
+        // the process), so without this handler it would be silently swallowed,
+        // leaving the user unable to exit and likely to resort to force-killing
+        // the process (which skips VolumeGuard::drop, leaving volumes offline).
+        if code == KeyCode::Char('c') && modifiers == KeyModifiers::CONTROL {
+            self.should_quit = true;
+            return;
+        }
+
+        // Ctrl+V: read clipboard and route to whichever text field is active.
+        // Crossterm delivers Ctrl+V as a key event (not Event::Paste) in some
+        // terminals; this makes it behave identically to a bracketed paste.
+        if code == KeyCode::Char('v') && modifiers == KeyModifiers::CONTROL {
+            self.ctrl_v_paste();
+            return;
+        }
+
         // 'q' quits unless a text-input field on the current screen is active.
         if code == KeyCode::Char('q') && modifiers.is_empty() {
             let in_edit = match self.screen_idx {
@@ -295,6 +314,11 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: String) {
+        // Session manager image-link overlay takes priority over everything else.
+        if self.session_manager.visible && self.session_manager.image_input_active() {
+            self.session_manager.handle_paste(&text);
+            return;
+        }
         // Route paste to the Drives screen if it has an active text field.
         if self.screen_idx == 0 {
             if let Some(dev) = self.drive_select.handle_paste(&text) {
@@ -313,6 +337,12 @@ impl App {
                 self.screen_idx = 1;
                 self.on_screen_enter();
             }
+        }
+    }
+
+    fn ctrl_v_paste(&mut self) {
+        if let Some(text) = read_clipboard() {
+            self.handle_paste(text);
         }
     }
 
@@ -476,6 +506,58 @@ fn help_line(screen: usize, has_device: bool) -> &'static str {
     }
 }
 
+// ── Clipboard helper ──────────────────────────────────────────────────────────
+
+/// Read plain text from the system clipboard.
+///
+/// On Windows this uses the Win32 clipboard API directly.  Returns `None` if
+/// the clipboard is empty, holds non-text data, or the API call fails.
+///
+/// On non-Windows platforms bracketed paste (`Event::Paste`) already handles
+/// terminal paste; this stub keeps the call site unconditional.
+#[cfg(target_os = "windows")]
+fn read_clipboard() -> Option<String> {
+    use std::ptr;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, OpenClipboard,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+
+    const CF_UNICODETEXT: u32 = 13;
+
+    // SAFETY: All Win32 handles are checked for validity before use.
+    unsafe {
+        if OpenClipboard(ptr::null_mut()) == 0 {
+            return None;
+        }
+        let h = GetClipboardData(CF_UNICODETEXT);
+        if h.is_null() {
+            CloseClipboard();
+            return None;
+        }
+        let ptr = GlobalLock(h as _) as *const u16;
+        if ptr.is_null() {
+            CloseClipboard();
+            return None;
+        }
+        // Walk to the null terminator.
+        let mut len = 0usize;
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        let text = String::from_utf16_lossy(slice);
+        GlobalUnlock(h as _);
+        CloseClipboard();
+        Some(text)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn read_clipboard() -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,6 +582,13 @@ mod tests {
     fn quit_key_sets_flag() {
         let mut app = App::new();
         app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_unconditionally() {
+        let mut app = App::new();
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit);
     }
 

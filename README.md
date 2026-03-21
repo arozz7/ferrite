@@ -2,6 +2,50 @@
 
 Autonomous storage diagnostics and data recovery — built in pure Rust.
 
+## Screenshots
+
+### Drive Selection
+<!-- Screenshot: Drives tab — device list with serial, model, size columns; image-file open overlay -->
+![Drive Selection](docs/screenshots/01-drives.png)
+
+### S.M.A.R.T. Health
+<!-- Screenshot: Health tab — attribute table with pass/warn/fail indicators -->
+![S.M.A.R.T. Health](docs/screenshots/02-health.png)
+
+### Resilient Disk Imaging
+<!-- Screenshot: Imaging tab — multi-pass progress bar, rate, ETA, pass indicator, stats line -->
+![Resilient Disk Imaging](docs/screenshots/03-imaging.png)
+
+### Partition Recovery
+<!-- Screenshot: Partitions tab — MBR/GPT table with type, LBA start/end, size -->
+![Partition Recovery](docs/screenshots/04-partitions.png)
+
+### Filesystem Analysis
+<!-- Screenshot: Files tab — directory tree with live and deleted (cyan) entries, size and type columns -->
+![Filesystem Analysis](docs/screenshots/05-files.png)
+
+### File Carving
+<!-- Screenshot: Carving tab — signature panel (left) + hit list (right) with quality indicators -->
+![File Carving](docs/screenshots/06-carving.png)
+
+### Hex Viewer
+<!-- Screenshot: Hex tab — raw sector view with hex and ASCII columns, offset bar -->
+![Hex Viewer](docs/screenshots/07-hex.png)
+
+### Quick Recover
+<!-- Screenshot: Quick Recover tab — deleted file list with HIGH/MED/LOW recovery-chance tags -->
+![Quick Recover](docs/screenshots/08-quick-recover.png)
+
+### Artifact Scanner
+<!-- Screenshot: Artifacts tab — hit list with kind (URL/PATH/EMAIL/CC/IBAN/SSN) and offset columns -->
+![Artifact Scanner](docs/screenshots/09-artifacts.png)
+
+### Text Block Scanner
+<!-- Screenshot: Text Scan tab — extracted text block list with kind filter and export options -->
+![Text Block Scanner](docs/screenshots/10-text-scan.png)
+
+---
+
 ## Overview
 
 Ferrite recovers data from failing drives through ten operational screens:

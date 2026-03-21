@@ -1207,6 +1207,9 @@ footer        = ""
 min_size      = 32769        # At least sector 16 + PVD signature
 max_size      = 9_395_240_960 # 8.75 GiB — dual-layer DVD
 header_offset = 32769
+# Derives exact image size from PVD: volume_space_size (u32 LE @PVD+80) × logical_block_size (u16 LE @PVD+128).
+# Without this hint the extractor would write up to 8.75 GiB of trailing garbage, preventing mounting.
+size_hint_kind = "iso9660"
 # Validates version byte @5 == 1.
 pre_validate  = "iso"
 

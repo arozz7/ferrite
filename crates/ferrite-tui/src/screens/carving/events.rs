@@ -159,23 +159,27 @@ impl CarvingState {
                             HitStatus::Ok { bytes }
                         };
                         entry.quality = Some(quality);
+                        self.checkpoint_extract_pending.push(idx);
                     }
                 }
                 Ok(CarveMsg::Duplicate { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
                         entry.status = HitStatus::Duplicate;
+                        self.checkpoint_extract_pending.push(idx);
                     }
                     self.duplicates_suppressed += 1;
                 }
                 Ok(CarveMsg::Skipped { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
                         entry.status = HitStatus::Skipped;
+                        self.checkpoint_extract_pending.push(idx);
                     }
                     self.skipped_trunc_count += 1;
                 }
                 Ok(CarveMsg::SkippedCorrupt { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
                         entry.status = HitStatus::Skipped;
+                        self.checkpoint_extract_pending.push(idx);
                     }
                     self.skipped_corrupt_count += 1;
                 }
@@ -210,12 +214,20 @@ impl CarvingState {
                     self.extract_progress = None;
                     self.extract_cancel.store(false, Ordering::Relaxed);
                     self.extract_pause.store(false, Ordering::Relaxed);
-                    // Lift back-pressure so the scan can resume between batches.
-                    // Only clear the scan pause when no manual pause is active.
-                    if self.backpressure_paused && self.status == CarveStatus::Running {
-                        self.backpressure_paused = false;
-                        self.pause.store(false, Ordering::Relaxed);
+                    // Flush extraction status updates to the checkpoint file
+                    // so that resume correctly skips already-extracted hits.
+                    if let Some(cp) = &self.checkpoint_path {
+                        let cp = cp.clone();
+                        let updates: Vec<(&ferrite_carver::CarveHit, &HitStatus)> = self
+                            .checkpoint_extract_pending
+                            .iter()
+                            .filter_map(|&i| self.hits.get(i).map(|e| (&e.hit, &e.status)))
+                            .collect();
+                        let _ = checkpoint::append_batch(&cp, &updates);
                     }
+                    self.checkpoint_extract_pending.clear();
+                    // Back-pressure is lifted by pump_auto_extract once the
+                    // queue is fully drained — do not resume here.
                     // Only show summary when at least one file was attempted.
                     if succeeded + truncated + failed + duplicates + skipped_trunc + skipped_corrupt
                         > 0

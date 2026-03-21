@@ -9,13 +9,11 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use ferrite_blockdev::AlignedBuffer;
+use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 use ferrite_carver::{post_validate, CarveHit, CarveQuality, Carver, CarvingConfig};
 use ferrite_filesystem::MetadataIndex;
 
-use super::{
-    CarveMsg, CarveStatus, CarvingState, ExtractProgress, HitStatus, AUTO_EXTRACT_LOW_WATER,
-};
+use super::{CarveMsg, CarveStatus, CarvingState, ExtractProgress, HitStatus};
 
 // ── CancelWriter ──────────────────────────────────────────────────────────────
 
@@ -345,23 +343,23 @@ impl CarvingState {
     }
 
     /// Drain the auto-extract queue and start a new extraction batch if none
-    /// is currently running.  Also lifts the back-pressure scan pause once the
-    /// queue drains below `AUTO_EXTRACT_LOW_WATER`.
+    /// is currently running.  Lifts the back-pressure scan pause only when the
+    /// queue is fully empty (no remaining items to extract).
     pub(super) fn pump_auto_extract(&mut self) {
         if self.extract_progress.is_some() {
             return; // a batch is already in flight
         }
 
-        // Low-water resume: if the queue has drained enough, let the scan continue.
-        if self.backpressure_paused && self.auto_extract_queue.len() < AUTO_EXTRACT_LOW_WATER {
-            self.backpressure_paused = false;
-            // Only clear the pause flag if the user hasn't manually paused too.
-            if self.status == CarveStatus::Running {
-                self.pause.store(false, Ordering::Relaxed);
-            }
-        }
-
+        // Queue empty: lift back-pressure and let the scan continue.
+        // We only resume here — never mid-batch — so scanning is fully
+        // paused while any extraction work remains in the queue.
         if self.auto_extract_queue.is_empty() {
+            if self.backpressure_paused {
+                self.backpressure_paused = false;
+                if self.status == CarveStatus::Running {
+                    self.pause.store(false, Ordering::Relaxed);
+                }
+            }
             return;
         }
         const BATCH: usize = 500;
@@ -384,6 +382,12 @@ impl CarvingState {
             Some(d) => Arc::clone(d),
             None => return,
         };
+        // For file-backed image sources, open a second independent handle so
+        // the extractor thread and the scanner thread can call read_at
+        // concurrently without blocking each other on the shared Mutex<File>.
+        let device = device
+            .try_clone_handle()
+            .unwrap_or_else(|| Arc::clone(&device));
         let tx = match &self.tx {
             Some(t) => t.clone(),
             None => return,
@@ -435,13 +439,14 @@ impl CarvingState {
             start: Instant::now(),
         });
 
-        // Single worker: on a spinning disk (HDD/USB) multiple concurrent
-        // workers issuing I/O at different offsets force constant head seeks,
-        // making throughput worse than serial extraction.  A single worker
-        // drains the offset-sorted queue in forward address order, giving the
-        // best possible sequential-read behaviour.  This is also gentler on
-        // potentially damaged recovery targets.
-        let concurrency = 1;
+        // Single extraction worker.  Extraction involves creating many small
+        // files, which on an HDD (including external USB HDDs) generates random
+        // metadata I/O (MFT updates, directory entries) that serialises at the
+        // platter regardless of how many writers are open.  Multiple concurrent
+        // writers multiply the seek penalty and actually reduce throughput.
+        // The scanner and extractor now use independent file handles (see
+        // try_clone_handle above), so the scanner is never blocked by writes.
+        let worker_devices: Vec<Arc<dyn BlockDevice>> = vec![Arc::clone(&device)];
 
         // Shared work queue drained by all workers.
         let queue: Arc<Mutex<VecDeque<(usize, CarveHit, String)>>> =
@@ -491,9 +496,9 @@ impl CarvingState {
             }
             let (done_tx, done_rx) = std::sync::mpsc::channel::<WorkerMsg>();
 
-            for _ in 0..concurrency {
+            for worker_device in worker_devices {
                 let queue = Arc::clone(&queue);
-                let device = Arc::clone(&device);
+                let device = worker_device;
                 let done_tx = done_tx.clone();
                 let cancel = Arc::clone(&cancel);
                 let pause = Arc::clone(&pause);

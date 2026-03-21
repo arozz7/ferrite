@@ -314,20 +314,51 @@ impl FilesystemParser for Fat32Parser {
     }
 
     fn deleted_files(&self) -> Result<Vec<FileEntry>> {
-        let raw = self.raw_dir_entries(self.root_cluster)?;
-        let all = self.build_entries(&raw, true);
-        let mut deleted: Vec<FileEntry> = all.into_iter().filter(|e| e.is_deleted).collect();
-        for entry in deleted.iter_mut() {
-            entry.recovery_chance = if entry.size == 0 {
-                RecoveryChance::Unknown
-            } else if entry.first_cluster.map(|c| c >= 2).unwrap_or(false) {
-                // Start cluster is still recorded in the dirent — partial chain info
-                RecoveryChance::Medium
-            } else {
-                RecoveryChance::Low
+        use std::collections::{HashSet, VecDeque};
+
+        let mut result = Vec::new();
+        // visited guards against corrupt FAT cycles (same cluster reachable via two paths).
+        let mut visited: HashSet<u32> = HashSet::new();
+        // Queue entries: (dir_start_cluster, path_prefix_for_entries_inside_this_dir).
+        // Root entries use an empty prefix so paths come out as "/name".
+        let mut queue: VecDeque<(u32, String)> = VecDeque::new();
+        queue.push_back((self.root_cluster, String::new()));
+
+        while let Some((cluster, dir_prefix)) = queue.pop_front() {
+            if !visited.insert(cluster) {
+                continue; // already walked this cluster — cycle or alias
+            }
+            let raw = match self.raw_dir_entries(cluster) {
+                Ok(r) => r,
+                Err(_) => continue, // damaged / unreadable cluster — skip, keep going
             };
+            for mut entry in self.build_entries(&raw, true) {
+                // build_entries emits "/<name>"; replace with the full tree path.
+                let full_path = format!("{}/{}", dir_prefix, entry.name);
+                entry.path = full_path.clone();
+
+                if entry.is_deleted && !entry.is_dir {
+                    entry.recovery_chance = if entry.size == 0 {
+                        RecoveryChance::Unknown
+                    } else if entry.first_cluster.map(|c| c >= 2).unwrap_or(false) {
+                        // Start cluster recorded in the dirent — cluster chain intact or partially so.
+                        RecoveryChance::Medium
+                    } else {
+                        RecoveryChance::Low
+                    };
+                    result.push(entry);
+                } else if !entry.is_deleted && entry.is_dir {
+                    // Recurse into every live subdirectory.
+                    // Deleted directories are skipped: their cluster may have been reused.
+                    if let Some(sub_cluster) = entry.first_cluster {
+                        if sub_cluster >= 2 {
+                            queue.push_back((sub_cluster, full_path));
+                        }
+                    }
+                }
+            }
         }
-        Ok(deleted)
+        Ok(result)
     }
 }
 
@@ -543,6 +574,128 @@ mod tests {
         let deleted = parser.deleted_files().unwrap();
         assert_eq!(deleted.len(), 1);
         assert!(deleted[0].is_deleted);
+    }
+
+    /// Build a FAT32 image that has a live subdirectory containing a deleted file.
+    ///
+    /// Layout (10 sectors × 512 bytes, cluster_size = 512):
+    ///  - Sector 0:  Boot sector
+    ///  - Sectors 1-3: Reserved
+    ///  - Sector 4:  FAT1  (clusters 0-5)
+    ///  - Sector 5:  FAT2
+    ///  - Sector 6:  Root dir  (cluster 2): HELLO.TXT + GONE.DAT (deleted) + SUBDIR/
+    ///  - Sector 7:  HELLO.TXT data (cluster 3)
+    ///  - Sector 8:  SUBDIR contents (cluster 4): . + .. + SUBDEL.TXT (deleted)
+    ///  - Sector 9:  SUBDEL.TXT data (cluster 5)
+    fn build_subdir_image() -> MockBlockDevice {
+        let mut dev = MockBlockDevice::zeroed(10 * 512, 512);
+
+        // ── Boot sector ───────────────────────────────────────────────────────
+        let mut boot = [0u8; 512];
+        boot[3..11].copy_from_slice(b"MSDOS5.0");
+        boot[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes_per_sector
+        boot[13] = 1; // sectors_per_cluster
+        boot[14..16].copy_from_slice(&4u16.to_le_bytes()); // reserved_sectors
+        boot[16] = 2; // num_fats
+        boot[36..40].copy_from_slice(&1u32.to_le_bytes()); // fat_size_32 (1 sector per FAT)
+        boot[44..48].copy_from_slice(&2u32.to_le_bytes()); // root_cluster = 2
+        boot[82..90].copy_from_slice(b"FAT32   ");
+        boot[510] = 0x55;
+        boot[511] = 0xAA;
+        dev.write_sector(0, &boot);
+
+        // ── FAT (sectors 4 and 5) — 6 clusters ───────────────────────────────
+        let mut fat = [0u8; 512];
+        fat[0..4].copy_from_slice(&0x0FFF_FFF8u32.to_le_bytes()); // cluster 0: media
+        fat[4..8].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes()); // cluster 1: reserved
+        fat[8..12].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes()); // cluster 2: root dir EOC
+        fat[12..16].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes()); // cluster 3: HELLO.TXT EOC
+        fat[16..20].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes()); // cluster 4: SUBDIR EOC
+        fat[20..24].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes()); // cluster 5: SUBDEL.TXT EOC
+        dev.write_sector(4, &fat);
+        dev.write_sector(5, &fat);
+
+        // ── Root directory (sector 6 = cluster 2) ────────────────────────────
+        let mut root = [0u8; 512];
+        // Entry 0: HELLO.TXT (live, cluster 3, 13 bytes)
+        root[0..8].copy_from_slice(b"HELLO   ");
+        root[8..11].copy_from_slice(b"TXT");
+        root[11] = 0x20; // archive
+        root[26..28].copy_from_slice(&3u16.to_le_bytes()); // cluster_lo = 3
+        root[28..32].copy_from_slice(&13u32.to_le_bytes()); // size
+                                                            // Entry 1: deleted GONE.DAT (root-level deleted file)
+        root[32] = DELETED_MARKER;
+        root[33..40].copy_from_slice(b"ONE    ");
+        root[40..43].copy_from_slice(b"DAT");
+        root[43] = 0x20;
+        root[58..60].copy_from_slice(&3u16.to_le_bytes()); // cluster_lo = 3 (reused for test)
+        root[60..64].copy_from_slice(&4u32.to_le_bytes()); // size = 4
+                                                           // Entry 2: SUBDIR (live directory, cluster 4)
+        root[64..72].copy_from_slice(b"SUBDIR  ");
+        root[72..75].copy_from_slice(b"   ");
+        root[75] = 0x10; // ATTR_DIRECTORY
+        root[90..92].copy_from_slice(&4u16.to_le_bytes()); // cluster_lo = 4
+                                                           // Entry 3: end-of-directory
+        root[96] = 0x00;
+        dev.write_sector(6, &root);
+
+        // ── HELLO.TXT data (sector 7 = cluster 3) ────────────────────────────
+        let mut content = [0u8; 512];
+        content[..13].copy_from_slice(b"Hello, World!");
+        dev.write_sector(7, &content);
+
+        // ── SUBDIR contents (sector 8 = cluster 4) ───────────────────────────
+        let mut sub = [0u8; 512];
+        // Entry 0: . (self)
+        sub[0..8].copy_from_slice(b".       ");
+        sub[8..11].copy_from_slice(b"   ");
+        sub[11] = 0x10;
+        sub[26..28].copy_from_slice(&4u16.to_le_bytes()); // cluster = 4 (self)
+                                                          // Entry 1: .. (parent)
+        sub[32..40].copy_from_slice(b"..      ");
+        sub[40..43].copy_from_slice(b"   ");
+        sub[43] = 0x10;
+        sub[58..60].copy_from_slice(&2u16.to_le_bytes()); // cluster = 2 (root)
+                                                          // Entry 2: deleted SUBDEL.TXT (cluster 5, 5 bytes)
+        sub[64] = DELETED_MARKER;
+        sub[65..72].copy_from_slice(b"UBDEL  ");
+        sub[72..75].copy_from_slice(b"TXT");
+        sub[75] = 0x20;
+        sub[90..92].copy_from_slice(&5u16.to_le_bytes()); // cluster_lo = 5
+        sub[92..96].copy_from_slice(&5u32.to_le_bytes()); // size = 5
+                                                          // Entry 3: end-of-directory
+        sub[96] = 0x00;
+        dev.write_sector(8, &sub);
+
+        // ── SUBDEL.TXT data (sector 9 = cluster 5) ───────────────────────────
+        let mut subdata = [0u8; 512];
+        subdata[..5].copy_from_slice(b"hello");
+        dev.write_sector(9, &subdata);
+
+        dev
+    }
+
+    #[test]
+    fn deleted_files_in_subdirectory_found() {
+        let dev = Arc::new(build_subdir_image());
+        let parser = Fat32Parser::new(dev).unwrap();
+        let deleted = parser.deleted_files().unwrap();
+
+        // Should find the root-level GONE.DAT AND the SUBDIR/SUBDEL.TXT.
+        assert_eq!(
+            deleted.len(),
+            2,
+            "expected 2 deleted files (root + subdirectory), got: {:?}",
+            deleted.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
+        assert!(deleted.iter().all(|e| e.is_deleted));
+
+        let has_subdir_entry = deleted.iter().any(|e| e.path.contains("SUBDIR"));
+        assert!(
+            has_subdir_entry,
+            "expected a deleted file under SUBDIR, paths: {:?}",
+            deleted.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
     }
 
     #[test]

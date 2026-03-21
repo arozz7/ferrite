@@ -111,8 +111,16 @@ impl TextScanState {
             Some(r) => r,
             None => return,
         };
+        // Cap per-tick drain so the TUI render thread cannot be blocked for
+        // an arbitrarily long time when many batches have queued up (e.g.
+        // after switching back from another tab mid-scan).
+        const MAX_MSGS_PER_TICK: usize = 100;
+        let mut processed = 0;
         let mut done = false;
         loop {
+            if processed >= MAX_MSGS_PER_TICK {
+                break;
+            }
             match rx.try_recv() {
                 Ok(TextScanMsg::BlockBatch(batch)) => {
                     for block in batch {
@@ -124,9 +132,11 @@ impl TextScanState {
                             self.filtered.push(idx);
                         }
                     }
+                    processed += 1;
                 }
                 Ok(TextScanMsg::Progress(p)) => {
                     self.progress = Some(p);
+                    processed += 1;
                 }
                 Ok(TextScanMsg::Done { total_blocks: _ }) => {
                     self.status = ScanStatus::Done;

@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use ferrite_core::types::DeviceInfo;
 use tracing::instrument;
@@ -11,9 +11,14 @@ use crate::{AlignedBuffer, BlockDevice, BlockDeviceError, Result};
 ///
 /// Intended for testing and for imaging to/from disk image files.
 /// Uses `Mutex<File>` so `read_at` can seek on a shared `&self` reference.
+///
+/// Call [`try_clone_handle`](BlockDevice::try_clone_handle) to open a second
+/// independent handle for concurrent access (e.g. scan + extract threads).
 pub struct FileBlockDevice {
     inner: Mutex<File>,
     info: DeviceInfo,
+    /// Original path, kept so `try_clone_handle` can reopen the file.
+    path: std::path::PathBuf,
 }
 
 impl FileBlockDevice {
@@ -40,6 +45,7 @@ impl FileBlockDevice {
         Ok(Self {
             inner: Mutex::new(file),
             info,
+            path: path.to_path_buf(),
         })
     }
 }
@@ -89,6 +95,17 @@ impl BlockDevice for FileBlockDevice {
 
     fn device_info(&self) -> &DeviceInfo {
         &self.info
+    }
+
+    /// Open a second independent handle to the same file.
+    ///
+    /// The new handle has its own `Mutex<File>` so the caller's scan thread
+    /// and a concurrent extraction thread can both call `read_at` without
+    /// blocking each other.
+    fn try_clone_handle(&self) -> Option<Arc<dyn BlockDevice>> {
+        FileBlockDevice::open(&self.path)
+            .ok()
+            .map(|d| Arc::new(d) as Arc<dyn BlockDevice>)
     }
 }
 
