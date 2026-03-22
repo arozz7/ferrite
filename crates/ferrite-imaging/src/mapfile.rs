@@ -88,13 +88,15 @@ impl Mapfile {
 
     /// Construct from a pre-parsed block list (used by `mapfile_io`).
     pub(crate) fn from_blocks(blocks: Vec<Block>, device_size: u64) -> Self {
-        let mut mf = Self {
+        let mut counts = [0u64; 5];
+        for b in &blocks {
+            counts[b.status.index()] += b.size;
+        }
+        Self {
             blocks,
             device_size,
-            counts: [0; 5],
-        };
-        mf.recompute_counts();
-        mf
+            counts,
+        }
     }
 
     // ── Queries ───────────────────────────────────────────────────────────────
@@ -192,15 +194,23 @@ impl Mapfile {
         }
 
         self.blocks.splice(start_idx..end_idx, replacements);
-        self.merge_adjacent();
-        self.recompute_counts();
+        self.merge_and_recount();
     }
 
-    /// Merge contiguous adjacent blocks that share the same status.
-    pub fn merge_adjacent(&mut self) {
+    // ── Internal ──────────────────────────────────────────────────────────────
+
+    /// Merge contiguous adjacent blocks that share the same status, and recompute
+    /// byte counts — all in a single O(n) pass to avoid scanning the block list twice.
+    fn merge_and_recount(&mut self) {
+        let mut counts = [0u64; 5];
         if self.blocks.len() <= 1 {
+            for b in &self.blocks {
+                counts[b.status.index()] += b.size;
+            }
+            self.counts = counts;
             return;
         }
+
         let mut merged: Vec<Block> = Vec::with_capacity(self.blocks.len());
         for block in self.blocks.drain(..) {
             match merged.last_mut() {
@@ -210,16 +220,11 @@ impl Mapfile {
                 _ => merged.push(block),
             }
         }
-        self.blocks = merged;
-    }
-
-    // ── Internal ──────────────────────────────────────────────────────────────
-
-    fn recompute_counts(&mut self) {
-        self.counts = [0; 5];
-        for b in &self.blocks {
-            self.counts[b.status.index()] += b.size;
+        for b in &merged {
+            counts[b.status.index()] += b.size;
         }
+        self.blocks = merged;
+        self.counts = counts;
     }
 }
 

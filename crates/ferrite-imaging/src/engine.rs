@@ -1,4 +1,5 @@
 use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -11,6 +12,14 @@ use crate::mapfile::{BlockStatus, Mapfile};
 use crate::mapfile_io;
 use crate::passes;
 use crate::progress::{ImagingPhase, ProgressReporter, ProgressUpdate};
+
+/// How many `make_progress` ticks between mapfile block-list snapshots sent to the TUI.
+const SNAPSHOT_INTERVAL: u32 = 50;
+/// How many `make_progress` ticks between `Instant::elapsed()` calls for rolling-rate updates.
+/// Keeps syscall frequency low during sector-by-sector passes (scrape/trim/retry).
+const RATE_CHECK_INTERVAL: u32 = 100;
+/// Minimum wall-clock seconds that must elapse before the rolling rate is recomputed.
+const RATE_UPDATE_MIN_SECS: f64 = 1.0;
 
 /// The imaging engine. Owns the mapfile, output file, and drives all five passes.
 pub struct ImagingEngine {
@@ -27,8 +36,20 @@ pub struct ImagingEngine {
     /// Most recently computed rolling read rate (bytes/sec).
     pub(crate) current_rate_bps: u64,
     /// Counter incremented on every `make_progress` call; used to throttle
-    /// mapfile snapshots sent to the TUI.
+    /// snapshots and rate-update syscalls.
     pub(crate) snapshot_counter: u32,
+    /// Path of the `.lock` sidecar file created on startup and removed on drop.
+    /// `None` when the config has no output path (tests) or when lock creation
+    /// is skipped for a zero-length output path.
+    lock_path: Option<std::path::PathBuf>,
+}
+
+impl Drop for ImagingEngine {
+    fn drop(&mut self) {
+        if let Some(ref p) = self.lock_path {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 impl ImagingEngine {
@@ -74,6 +95,33 @@ impl ImagingEngine {
             mapfile.update_range(end_byte, device_size - end_byte, BlockStatus::Finished);
         }
 
+        // Create a lock sidecar (`<output>.lock`) to prevent two concurrent sessions
+        // from writing to the same image file.
+        let lock_path = {
+            let mut p = config.output_path.clone();
+            let mut name = p.file_name().unwrap_or_default().to_os_string();
+            name.push(".lock");
+            p.set_file_name(name);
+            p
+        };
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => {} // lock file created; the File is intentionally dropped here —
+            // the path itself acts as the lock, removed on engine drop.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(ImagingError::OutputLocked {
+                    path: config.output_path.clone(),
+                });
+            }
+            Err(_) => {
+                // Lock file could not be created (e.g. read-only filesystem in tests).
+                // Proceed without locking rather than blocking legitimate use.
+            }
+        }
+
         // Open output file (create if absent, preserve existing content for resume).
         let output = OpenOptions::new()
             .create(true)
@@ -98,6 +146,7 @@ impl ImagingEngine {
             last_rate_bytes: 0,
             current_rate_bps: 0,
             snapshot_counter: 0,
+            lock_path: Some(lock_path),
         })
     }
 
@@ -107,15 +156,19 @@ impl ImagingEngine {
     pub fn run(&mut self, reporter: &mut dyn ProgressReporter) -> Result<()> {
         info!("imaging: starting copy pass");
         passes::copy::run(self, reporter)?;
+        self.flush_output()?;
 
         info!("imaging: starting trim pass");
         passes::trim::run(self, reporter)?;
+        self.flush_output()?;
 
         info!("imaging: starting sweep pass");
         passes::sweep::run(self, reporter)?;
+        self.flush_output()?;
 
         info!("imaging: starting scrape pass");
         passes::scrape::run(self, reporter)?;
+        self.flush_output()?;
 
         for attempt in 0..self.config.max_retries {
             if !self.mapfile.has_status(BlockStatus::BadSector) {
@@ -165,6 +218,18 @@ impl ImagingEngine {
         Ok(())
     }
 
+    /// Flush the output image file's user-space write buffer to the OS.
+    ///
+    /// Called after each pass completes so that buffered writes reach the kernel
+    /// cache before the mapfile checkpoint is updated. This reduces the risk of
+    /// mapfile/image divergence if the process is killed between passes.
+    pub(crate) fn flush_output(&mut self) -> Result<()> {
+        self.output.flush().map_err(|e| ImagingError::ImageWrite {
+            offset: 0,
+            source: e,
+        })
+    }
+
     pub(crate) fn save_mapfile(&mut self) -> Result<()> {
         if let Some(path) = &self.config.mapfile_path.clone() {
             mapfile_io::save_atomic(&self.mapfile, path)?;
@@ -183,17 +248,21 @@ impl ImagingEngine {
     ) -> ProgressUpdate {
         let bytes_finished = self.mapfile.bytes_with_status(BlockStatus::Finished);
 
-        // Update rolling rate once per second.
-        let elapsed_secs = self.last_rate_instant.elapsed().as_secs_f64();
-        if elapsed_secs >= 1.0 {
-            let delta = bytes_finished.saturating_sub(self.last_rate_bytes);
-            self.current_rate_bps = (delta as f64 / elapsed_secs) as u64;
-            self.last_rate_instant = Instant::now();
-            self.last_rate_bytes = bytes_finished;
+        self.snapshot_counter = self.snapshot_counter.wrapping_add(1);
+
+        // Only call Instant::elapsed() every RATE_CHECK_INTERVAL ticks to avoid a
+        // syscall on every sector read during sector-by-sector passes (scrape/trim/retry).
+        if self.snapshot_counter % RATE_CHECK_INTERVAL == 1 {
+            let elapsed_secs = self.last_rate_instant.elapsed().as_secs_f64();
+            if elapsed_secs >= RATE_UPDATE_MIN_SECS {
+                let delta = bytes_finished.saturating_sub(self.last_rate_bytes);
+                self.current_rate_bps = (delta as f64 / elapsed_secs) as u64;
+                self.last_rate_instant = Instant::now();
+                self.last_rate_bytes = bytes_finished;
+            }
         }
 
-        self.snapshot_counter = self.snapshot_counter.wrapping_add(1);
-        let map_snapshot = if self.snapshot_counter % 50 == 1 {
+        let map_snapshot = if self.snapshot_counter % SNAPSHOT_INTERVAL == 1 {
             Some(self.mapfile.blocks().to_vec())
         } else {
             None
@@ -441,12 +510,13 @@ mod tests {
         // Use FailFirstN(0) everywhere so the device always succeeds.
         let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
         let (mut engine, tmp) = make_engine(mock);
-        // Run once to completion.
+        // Run once to completion, then drop the engine to release the lock.
         engine.run(&mut NullReporter).unwrap();
         assert_eq!(
             engine.mapfile().bytes_with_status(BlockStatus::Finished),
             SIZE as u64
         );
+        drop(engine); // releases the .lock sidecar before creating the second engine
 
         // Second run on an already-finished mapfile: copy pass should find no
         // NonTried blocks — nothing to do.
@@ -533,5 +603,56 @@ mod tests {
                 "sector {i} content mismatch in reverse mode"
             );
         }
+    }
+
+    #[test]
+    fn second_engine_on_same_output_returns_locked() {
+        let mock1 = MockBlockDevice::zeroed(SIZE, SECTOR);
+        let mock2 = MockBlockDevice::zeroed(SIZE, SECTOR);
+        let tmp = NamedTempFile::new().unwrap();
+        let make_config = || ImagingConfig {
+            copy_block_size: SECTOR as u64,
+            max_retries: 0,
+            mapfile_save_interval: std::time::Duration::MAX,
+            output_path: tmp.path().to_path_buf(),
+            mapfile_path: None,
+            start_lba: None,
+            end_lba: None,
+            reverse: false,
+        };
+
+        // First engine takes the lock.
+        let _engine1 = ImagingEngine::new(Arc::new(mock1), make_config()).unwrap();
+
+        // Second engine on the same output must fail with OutputLocked.
+        let result = ImagingEngine::new(Arc::new(mock2), make_config());
+        assert!(
+            matches!(result, Err(ImagingError::OutputLocked { .. })),
+            "expected OutputLocked error"
+        );
+    }
+
+    #[test]
+    fn lock_released_after_engine_drop() {
+        let mock1 = MockBlockDevice::zeroed(SIZE, SECTOR);
+        let mock2 = MockBlockDevice::zeroed(SIZE, SECTOR);
+        let tmp = NamedTempFile::new().unwrap();
+        let make_config = || ImagingConfig {
+            copy_block_size: SECTOR as u64,
+            max_retries: 0,
+            mapfile_save_interval: std::time::Duration::MAX,
+            output_path: tmp.path().to_path_buf(),
+            mapfile_path: None,
+            start_lba: None,
+            end_lba: None,
+            reverse: false,
+        };
+
+        // First engine takes the lock, then is dropped.
+        drop(ImagingEngine::new(Arc::new(mock1), make_config()).unwrap());
+
+        // After drop the lock is released; a new engine must succeed.
+        let result = ImagingEngine::new(Arc::new(mock2), make_config());
+        assert!(result.is_ok(), "expected Ok after lock released");
     }
 }

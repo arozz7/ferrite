@@ -8,6 +8,8 @@ use ratatui::{
     Frame,
 };
 
+use ferrite_core::ThermalEvent;
+
 use super::{fmt_bytes, CarveStatus, CarvingState};
 
 impl CarvingState {
@@ -160,7 +162,13 @@ impl CarvingState {
             "—".to_string()
         };
 
-        let status_pfx = if paused {
+        let thermal_active = matches!(
+            self.thermal_event,
+            Some(ThermalEvent::Paused) | Some(ThermalEvent::SpeedThrottle)
+        );
+        let status_pfx = if thermal_active {
+            "🌡 "
+        } else if paused {
             "⏸ "
         } else if self.backpressure_paused {
             "⏳ "
@@ -228,8 +236,20 @@ impl CarvingState {
         };
 
         let paused = self.status == CarveStatus::Paused;
-        let gauge_color = if paused { Color::Yellow } else { Color::Green };
-        let bar_title = if paused {
+        let thermal_paused = matches!(
+            self.thermal_event,
+            Some(ThermalEvent::Paused) | Some(ThermalEvent::SpeedThrottle)
+        );
+        let gauge_color = if paused {
+            Color::Yellow
+        } else if thermal_paused {
+            Color::LightYellow
+        } else {
+            Color::Green
+        };
+        let bar_title = if thermal_paused {
+            " Progress  [⏸ THERMAL PAUSE — cooling down] "
+        } else if paused {
             " Progress  [PAUSED — p to resume] "
         } else {
             " Progress "

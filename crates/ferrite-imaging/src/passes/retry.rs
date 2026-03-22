@@ -1,7 +1,7 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use ferrite_blockdev::AlignedBuffer;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::engine::ImagingEngine;
 use crate::error::{ImagingError, Result};
@@ -37,6 +37,16 @@ pub(crate) fn run(
     }
 
     for region in work {
+        // Direction per attempt:
+        //   Even (0, 2, …): forward  — pos starts at region.pos, advances by chunk,
+        //                              exits when pos >= region.end()
+        //   Odd  (1, 3, …): reverse  — pos starts at region.end() - sector_size,
+        //                              retreats by chunk, exits when stepping back
+        //                              would go below region.pos (pos < region.pos + chunk)
+        //
+        // `chunk` is always sector_size for aligned single-sector regions.  The
+        // `min(sector_size)` guard handles the edge case where a region is smaller
+        // than one sector (shouldn't occur on a well-formed mapfile, but is safe).
         let mut pos = if attempt.is_multiple_of(2) {
             region.pos
         } else {
@@ -66,7 +76,7 @@ pub(crate) fn run(
                     debug!(offset = pos, attempt, "retry: sector recovered");
                 }
                 Err(_) => {
-                    debug!(offset = pos, attempt, "retry: sector still bad");
+                    warn!(offset = pos, attempt, "retry: sector still bad");
                     // Stays BadSector — no status change needed.
                 }
             }

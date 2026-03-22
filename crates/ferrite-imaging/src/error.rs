@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use ferrite_blockdev::BlockDeviceError;
 use thiserror::Error;
 
@@ -38,6 +40,12 @@ pub enum ImagingError {
 
     #[error("Imaging cancelled by caller")]
     Cancelled,
+
+    #[error(
+        "Output file '{path}' is locked by another imaging session. \
+         Stop the other session before starting a new one."
+    )]
+    OutputLocked { path: PathBuf },
 }
 
 pub type Result<T> = std::result::Result<T, ImagingError>;

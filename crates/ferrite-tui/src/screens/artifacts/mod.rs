@@ -4,13 +4,15 @@
 //! across the selected device.  Results are displayed in a scrollable hit
 //! list and can be exported to CSV.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::Instant;
 
 use ferrite_artifact::{ArtifactHit, ArtifactKind, ArtifactScanConfig, ScanMsg, ScanProgress};
 use ferrite_blockdev::BlockDevice;
+use ferrite_core::{ThermalGuard, ThermalGuardConfig};
+use ferrite_smart;
 
 mod input;
 mod render;
@@ -54,6 +56,13 @@ pub struct ArtifactsState {
     pub(crate) hits_page_size: usize,
     /// Error message when status is `Error`.
     pub(crate) error_msg: String,
+    /// Monotonic counter of bytes read by the scan thread; shared with the
+    /// thermal guard for speed-based inference.
+    pub(crate) bytes_read: Arc<AtomicU64>,
+    /// Pause flag shared with the thermal guard and the scan thread.
+    pub(crate) pause: Arc<AtomicBool>,
+    /// Active thermal guard (held for the duration of the scan).
+    pub(crate) thermal_guard: Option<ThermalGuard>,
 }
 
 impl Default for ArtifactsState {
@@ -82,6 +91,9 @@ impl ArtifactsState {
             export_status: None,
             hits_page_size: 20,
             error_msg: String::new(),
+            bytes_read: Arc::new(AtomicU64::new(0)),
+            pause: Arc::new(AtomicBool::new(false)),
+            thermal_guard: None,
         }
     }
 
@@ -93,6 +105,9 @@ impl ArtifactsState {
         self.status = ScanStatus::Idle;
         self.progress = None;
         self.cancel.store(false, Ordering::Relaxed);
+        self.pause.store(false, Ordering::Relaxed);
+        self.bytes_read.store(0, Ordering::Relaxed);
+        self.thermal_guard = None;
         self.rx = None;
         self.export_status = None;
         self.error_msg.clear();
@@ -177,6 +192,9 @@ impl ArtifactsState {
         self.export_status = None;
         self.error_msg.clear();
         self.cancel.store(false, Ordering::Relaxed);
+        self.pause.store(false, Ordering::Relaxed);
+        self.bytes_read.store(0, Ordering::Relaxed);
+        self.thermal_guard = None;
 
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
@@ -184,10 +202,32 @@ impl ArtifactsState {
         self.scan_start = Some(Instant::now());
 
         let cancel = Arc::clone(&self.cancel);
+        let _pause = Arc::clone(&self.pause);
+        let bytes_read = Arc::clone(&self.bytes_read);
         let config = ArtifactScanConfig::default();
 
+        // Thermal guard: SMART + speed-based inference via bytes_read counter.
+        let smart_path = device.device_info().path.clone();
+        let guard = ThermalGuard::start(
+            move || {
+                ferrite_smart::query(&smart_path, None)
+                    .ok()
+                    .and_then(|d| d.temperature_celsius)
+            },
+            Some(Arc::clone(&bytes_read)),
+            ThermalGuardConfig::default(),
+            |_event| {}, // pause handled via shared pause flag below
+        );
+        // Wire the guard's pause flag into the scan's pause param.
+        let thermal_pause = guard.pause_flag();
+        self.thermal_guard = Some(guard);
+
         std::thread::spawn(move || {
-            ferrite_artifact::run_scan(device, config, tx, cancel);
+            // Merge user pause and thermal pause: scan checks both.
+            // We pass the thermal guard's pause_flag as the scan pause param.
+            // The user-side pause flag (self.pause) is not checked here because
+            // artifacts has no user pause UX yet — thermal is the only source.
+            ferrite_artifact::run_scan(device, config, tx, cancel, thermal_pause, bytes_read);
         });
     }
 

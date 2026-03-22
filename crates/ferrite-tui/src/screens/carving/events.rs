@@ -274,6 +274,33 @@ impl CarvingState {
                         self.pump_auto_extract();
                     }
                 }
+                Ok(CarveMsg::Thermal(event)) => {
+                    use ferrite_core::ThermalEvent;
+                    self.thermal_event = Some(event);
+                    match event {
+                        // Thermal pause: set the scan pause flag (same flag the
+                        // scan thread spins on) and transition to Pausing state.
+                        ThermalEvent::Paused | ThermalEvent::SpeedThrottle => {
+                            if self.status == CarveStatus::Running {
+                                self.pause.store(true, Ordering::Relaxed);
+                                self.status = CarveStatus::Pausing;
+                            }
+                        }
+                        // Thermal resume: clear the pause flag.
+                        ThermalEvent::Resumed | ThermalEvent::SpeedResumed => {
+                            self.pause.store(false, Ordering::Relaxed);
+                            if self.status == CarveStatus::Paused
+                                || self.status == CarveStatus::Pausing
+                            {
+                                self.status = CarveStatus::Running;
+                                if let Some(since) = self.paused_since.take() {
+                                    self.paused_elapsed += since.elapsed();
+                                }
+                            }
+                        }
+                        ThermalEvent::Temperature(_) | ThermalEvent::SpeedBaseline(_) => {}
+                    }
+                }
                 Ok(CarveMsg::Error(e)) => {
                     self.status = CarveStatus::Error(e);
                     self.rx = None;

@@ -1,7 +1,7 @@
 //! Scan engine: orchestrates all artifact scanners over a block device.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
@@ -116,12 +116,18 @@ fn read_chunk(device: &dyn BlockDevice, offset: u64, len: usize) -> Vec<u8> {
 /// call site if you want non-blocking behaviour).
 ///
 /// Results are streamed via `tx`.  Hitting the cancel flag stops the scan
-/// cleanly after the current chunk.
+/// cleanly after the current chunk.  If `pause` is set the scan spin-waits
+/// between chunks until cleared (used by the thermal guard).  `bytes_read` is
+/// a monotonic counter incremented by the number of bytes read each chunk;
+/// pass `Arc::new(AtomicU64::new(0))` and share the same Arc with a
+/// [`ferrite_core::ThermalGuard`] for speed-based thermal inference.
 pub fn run_scan(
     device: Arc<dyn BlockDevice>,
     config: ArtifactScanConfig,
     tx: Sender<ScanMsg>,
     cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
+    bytes_read: Arc<AtomicU64>,
 ) {
     let scanners = build_scanners(&config.enabled_kinds);
     // Per-kind dedup set — same value at different offsets counts once.
@@ -152,6 +158,17 @@ pub fn run_scan(
             break;
         }
 
+        // Spin-wait while the thermal guard has the pause flag set.
+        while pause.load(Ordering::Relaxed) {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+
         let chunk_end = (chunk_start + chunk_size as u64).min(scan_end);
         let chunk_len = (chunk_end - chunk_start) as usize;
 
@@ -159,6 +176,7 @@ pub fn run_scan(
         if chunk.is_empty() {
             break;
         }
+        bytes_read.fetch_add(chunk_len as u64, Ordering::Relaxed);
 
         // Build scan buffer: overlap tail from previous chunk + this chunk.
         let mut scan_buf = Vec::with_capacity(tail.len() + chunk.len());

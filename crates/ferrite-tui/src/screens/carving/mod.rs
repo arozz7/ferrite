@@ -1,9 +1,11 @@
 //! Screen 6 — File Carving: select signature types and run the carving engine
 //! with live progress, then extract hits to disk.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+
+use ferrite_core::{ThermalEvent, ThermalGuard};
 
 use std::time::Instant;
 
@@ -99,6 +101,8 @@ enum CarveMsg {
         elapsed_secs: f64,
     },
     Error(String),
+    /// Thermal guard event (temperature reading, pause, resume).
+    Thermal(ThermalEvent),
 }
 
 /// Tracks state of a running bulk extraction.
@@ -365,6 +369,13 @@ pub struct CarvingState {
     /// (visual top) as hits arrive.  Disabled the moment the user navigates
     /// away; re-enabled by pressing `Home`.
     pub(crate) auto_follow: bool,
+    /// Monotonic counter of bytes read by the scan thread; shared with the
+    /// thermal guard for speed-based inference.
+    pub(crate) bytes_read: Arc<AtomicU64>,
+    /// Active thermal guard (held for the duration of the scan).
+    pub(crate) thermal_guard: Option<ThermalGuard>,
+    /// Most recent thermal event received from the guard.
+    pub(crate) thermal_event: Option<ThermalEvent>,
 }
 
 impl Default for CarvingState {
@@ -440,6 +451,9 @@ impl CarvingState {
             user_confirm_delete: false,
             user_import_path: String::new(),
             editing_import: false,
+            bytes_read: Arc::new(AtomicU64::new(0)),
+            thermal_guard: None,
+            thermal_event: None,
         };
         // Load user sigs and append as "Custom" group if any are present.
         s.user_sigs = user_sigs::load_user_sigs(&s.user_sig_path);
@@ -687,6 +701,9 @@ impl CarvingState {
         // skip_truncated / skip_corrupt are intentionally NOT reset on device change — user preferences.
         self.skipped_trunc_count = 0;
         self.skipped_corrupt_count = 0;
+        self.bytes_read.store(0, Ordering::Relaxed);
+        self.thermal_guard = None;
+        self.thermal_event = None;
     }
 }
 

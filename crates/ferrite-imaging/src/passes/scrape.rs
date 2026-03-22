@@ -1,7 +1,7 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use ferrite_blockdev::AlignedBuffer;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::engine::ImagingEngine;
 use crate::error::{ImagingError, Result};
@@ -52,7 +52,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
                     engine
                         .mapfile
                         .update_range(pos, chunk, BlockStatus::BadSector);
-                    debug!(offset = pos, "scrape: sector failed → BadSector");
+                    warn!(offset = pos, "scrape: sector failed → BadSector");
                 }
             }
 

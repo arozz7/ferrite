@@ -1,10 +1,12 @@
 //! Key-input handling and scan lifecycle for [`CarvingState`].
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
+use ferrite_core::{ThermalGuard, ThermalGuardConfig};
 
 use super::{
     preview, user_sig_panel, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow, FormMode,
@@ -386,7 +388,6 @@ impl CarvingState {
     }
 
     pub(super) fn start_scan(&mut self) {
-        use std::sync::atomic::Ordering;
         use std::sync::mpsc;
 
         if self.status == CarveStatus::Running {
@@ -505,6 +506,9 @@ impl CarvingState {
 
         self.cancel.store(false, Ordering::Relaxed);
         self.pause.store(false, Ordering::Relaxed);
+        self.bytes_read.store(0, Ordering::Relaxed);
+        self.thermal_guard = None;
+        self.thermal_event = None;
         self.hits.clear();
         self.hit_sel = 0;
         self.auto_follow = true;
@@ -536,6 +540,31 @@ impl CarvingState {
         let cancel_scan = Arc::clone(&self.cancel);
         let pause_scan = Arc::clone(&self.pause);
         let paused_ack_scan = Arc::clone(&self.paused_ack);
+        let bytes_read_scan = Arc::clone(&self.bytes_read);
+
+        // Start the thermal guard.  Use SMART for temperature (if the device
+        // exposes it) and the bytes_read counter for speed-based inference on
+        // USB drives / bridges that don't report temperature.
+        let smart_path = device.device_info().path.clone();
+        let thermal_bytes = Arc::clone(&self.bytes_read);
+        let thermal_tx = tx.clone();
+        let guard = ThermalGuard::start(
+            move || {
+                ferrite_smart::query(&smart_path, None)
+                    .ok()
+                    .and_then(|d| d.temperature_celsius)
+            },
+            Some(thermal_bytes),
+            ThermalGuardConfig::default(),
+            move |event| {
+                let _ = thermal_tx.send(CarveMsg::Thermal(event));
+            },
+        );
+        // The guard's pause flag replaces self.pause for thermal-triggered
+        // pauses.  We keep self.pause for user-initiated pauses.
+        // The scan thread respects self.pause; thermal pause is handled by
+        // routing ThermalEvent::Paused → set self.pause in events.rs.
+        self.thermal_guard = Some(guard);
 
         std::thread::spawn(move || {
             let carver = Carver::new(Arc::clone(&device), config);
@@ -548,6 +577,7 @@ impl CarvingState {
                 &cancel_scan,
                 &pause_scan,
                 &paused_ack_scan,
+                &bytes_read_scan,
                 &mut on_hits,
             ) {
                 Ok(()) => {
