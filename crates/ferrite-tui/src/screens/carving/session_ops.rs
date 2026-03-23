@@ -8,15 +8,28 @@ impl CarvingState {
     /// Entries are deduplicated by byte offset (last-seen status wins), so
     /// hits that were extracted in a previous run show their final status
     /// rather than the initial `Unextracted` record written during scanning.
+    ///
+    /// `Queued` and `Extracting` entries are reset to `Unextracted` on load.
+    /// These represent hits that were in-flight when the app closed; they were
+    /// never written to disk, so they must be re-extracted on resume.
     pub(crate) fn load_checkpoint(&mut self, path: &str) {
         if let Ok(entries) = checkpoint::load(path) {
             self.hits = entries
                 .into_iter()
-                .map(|e| HitEntry {
-                    hit: e.hit,
-                    status: e.status,
-                    selected: false,
-                    quality: None,
+                .map(|e| {
+                    // Queued / Extracting = batch was started but the app
+                    // closed before the files were written.  Treat them as
+                    // Unextracted so they are re-queued on the next resume.
+                    let status = match e.status {
+                        HitStatus::Queued | HitStatus::Extracting => HitStatus::Unextracted,
+                        other => other,
+                    };
+                    HitEntry {
+                        hit: e.hit,
+                        status,
+                        selected: false,
+                        quality: None,
+                    }
                 })
                 .collect();
             self.checkpoint_path = Some(path.to_string());
