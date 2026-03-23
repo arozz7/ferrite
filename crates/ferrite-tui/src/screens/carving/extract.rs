@@ -354,14 +354,12 @@ impl CarvingState {
     /// more hits are waiting beyond the current batch window.
     pub(super) fn pump_auto_extract(&mut self) {
         if self.extract_progress.is_some() {
-            // A batch is already in flight.  Re-apply back-pressure if new hits
-            // arrived since the index last caught up to hits.len() — this closes
-            // the gap where the scan resumes (correctly) after the index reaches
-            // the old hits.len(), but new hits stream in before the batch finishes.
-            if self.next_auto_extract_idx < self.hits.len()
-                && !self.backpressure_paused
-                && self.status == CarveStatus::Running
-            {
+            // A batch is already in flight — ensure back-pressure is active so
+            // the scan stays paused.  This catches the case where the index
+            // caught up to hits.len() (so the batch was started without the
+            // previous back-pressure check firing), and new hits have since
+            // arrived while the batch is still running.
+            if !self.backpressure_paused && self.status == CarveStatus::Running {
                 self.pause.store(true, Ordering::Relaxed);
                 self.backpressure_paused = true;
             }
@@ -390,7 +388,9 @@ impl CarvingState {
         }
 
         if work.is_empty() {
-            // All hits have been submitted — lift back-pressure.
+            // All known hits have been submitted — lift back-pressure so the
+            // scan can find new hits.  If hits arrive during the next batch
+            // the early-return block above re-applies back-pressure.
             if self.backpressure_paused {
                 self.backpressure_paused = false;
                 if self.status == CarveStatus::Running {
@@ -402,11 +402,12 @@ impl CarvingState {
 
         self.start_extraction_batch(work);
 
-        // Apply back-pressure when more hits are waiting beyond this batch.
-        if self.next_auto_extract_idx < self.hits.len()
-            && !self.backpressure_paused
-            && self.status == CarveStatus::Running
-        {
+        // Always pause the scan while any extraction batch is in flight.
+        // Without this, the scan races ahead between the time back-pressure
+        // is "applied" and the time the scan thread actually checks the flag,
+        // producing more hits per burst than each 500-item batch can consume,
+        // causing the pending queue to grow unboundedly over time.
+        if !self.backpressure_paused && self.status == CarveStatus::Running {
             self.pause.store(true, Ordering::Relaxed);
             self.backpressure_paused = true;
         }
