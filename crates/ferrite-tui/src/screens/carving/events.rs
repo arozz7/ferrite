@@ -184,6 +184,17 @@ impl CarvingState {
                     self.extract_progress = None;
                     self.extract_cancel.store(false, Ordering::Relaxed);
                     self.extract_pause.store(false, Ordering::Relaxed);
+                    // Any hit still in Queued state at this point was part of
+                    // the just-finished batch but was never processed (e.g. the
+                    // batch was cancelled before the worker reached it).  Reset
+                    // those hits to Unextracted so they are retried in the next
+                    // batch within this session rather than being permanently
+                    // skipped until the next session reload.
+                    for entry in &mut self.hits {
+                        if entry.status == HitStatus::Queued {
+                            entry.status = HitStatus::Unextracted;
+                        }
+                    }
                     // Flush extraction status updates to the checkpoint file
                     // so that resume correctly skips already-extracted hits.
                     if let Some(cp) = &self.checkpoint_path {
