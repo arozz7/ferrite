@@ -187,13 +187,20 @@ impl CarvingState {
                     // Any hit still in Queued state at this point was part of
                     // the just-finished batch but was never processed (e.g. the
                     // batch was cancelled before the worker reached it).  Reset
-                    // those hits to Unextracted so they are retried in the next
-                    // batch within this session rather than being permanently
-                    // skipped until the next session reload.
-                    for entry in &mut self.hits {
-                        if entry.status == HitStatus::Queued {
-                            entry.status = HitStatus::Unextracted;
+                    // those hits to Unextracted and rewind next_auto_extract_idx
+                    // to the earliest such hit so pump_auto_extract picks them
+                    // up in the next batch within this session.
+                    {
+                        let mut earliest = self.next_auto_extract_idx;
+                        for (i, entry) in self.hits.iter_mut().enumerate() {
+                            if entry.status == HitStatus::Queued {
+                                entry.status = HitStatus::Unextracted;
+                                if i < earliest {
+                                    earliest = i;
+                                }
+                            }
                         }
+                        self.next_auto_extract_idx = earliest;
                     }
                     // Flush extraction status updates to the checkpoint file
                     // so that resume correctly skips already-extracted hits.
