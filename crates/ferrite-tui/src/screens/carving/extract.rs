@@ -342,18 +342,55 @@ impl CarvingState {
         self.start_extraction_batch(work);
     }
 
-    /// Drain the auto-extract queue and start a new extraction batch if none
-    /// is currently running.  Lifts the back-pressure scan pause only when the
-    /// queue is fully empty (no remaining items to extract).
+    /// Start a new extraction batch from the next unprocessed hits in
+    /// `self.hits`, if no batch is currently in flight.
+    ///
+    /// Uses a lazy-pull model: `next_auto_extract_idx` tracks how far through
+    /// `self.hits` we have submitted to extraction.  This keeps the effective
+    /// "queue depth" bounded to one batch (≤500 items) regardless of how many
+    /// hits a single dense scan chunk produces.
+    ///
+    /// Back-pressure (scan pause) is applied after starting the batch when
+    /// more hits are waiting beyond the current batch window.
     pub(super) fn pump_auto_extract(&mut self) {
         if self.extract_progress.is_some() {
-            return; // a batch is already in flight
+            // A batch is already in flight.  Re-apply back-pressure if new hits
+            // arrived since the index last caught up to hits.len() — this closes
+            // the gap where the scan resumes (correctly) after the index reaches
+            // the old hits.len(), but new hits stream in before the batch finishes.
+            if self.next_auto_extract_idx < self.hits.len()
+                && !self.backpressure_paused
+                && self.status == CarveStatus::Running
+            {
+                self.pause.store(true, Ordering::Relaxed);
+                self.backpressure_paused = true;
+            }
+            return;
         }
 
-        // Queue empty: lift back-pressure and let the scan continue.
-        // We only resume here — never mid-batch — so scanning is fully
-        // paused while any extraction work remains in the queue.
-        if self.auto_extract_queue.is_empty() {
+        let dir = if self.output_dir.is_empty() {
+            "carved".to_string()
+        } else {
+            self.output_dir.clone()
+        };
+
+        // Collect up to BATCH Unextracted hits starting from next_auto_extract_idx.
+        // Hits that are already extracted (from a resumed session) are skipped.
+        const BATCH: usize = 500;
+        let mut work: Vec<(usize, CarveHit, String)> = Vec::new();
+        while work.len() < BATCH && self.next_auto_extract_idx < self.hits.len() {
+            let i = self.next_auto_extract_idx;
+            self.next_auto_extract_idx += 1;
+            if self.hits[i].status != HitStatus::Unextracted {
+                continue;
+            }
+            let hit = self.hits[i].hit.clone();
+            let path = self.filename_for_hit(&hit, &dir);
+            work.push((i, hit, path));
+        }
+
+        if work.is_empty() {
+            // All hits have been submitted — lift back-pressure.
             if self.backpressure_paused {
                 self.backpressure_paused = false;
                 if self.status == CarveStatus::Running {
@@ -362,10 +399,17 @@ impl CarvingState {
             }
             return;
         }
-        const BATCH: usize = 500;
-        let n = BATCH.min(self.auto_extract_queue.len());
-        let work: Vec<(usize, CarveHit, String)> = self.auto_extract_queue.drain(..n).collect();
+
         self.start_extraction_batch(work);
+
+        // Apply back-pressure when more hits are waiting beyond this batch.
+        if self.next_auto_extract_idx < self.hits.len()
+            && !self.backpressure_paused
+            && self.status == CarveStatus::Running
+        {
+            self.pause.store(true, Ordering::Relaxed);
+            self.backpressure_paused = true;
+        }
     }
 
     /// Core extraction coordinator: takes a pre-built work list and starts

@@ -176,10 +176,8 @@ impl CarvingState {
             ""
         };
         let queue_hint = if self.backpressure_paused {
-            format!(
-                "   queue: {} (waiting for extraction)",
-                self.auto_extract_queue.len()
-            )
+            let pending = self.hits.len().saturating_sub(self.next_auto_extract_idx);
+            format!("   queue: {pending} (waiting for extraction)")
         } else {
             String::new()
         };

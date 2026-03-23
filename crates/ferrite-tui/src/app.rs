@@ -6,10 +6,10 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     backend::Backend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Block, Borders, Paragraph, Tabs},
+    widgets::{Block, Borders, Clear, Paragraph, Tabs},
     Frame, Terminal,
 };
 
@@ -129,9 +129,19 @@ impl App {
             }
             self.tick();
             if self.should_quit {
+                // Render a "Quitting" overlay so the user gets visual feedback
+                // while session files are saved and background resources released.
+                terminal.draw(|f| {
+                    self.render(f);
+                    Self::render_quitting_overlay(f);
+                })?;
                 break;
             }
         }
+        // Flush any in-memory hits to the checkpoint file before saving the
+        // session, so hits accumulated since the last periodic flush are not
+        // lost when the app is paused mid-scan and then quit.
+        self.carving.flush_checkpoint();
         // Save carving session if there are hits or a checkpoint.
         if let Some(dev) = &self.selected_device {
             let info = dev.device_info().clone();
@@ -477,6 +487,39 @@ impl App {
         frame.render_widget(
             Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray)),
             chunks[2],
+        );
+    }
+
+    /// Render a centered "Quitting — saving session" popup over the current frame.
+    fn render_quitting_overlay(frame: &mut Frame) {
+        let area = frame.area();
+        const W: u16 = 46;
+        const H: u16 = 3;
+        let x = area.x.saturating_add((area.width.saturating_sub(W)) / 2);
+        let y = area.y.saturating_add((area.height.saturating_sub(H)) / 2);
+        let popup = Rect {
+            x,
+            y,
+            width: W.min(area.width),
+            height: H.min(area.height),
+        };
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new("Saving session — please wait…")
+                .alignment(Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Quitting ")
+                        .border_style(Style::default().fg(Color::Yellow))
+                        .title_style(
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                )
+                .style(Style::default().fg(Color::Yellow)),
+            popup,
         );
     }
 }

@@ -1,6 +1,6 @@
 //! Session persistence helpers for [`CarvingState`] — build/restore carving sessions.
 
-use super::{checkpoint, CarvingState, HitEntry, HitStatus};
+use super::{checkpoint, CarvingState, ExtractionSummary, HitEntry, HitStatus};
 
 impl CarvingState {
     /// Load hits from a JSONL checkpoint file.
@@ -62,6 +62,7 @@ impl CarvingState {
             output_dir: self.output_dir.clone(),
             hits_file,
             hits_count: self.hits.len(),
+            total_hits_found: self.total_hits_found,
             saved_at,
             auto_extract: self.auto_extract,
             skip_truncated: self.skip_truncated,
@@ -112,13 +113,55 @@ impl CarvingState {
             // the next render cycle.)
         }
 
-        // Accumulate per-status counts from the loaded checkpoint so the
-        // summary line is accurate on resume even before re-extraction.
+        // Restore total_hits_found from session (may exceed hits.len() if DISPLAY_CAP
+        // was hit during the original scan).
+        self.total_hits_found = session.total_hits_found.max(self.hits.len());
+
+        // Rebuild extraction statistics from the checkpoint so counts are accurate
+        // on resume even before any re-extraction occurs.
+        let mut succeeded = 0usize;
+        let mut truncated = 0usize;
+        let mut skipped = 0usize;
+        let mut duplicates = 0usize;
         for hit in &self.hits {
             match &hit.status {
-                HitStatus::Duplicate => self.duplicates_suppressed += 1,
-                HitStatus::Skipped => {} // could be trunc or corrupt — count together
+                HitStatus::Ok { .. } => succeeded += 1,
+                HitStatus::Truncated { .. } => truncated += 1,
+                HitStatus::Skipped => skipped += 1,
+                HitStatus::Duplicate => {
+                    duplicates += 1;
+                    self.duplicates_suppressed += 1;
+                }
                 _ => {}
+            }
+        }
+        self.skipped_trunc_count = skipped;
+
+        if succeeded + truncated + skipped + duplicates > 0 {
+            self.extract_summary = Some(ExtractionSummary {
+                succeeded,
+                truncated,
+                failed: 0,
+                duplicates,
+                skipped_trunc: skipped,
+                skipped_corrupt: 0,
+                total_bytes: 0,
+                elapsed_secs: 0.0,
+            });
+        }
+    }
+
+    /// Write any in-memory hits that have not yet been flushed to the
+    /// checkpoint file.  Called on quit to prevent data loss when the scan
+    /// is paused mid-session (the periodic flush only fires every 1000 hits).
+    pub fn flush_checkpoint(&mut self) {
+        if let Some(cp) = self.checkpoint_path.clone() {
+            let new_hits = &self.hits[self.checkpoint_flushed..];
+            if !new_hits.is_empty() {
+                for entry in new_hits {
+                    let _ = checkpoint::append(&cp, &entry.hit, &entry.status);
+                }
+                self.checkpoint_flushed = self.hits.len();
             }
         }
     }

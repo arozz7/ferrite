@@ -34,11 +34,6 @@ pub(crate) use preview::ColorCap;
 /// counted in `total_hits_found` but not stored in memory.
 pub(crate) const DISPLAY_CAP: usize = 100_000;
 
-/// Auto-extract queue length at which the scan is automatically paused to let
-/// extraction catch up.  A single 4 MiB scan chunk can produce hundreds of
-/// hits in one batch message, so the threshold must be large enough that a
-/// normal density scan never triggers back-pressure prematurely.
-const AUTO_EXTRACT_HIGH_WATER: usize = 500;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -308,10 +303,11 @@ pub struct CarvingState {
     pub(crate) total_hits_found: usize,
     /// Auto-extract mode: extract each hit as it arrives from the scanner.
     pub(crate) auto_extract: bool,
-    /// Queue of hits pending automatic extraction: (hit_idx, hit, output_path).
-    /// `hit_idx` is the index in `self.hits`, or `usize::MAX` for hits beyond
-    /// `DISPLAY_CAP` that are not shown in the list.
-    pub(crate) auto_extract_queue: std::collections::VecDeque<(usize, CarveHit, String)>,
+    /// Index into `self.hits` of the next hit to be submitted to the
+    /// auto-extraction pipeline.  `pump_auto_extract` advances this forward,
+    /// extracting up to 500 hits per batch.  Scanning is back-pressure-paused
+    /// while a batch is in flight and more hits remain beyond this index.
+    pub(crate) next_auto_extract_idx: usize,
     /// Available disk space at (or near) the output directory (bytes).
     /// Updated periodically in `tick()`.
     pub(crate) disk_avail_bytes: Option<u64>,
@@ -428,7 +424,7 @@ impl CarvingState {
             color_cap: ColorCap::detect(),
             total_hits_found: 0,
             auto_extract: false,
-            auto_extract_queue: std::collections::VecDeque::new(),
+            next_auto_extract_idx: 0,
             disk_avail_bytes: None,
             disk_space_tick: 0,
             backpressure_paused: false,
@@ -692,7 +688,7 @@ impl CarvingState {
         self.preview_loading = false;
         self.total_hits_found = 0;
         self.auto_extract = false;
-        self.auto_extract_queue.clear();
+        self.next_auto_extract_idx = 0;
         self.disk_avail_bytes = None;
         self.disk_space_tick = 0;
         self.backpressure_paused = false;
