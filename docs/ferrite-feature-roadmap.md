@@ -1,5 +1,5 @@
 # Ferrite — Comprehensive Feature Roadmap
-**Reviewed as of Phase 64 (99 signatures) — Status updated 2026-03-17**
+**Reviewed as of Phase 100 (107 signatures) — Status updated 2026-03-24**
 *Senior Data Recovery & Digital Forensics Perspective*
 
 ---
@@ -1041,30 +1041,164 @@ gets it to "recovers actual files."
 
 ---
 
+---
+
+## Phase 100 — PhotoRec Gap Batch 1: High-Impact Quick Wins ✅ Done (2026-03-24)
+
+**107 signatures total after this phase.**
+
+Systematic cross-reference of Ferrite's signature database against the full PhotoRec
+source tree (`ajnelson/photorec-testdisk` on GitHub). Two commits:
+
+### Commit 1 — JPEG Raw/DQT (FF D8 FF DB)
+Root-cause analysis of a live 20 GB image file revealed that 972 large photos (>100 KB)
+start with `FF D8 FF DB` (DQT directly after SOI, no APP header). These were invisible
+to the existing JFIF/Exif-only signatures. Pre-validator checks DQT segment length in
+[67, 518]. **100 → 100 signatures.**
+
+### Commit 2 — 7-signature batch
+| # | Format | Header | Notes |
+|---|--------|--------|-------|
+| 101 | JPEG/COM | `FF D8 FF FE` | JPEG starting with Comment marker |
+| 102 | Java Class | `CA FE BA BE` | Major version [45,80] validator |
+| 103 | Microsoft Cabinet | `4D 53 43 46` | reserved1==0, size>0 validator; 512 MiB cap |
+| 104 | OpenType Font OTF | `4F 54 54 4F` | `OTTO`; numTables [1,50] |
+| 105 | WOFF2 | `77 4F 46 32` | `wOF2`; flavor ∈ {TrueType, CFF}; numTables [1,50] |
+| 106 | Android DEX | `64 65 78 0A` | version = 3 ASCII digits + null |
+| 107 | Adobe PSB | `38 42 50 53 00 02` | Photoshop Large Doc; reuses PSD validator; 2 GiB cap |
+
+**Total: 100 → 107 signatures. 561 tests, all passing.**
+
+---
+
+## Phase 101 — PhotoRec Gap Batch 2: Common Consumer Formats (Planned)
+
+**Target: 107 → ~120 signatures.**
+
+Formats with high hit rate on typical consumer/office drives. All are quick-wins —
+new signature + lightweight pre-validator, no scanner infrastructure changes.
+
+| Format | Ext | Header (hex) | Pre-validate | Max size | Priority |
+|--------|-----|-------------|--------------|----------|----------|
+| Raw AAC (ADTS) | `aac` | `FF F1` / `FF F9` | sync word check; first 4 frames consecutive | 50 MiB | High |
+| DjVu | `djvu` | `41 54 26 54 46 4F 52 4D` | `AT&TFORM`; subtype `DJVU`/`DJVM` @12 | 200 MiB | Medium |
+| OpenEXR | `exr` | `76 2F 31 01` | 4-byte magic is globally unique | 500 MiB | Medium |
+| GIMP XCF | `xcf` | `67 69 6D 70 20 78 63 66 20 76` | version string @10 is "file" or 3 digits | 500 MiB | Medium |
+| JPEG 2000 | `jp2` | `00 00 00 0C 6A 50 20 20 0D 0A 87 0A` | 12-byte sig box; JP2 header box follows | 500 MiB | Low |
+| PCX | `pcx` | `0A` | version byte @1 ∈ {0,2,3,4,5}; encoding @2 == 1 | 50 MiB | Low |
+| BPG Image | `bpg` | `42 50 47 FB` | 4-byte magic globally unique | 50 MiB | Low |
+
+**Implementation notes:**
+- AAC: two header bytes `FF F1` (MPEG-4 ADTS) and `FF F9` (MPEG-2 ADTS); need separate
+  signatures + validator checking protection bits and layer are valid
+- DjVu: RIFF-like container; subtype at bytes 8–11 must be `DJVU` (single page) or
+  `DJVM` (multi-page)
+- XCF: `gimp xcf v` + version; version = `file` (very old) or 3 decimal digits (`001`–`019`)
+
+---
+
+## Phase 102 — PhotoRec Gap Batch 3: Developer & Science Formats (Planned)
+
+**Target: ~120 → ~130 signatures.**
+
+Formats common on developer workstations, science/research machines, mobile devices.
+
+| Format | Ext | Header (hex) | Pre-validate | Max size | Priority |
+|--------|-----|-------------|--------------|----------|----------|
+| Java Archive | `jar` | `50 4B 03 04` | ZIP with `META-INF/MANIFEST.MF` first entry | 500 MiB | High |
+| Python bytecode | `pyc` | `55 0D 0D 0A` / `33 0D 0D 0A` / others | magic = Python version word; timestamp follows | 100 MiB | Medium |
+| LZH/LHA archive | `lzh` | at offset 2: `-lh?-` | 5-char method ID; header checksum valid | 200 MiB | Medium |
+| Microsoft CAB patch | `msp` | `D0 CF 11 E0` + `MSP` stream | OLE2 with `MSP` or `Patch` stream name | 500 MiB | Medium |
+| HDF5 | `h5` | `89 48 44 46 0D 0A 1A 0A` | 8-byte magic + superblock version @8 ∈ {0,1,2,3} | 2 GiB | Low |
+| FITS | `fits` | `53 49 4D 50 4C 45 20 20 3D` | `SIMPLE  =`; value must be `T` (true) @29 | 2 GiB | Low |
+| Parquet | `parquet` | `50 41 52 31` at offset 0 AND footer | 4-byte `PAR1` magic at both start and end | 2 GiB | Low |
+| DPX (film) | `dpx` | `53 44 50 58` / `58 50 44 53` | two endian variants; magic-only check sufficient | 2 GiB | Low |
+
+**Implementation notes:**
+- JAR: distinguish from generic ZIP by checking the ZIP central directory for
+  `META-INF/MANIFEST.MF` — requires reading up to `max_size` bytes to find EOCD;
+  use the existing EPUB/ODT inner-ZIP pattern
+- Python `.pyc`: magic word varies by Python version (2.x: `0x0D0D`, 3.x: `0x0D0A`);
+  build a table of known magic words
+- LZH: the method field `-lh0-` through `-lhd-` at offset 2 is the key discriminator;
+  offsets 0 and 1 are the header checksum (any value)
+
+---
+
+## Phase 103 — PhotoRec Gap Batch 4: Forensic & System Formats (Planned)
+
+**Target: ~130 → ~140 signatures.**
+
+Formats with high forensic / data-recovery value that require more careful validation
+or larger max_size caps.
+
+| Format | Ext | Header (hex) | Pre-validate | Max size | Priority |
+|--------|-----|-------------|--------------|----------|----------|
+| VirtualBox VDI | `vdi` | `7F 10 DA BE` at offset 0x40 | header_offset = 64; image type u32 LE @72 ∈ {1,2} | 2 TiB | High |
+| AFF forensic image | `aff` | `41 46 46` | `AFF` magic; version u32 BE @3 ∈ {1} | 2 TiB | High |
+| Windows LNK (Shell Link) | `lnk` | `4C 00 00 00 01 14 02 00` | 8-byte CLSID prefix; FileAttributes u32 LE @24 plausible | 1 MiB | High |
+| Windows Prefetch | `pf` | `11 00 00 00` / `17 00 00 00` / `1A 00 00 00` | version byte ∈ {17, 23, 26, 30} | 10 MiB | Medium |
+| Windows Event Log (EVT) | `evt` | `30 00 00 00 4C 66 4C 65` | 8-byte magic; OldestRecord u32 LE @16 > 0 | 100 MiB | Medium |
+| PEM certificate | `pem` | `2D 2D 2D 2D 2D 42 45 47 49 4E` | `-----BEGIN`; next non-space byte valid label char | 1 MiB | Medium |
+| Bitcoin wallet | `wallet` | `62 31 05 00 09 00` | Berkeley DB wallet; magic + version | 100 MiB | Low |
+| Ethereum keystore | `json` | `7B 22 63 72 79 70 74 6F` | `{"crypto`; JSON structure for ETH keystore | 1 MiB | Low |
+
+**Implementation notes:**
+- VDI: `header_offset = 64` (uses non-zero-offset scanner infrastructure from Phase 62).
+  Magic `7F 10 DA BE` is the VirtualBox disk image identifier at byte 64.
+- LNK: Windows Shell Link files are ubiquitous on any Windows drive; the 8-byte prefix
+  (`4C 00 00 00` = size 76 + `01 14 02 00 00 00 00 00` = Shell Link CLSID) is distinctive
+- PEM: extremely common in `~/.ssh/`, server configs, certificate stores
+
+---
+
+## Phase 104 — Signature Quality: Size Hints for New Formats (Planned)
+
+**No new signatures — improves extraction accuracy for existing entries.**
+
+Several formats added in Phases 100–103 produce oversized extractions because they
+lack size hints and fall back to `max_size`. This phase adds size-hint walkers for
+the highest-impact cases.
+
+| Format | Size Hint Logic |
+|--------|----------------|
+| **CAB** | Cabinet file size is at bytes 8–11 (u32 LE) — read directly, same pattern as OLE2 |
+| **Java Class** | Class file size is not embedded; keep max_size cap (50 MiB is already tight) |
+| **DEX** | File size at bytes 32–35 (u32 LE) — embed as `SizeHint::Dex` |
+| **WOFF2** | Total file length at bytes 8–11 (u32 BE) — embed as `SizeHint::Woff2` |
+| **OTF** | No embedded size; use TTF size-hint walker (numTables × table sizes) |
+| **DjVu** | FORM chunk size at bytes 4–7 (u32 BE) + 8 — same pattern as RIFF/AIFF |
+| **OpenEXR** | No simple header size field; rely on footer search or max_size |
+
+**Changes:**
+- `crates/ferrite-carver/src/size_hint.rs` — add `SizeHint::Dex`, `SizeHint::Woff2`,
+  `SizeHint::Djvu` (reuse RIFF size pattern), `SizeHint::Cab`
+- `config/signatures.toml` — add `size_hint_kind` to CAB, DEX, WOFF2, DjVu entries
+- Tests: each size hint reads correct value from a synthetic byte slice
+
+---
+
 ## File Type Coverage After All Phases
 
-After all planned phases (46 + 52 + 59 + 60 + 61 + 62), signature count reaches **~93**:
+After phases 100–104, signature count reaches **~140**:
 
 | Category | Formats | Count |
 |---|---|---|
-| Images (raster) | JPEG×2, PNG, GIF, BMP, TIFF LE/BE, WebP, ICO, PSD, DPX, XCF, JP2, PCX | **13** |
-| RAW Photos | ARW, CR2, CR3, CRW, DCR, NEF, RW2, RAF, MRW, SR2, ORF, PEF, HEIC×2, Sigma X3F | **15** |
-| Video | MP4, MOV, M4V, 3GP, MKV, WebM, AVI, WMV, FLV, MPEG-PS, RealMedia, TS, M2TS, WTV | **14** |
-| Audio | MP3, WAV, FLAC, OGG, AAC/M4A, MIDI, AIFF, WavPack, APE, AU, XZ (compressed) | **11** |
-| Archives | ZIP, RAR, 7-Zip, GZip, BZip2, XZ, TAR, CAB (future), PAR2 | **9** |
-| Documents | PDF, RTF, XML, HTML, OLE2, EML, EMLX, EPUB, ODT, InDesign, CorelDRAW, SWF | **12** |
-| Email / PIM | PST/OST, VCF, ICS, MSG | **4** |
-| System / Exec | EXE (PE), ELF, Mach-O | **3** |
-| Forensic | REGF, EVTX, LNK (future), E01, PCAP, LUKS, Windows Dump | **7** |
-| Database / Config | SQLite, KeePass 1.x, KeePass 2.x, Apple plist | **4** |
-| Virtual Disk | VMDK, VHD, VHDX, QCOW2, ISO (Phase 62) | **5** |
-| Fonts | TTF, WOFF | **2** |
-| Medical / Science | DICOM (Phase 62), FITS | **2** |
-| 3D / Design | Blender, CHM, Parchive | **3** |
+| Images (raster) | JPEG×4, PNG, GIF, BMP, TIFF×2, WebP, ICO, PSD, PSB, DjVu, EXR, JP2, PCX, BPG, XCF | **18** |
+| RAW Photos | ARW, CR2, CR3, CRW, DCR, NEF, RW2, RAF, MRW, SR2, ORF, PEF, HEIC×2, X3F | **15** |
+| Video | MP4, MOV, M4V, 3GP, MKV, WebM, AVI, WMV, FLV, MPEG-PS, RM, SWF×3, TS, M2TS, WTV, DPX | **17** |
+| Audio | MP3, WAV, FLAC, OGG, M4A, MIDI, AIFF, WavPack, APE, AU, AAC×2 | **12** |
+| Archives | ZIP, RAR, 7-Zip, GZip, BZip2, XZ, ISO, TAR, CAB, LZH, JAR | **11** |
+| Documents | PDF, XML, HTML, RTF, VCF, ICS, EML, EPUB, ODT, CDR, TTF, OTF, WOFF, WOFF2, CHM, Blender, InDesign, PHP, Shebang | **19** |
+| Office & Email | ZIP-Office (OOXML), OLE2, PST, MSG | **4** |
+| System / Exec | SQLite, EVTX, EXE, ELF, VMDK, REGF, VHD, VHDX, QCOW2, Mach-O, KDBX, KDB, E01, PCAP×2, DMP, plist, LUKS, DICOM | **18** |
+| Developer | Java Class, Android DEX, Python `.pyc`, HDF5, FITS, Parquet | **6** |
+| Forensic | VDI, AFF, LNK, Windows Prefetch, EVT, PEM | **6** |
+| Fonts | TTF, OTF, WOFF, WOFF2 | **4** |
 
-**Total: ~104 signatures across ~93 format families**
+**Total: ~140 signatures across ~120 format families**
 
-This places Ferrite at roughly **31% of PhotoRec's format family count**, but with
+This places Ferrite at roughly **35% of PhotoRec's format family count**, with
 significantly deeper per-format validation — pre-validators for every signature,
-TIFF/ISOBMFF/OGG/SQLite size-hint walkers, and forensic-grade false-positive
-rejection that PhotoRec does not match.
+TIFF/ISOBMFF/OGG/SQLite/PNG/GIF/PDF size-hint walkers, and forensic-grade
+false-positive rejection that PhotoRec does not match.
