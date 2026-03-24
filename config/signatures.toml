@@ -1286,3 +1286,87 @@ max_size     = 1_048_576     # 1 MiB — scripts >1 MiB are very rare
 min_hit_gap  = 1_048_576     # 1 MiB — "#!/" appears in binary data
 # Validates "#!/bin/" or "#!/usr/" path prefix + printable ASCII in path.
 pre_validate = "shebang"
+
+[[signature]]
+name         = "JPEG Image (COM)"
+extension    = "jpg"
+# 4-byte header: FF D8 FF FE — JPEG starting with a Comment marker directly
+# after SOI.  Produced by some encoders that embed a comment before any other
+# segment (e.g. Intel JPEG Library writes a COM with a version string).
+header       = "FF D8 FF FE"
+footer       = "FF D9"
+min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
+max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
+# Validates COM segment length ≥ 2; rejects embedded thumbnails.
+pre_validate = "jpeg_com"
+
+[[signature]]
+name         = "Java Class File"
+extension    = "class"
+# 4-byte header: CA FE BA BE — Java bytecode magic number.
+header       = "CA FE BA BE"
+footer       = ""
+min_size     = 32            # Minimum viable class file
+max_size     = 52_428_800    # 50 MiB — generous upper bound for generated/obfuscated classes
+# Validates major version in [45, 80] (Java 1 through Java 36+).
+pre_validate = "java_class"
+
+[[signature]]
+name         = "Microsoft Cabinet"
+extension    = "cab"
+# 4-byte header: 4D 53 43 46 = "MSCF" — Microsoft Cabinet archive format used
+# for Windows installers, driver packages, and Windows Update payloads.
+header       = "4D 53 43 46"
+footer       = ""
+min_size     = 32            # Minimum valid cabinet header
+max_size     = 536_870_912   # 512 MiB — large installer packages
+# Validates reserved1 field (bytes 4–7) == 0 and cabinet size (bytes 8–11) > 0.
+pre_validate = "cab"
+
+[[signature]]
+name         = "OpenType Font (OTF)"
+extension    = "otf"
+# 4-byte header: 4F 54 54 4F = "OTTO" — OpenType font with PostScript (CFF) outlines.
+# Distinct from TrueType (00 01 00 00) which uses TrueType glyph outlines.
+header       = "4F 54 54 4F"
+footer       = ""
+min_size     = 256           # Minimum valid font header + at least one table
+max_size     = 52_428_800    # 50 MiB — same as TTF/WOFF
+# Validates numTables (u16 BE @4) in [1, 50].
+pre_validate = "otf"
+
+[[signature]]
+name         = "WOFF2 Web Font"
+extension    = "woff2"
+# 4-byte header: 77 4F 46 32 = "wOF2" — Web Open Font Format version 2.
+# Uses Brotli compression internally.  Distinct from WOFF1 (77 4F 46 46 "wOFF").
+header       = "77 4F 46 32"
+footer       = ""
+min_size     = 48            # Minimum valid WOFF2 header
+max_size     = 52_428_800    # 50 MiB — same as TTF/WOFF
+# Validates sfnt flavor in {0x00010000, 0x4F54544F} and numTables in [1, 50].
+pre_validate = "woff2"
+
+[[signature]]
+name         = "Android Dalvik Executable"
+extension    = "dex"
+# 4-byte header: 64 65 78 0A = "dex\n" — Android Dalvik bytecode format.
+# Versions include 035, 036, 037, 038, 039, 040, 041 (ASCII digits + null @4–7).
+header       = "64 65 78 0A"
+footer       = ""
+min_size     = 112           # Minimum DEX header size (112 bytes)
+max_size     = 104_857_600   # 100 MiB — large apps can have 20–30 MiB dex files
+# Validates version string: 3 ASCII digits followed by null at bytes 4–7.
+pre_validate = "dex"
+
+[[signature]]
+name         = "Adobe Photoshop Large Document (PSB)"
+extension    = "psb"
+# 6-byte header: 38 42 50 53 00 02 = "8BPS" + version 2.
+# PSB is the large-document variant of PSD; supports up to 300,000×300,000 px.
+header       = "38 42 50 53 00 02"
+footer       = ""
+min_size     = 26            # Minimum valid header (same as PSD)
+max_size     = 2_147_483_648 # 2 GiB — PSB files can be very large
+# Reuses PSD validator: version in {1, 2}, channels in [1, 56].
+pre_validate = "psd"

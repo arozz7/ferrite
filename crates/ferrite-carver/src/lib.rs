@@ -52,8 +52,8 @@ mod tests {
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
         assert_eq!(
             cfg.signatures.len(),
-            100,
-            "expected 100 built-in signatures"
+            107,
+            "expected 107 built-in signatures"
         );
 
         // All three JPEG variants must be present with 4-byte headers.

@@ -246,6 +246,24 @@ pub enum PreValidate {
     /// Extension is fixed as `.sh`; content-based classification is not performed
     /// at scan time.
     Shebang,
+    /// JPEG starting with a COM (Comment) marker directly after SOI.
+    /// COM segment length (u16 BE @4) must be ≥ 2.
+    JpegCom,
+    /// Java bytecode class file: major version (u16 BE @6) in [45, 80]
+    /// (Java 1 through Java 36, future-proofed).
+    JavaClass,
+    /// Microsoft Cabinet: reserved1 field (u32 LE @4) must be 0;
+    /// cabinet file size (u32 LE @8) must be > 0.
+    Cab,
+    /// OpenType font with PostScript outlines (`OTTO` magic); numTables
+    /// (u16 BE @4) in [1, 50].
+    Otf,
+    /// WOFF2 web font: flavor in {0x00010000, 0x4F54544F}; numTables
+    /// (u16 BE @12) in [1, 50].
+    Woff2,
+    /// Android Dalvik Executable: version string at bytes 4–7 must be three
+    /// ASCII digits followed by a null byte.
+    Dex,
 }
 
 impl PreValidate {
@@ -346,6 +364,12 @@ impl PreValidate {
             Self::Tar => "tar",
             Self::Php => "php",
             Self::Shebang => "shebang",
+            Self::JpegCom => "jpeg_com",
+            Self::JavaClass => "java_class",
+            Self::Cab => "cab",
+            Self::Otf => "otf",
+            Self::Woff2 => "woff2",
+            Self::Dex => "dex",
         }
     }
 
@@ -446,6 +470,12 @@ impl PreValidate {
             "tar" => Some(Self::Tar),
             "php" => Some(Self::Php),
             "shebang" => Some(Self::Shebang),
+            "jpeg_com" => Some(Self::JpegCom),
+            "java_class" => Some(Self::JavaClass),
+            "cab" => Some(Self::Cab),
+            "otf" => Some(Self::Otf),
+            "woff2" => Some(Self::Woff2),
+            "dex" => Some(Self::Dex),
             _ => None,
         }
     }
@@ -554,6 +584,12 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Tar => validate_tar(data, pos),
         PreValidate::Php => validate_php(data, pos),
         PreValidate::Shebang => validate_shebang(data, pos),
+        PreValidate::JpegCom => validate_jpeg_com(data, pos),
+        PreValidate::JavaClass => validate_java_class(data, pos),
+        PreValidate::Cab => validate_cab(data, pos),
+        PreValidate::Otf => validate_otf(data, pos),
+        PreValidate::Woff2 => validate_woff2(data, pos),
+        PreValidate::Dex => validate_dex(data, pos),
     }
 }
 
@@ -686,6 +722,77 @@ fn validate_jpeg_dqt(data: &[u8], pos: usize) -> bool {
         return false;
     }
     !jpeg_is_embedded(data, pos)
+}
+
+fn validate_jpeg_com(data: &[u8], pos: usize) -> bool {
+    // FF D8 FF FE [len_hi] [len_lo] — JPEG starting with a COM (Comment) segment.
+    // COM segment length (u16 BE at pos+4..+6) includes the 2 length bytes:
+    // minimum valid length is 2 (empty comment).
+    if need(data, pos, 6) {
+        return true;
+    }
+    let com_len = u16::from_be_bytes([data[pos + 4], data[pos + 5]]) as usize;
+    if com_len < 2 {
+        return false;
+    }
+    !jpeg_is_embedded(data, pos)
+}
+
+fn validate_java_class(data: &[u8], pos: usize) -> bool {
+    // CA FE BA BE [minor_hi] [minor_lo] [major_hi] [major_lo]
+    // Major version: Java 1 = 45, Java 24 = 68; allow up to 80 for future versions.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let major = u16::from_be_bytes([data[pos + 6], data[pos + 7]]);
+    (45..=80).contains(&major)
+}
+
+fn validate_cab(data: &[u8], pos: usize) -> bool {
+    // MSCF + reserved1 (u32 LE @4, must be 0) + cabinet_size (u32 LE @8, must be > 0)
+    if need(data, pos, 12) {
+        return true;
+    }
+    let reserved1 =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if reserved1 != 0 {
+        return false;
+    }
+    let cab_size =
+        u32::from_le_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    cab_size > 0
+}
+
+fn validate_otf(data: &[u8], pos: usize) -> bool {
+    // OTTO + numTables (u16 BE @4) in [1, 50]
+    if need(data, pos, 6) {
+        return true;
+    }
+    let num_tables = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+    (1..=50).contains(&num_tables)
+}
+
+fn validate_woff2(data: &[u8], pos: usize) -> bool {
+    // wOF2 + flavor (u32 BE @4) in {0x00010000, 0x4F54544F} + numTables (u16 BE @12) in [1, 50]
+    if need(data, pos, 14) {
+        return true;
+    }
+    let flavor = u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if flavor != 0x0001_0000 && flavor != 0x4F54_544F {
+        return false;
+    }
+    let num_tables = u16::from_be_bytes([data[pos + 12], data[pos + 13]]);
+    (1..=50).contains(&num_tables)
+}
+
+fn validate_dex(data: &[u8], pos: usize) -> bool {
+    // dex\n + version (3 ASCII digits) + null
+    // e.g. "035\0", "036\0", "037\0", "038\0", "039\0", "040\0"
+    if need(data, pos, 8) {
+        return true;
+    }
+    let v = &data[pos + 4..pos + 8];
+    v[0].is_ascii_digit() && v[1].is_ascii_digit() && v[2].is_ascii_digit() && v[3] == 0x00
 }
 
 /// Returns `true` when `pos` appears to be an embedded JPEG (thumbnail) inside
@@ -2775,6 +2882,186 @@ mod tests {
         // Fewer than 6 bytes available — give benefit of doubt.
         let data = vec![0xFF, 0xD8, 0xFF, 0xDB];
         assert!(validate_jpeg_dqt(&data, 0));
+    }
+
+    // ── JPEG COM ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn jpeg_com_valid_accepted() {
+        // FF D8 FF FE with COM length = 20 (valid comment segment).
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(&[0xFF, 0xD8, 0xFF, 0xFE]);
+        data[4..6].copy_from_slice(&20u16.to_be_bytes());
+        assert!(validate_jpeg_com(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_com_zero_length_rejected() {
+        // COM length = 0 → invalid (must be ≥ 2).
+        let mut data = vec![0u8; 6];
+        data[0..4].copy_from_slice(&[0xFF, 0xD8, 0xFF, 0xFE]);
+        data[4..6].copy_from_slice(&0u16.to_be_bytes());
+        assert!(!validate_jpeg_com(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_com_truncated_accepted() {
+        // Fewer than 6 bytes — benefit of doubt.
+        let data = vec![0xFF, 0xD8, 0xFF, 0xFE];
+        assert!(validate_jpeg_com(&data, 0));
+    }
+
+    // ── Java CLASS ────────────────────────────────────────────────────────────
+
+    fn make_class(major: u16) -> Vec<u8> {
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(&[0xCA, 0xFE, 0xBA, 0xBE]);
+        data[4..6].copy_from_slice(&0u16.to_be_bytes()); // minor
+        data[6..8].copy_from_slice(&major.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn java_class_java8_accepted() {
+        // Java 8 = major version 52.
+        assert!(validate_java_class(&make_class(52), 0));
+    }
+
+    #[test]
+    fn java_class_java21_accepted() {
+        // Java 21 (LTS) = major version 65.
+        assert!(validate_java_class(&make_class(65), 0));
+    }
+
+    #[test]
+    fn java_class_too_old_rejected() {
+        // Version 44 is before Java 1 (45) — likely not a class file.
+        assert!(!validate_java_class(&make_class(44), 0));
+    }
+
+    #[test]
+    fn java_class_too_new_rejected() {
+        // Version 200 is far beyond current Java — likely false positive.
+        assert!(!validate_java_class(&make_class(200), 0));
+    }
+
+    // ── CAB ───────────────────────────────────────────────────────────────────
+
+    fn make_cab(reserved1: u32, cab_size: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"MSCF");
+        data[4..8].copy_from_slice(&reserved1.to_le_bytes());
+        data[8..12].copy_from_slice(&cab_size.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn cab_valid_accepted() {
+        assert!(validate_cab(&make_cab(0, 4096), 0));
+    }
+
+    #[test]
+    fn cab_nonzero_reserved_rejected() {
+        assert!(!validate_cab(&make_cab(1, 4096), 0));
+    }
+
+    #[test]
+    fn cab_zero_size_rejected() {
+        assert!(!validate_cab(&make_cab(0, 0), 0));
+    }
+
+    // ── OTF ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn otf_valid_accepted() {
+        // OTTO + numTables = 14 (typical font).
+        let mut data = vec![0u8; 6];
+        data[0..4].copy_from_slice(b"OTTO");
+        data[4..6].copy_from_slice(&14u16.to_be_bytes());
+        assert!(validate_otf(&data, 0));
+    }
+
+    #[test]
+    fn otf_zero_tables_rejected() {
+        let mut data = vec![0u8; 6];
+        data[0..4].copy_from_slice(b"OTTO");
+        data[4..6].copy_from_slice(&0u16.to_be_bytes());
+        assert!(!validate_otf(&data, 0));
+    }
+
+    #[test]
+    fn otf_too_many_tables_rejected() {
+        let mut data = vec![0u8; 6];
+        data[0..4].copy_from_slice(b"OTTO");
+        data[4..6].copy_from_slice(&200u16.to_be_bytes());
+        assert!(!validate_otf(&data, 0));
+    }
+
+    // ── WOFF2 ─────────────────────────────────────────────────────────────────
+
+    fn make_woff2(flavor: u32, num_tables: u16) -> Vec<u8> {
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"wOF2");
+        data[4..8].copy_from_slice(&flavor.to_be_bytes());
+        // length @8 (skip), numTables @12
+        data[12..14].copy_from_slice(&num_tables.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn woff2_truetype_flavor_accepted() {
+        assert!(validate_woff2(&make_woff2(0x0001_0000, 14), 0));
+    }
+
+    #[test]
+    fn woff2_cff_flavor_accepted() {
+        assert!(validate_woff2(&make_woff2(0x4F54_544F, 10), 0));
+    }
+
+    #[test]
+    fn woff2_bad_flavor_rejected() {
+        assert!(!validate_woff2(&make_woff2(0xDEAD_BEEF, 14), 0));
+    }
+
+    #[test]
+    fn woff2_zero_tables_rejected() {
+        assert!(!validate_woff2(&make_woff2(0x0001_0000, 0), 0));
+    }
+
+    // ── DEX ───────────────────────────────────────────────────────────────────
+
+    fn make_dex(version: &[u8; 3]) -> Vec<u8> {
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(b"dex\n");
+        data[4..7].copy_from_slice(version);
+        data[7] = 0x00;
+        data
+    }
+
+    #[test]
+    fn dex_v035_accepted() {
+        assert!(validate_dex(&make_dex(b"035"), 0));
+    }
+
+    #[test]
+    fn dex_v039_accepted() {
+        assert!(validate_dex(&make_dex(b"039"), 0));
+    }
+
+    #[test]
+    fn dex_non_digit_version_rejected() {
+        // Version "abc" is not digits — rejected.
+        let mut data = make_dex(b"035");
+        data[4] = b'a';
+        assert!(!validate_dex(&data, 0));
+    }
+
+    #[test]
+    fn dex_missing_null_terminator_rejected() {
+        // Non-null terminator — rejected.
+        let mut data = make_dex(b"035");
+        data[7] = 0xFF;
+        assert!(!validate_dex(&data, 0));
     }
 
     // ── BMP ───────────────────────────────────────────────────────────────────
