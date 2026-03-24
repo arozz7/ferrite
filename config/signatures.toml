@@ -34,6 +34,19 @@ max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
 pre_validate = "jpeg_exif"
 
 [[signature]]
+name         = "JPEG Image (Raw/DQT)"
+extension    = "jpg"
+# 4-byte header: FF D8 FF DB — JPEG starting directly with a Define Quantization
+# Table segment, no APP0/APP1 header.  Common in hardware encoders, stripped
+# JPEGs, and certain camera firmware output.
+header       = "FF D8 FF DB"
+footer       = "FF D9"
+min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
+max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
+# Validates DQT segment length in [67, 518] (1–4 quantization tables).
+pre_validate = "jpeg_dqt"
+
+[[signature]]
 name           = "PNG Image"
 extension      = "png"
 header         = "89 50 4E 47 0D 0A 1A 0A"

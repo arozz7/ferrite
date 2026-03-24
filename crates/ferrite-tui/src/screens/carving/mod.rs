@@ -821,8 +821,8 @@ mod tests {
         // Total entries across all groups must equal the built-in signature count.
         let total: usize = s.groups.iter().map(|g| g.entries.len()).sum();
         assert_eq!(
-            total, 99,
-            "expected 99 built-in signatures across all groups"
+            total, 100,
+            "expected 100 built-in signatures across all groups"
         );
     }
 

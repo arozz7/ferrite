@@ -21,6 +21,9 @@ pub enum PreValidate {
     JpegJfif,
     /// JPEG/Exif: `Exif` identifier at offset 6.
     JpegExif,
+    /// JPEG starting with DQT (Define Quantization Table) directly after SOI —
+    /// no APP0/APP1 header.  DQT segment length (u16 BE @4) must be in [67, 518].
+    JpegDqt,
     /// PNG: first chunk length == 13 and type == `IHDR`.
     Png,
     /// PDF: version string `-1.x` or `-2.x` at offset 4.
@@ -252,6 +255,7 @@ impl PreValidate {
             Self::Zip => "zip",
             Self::JpegJfif => "jpeg_jfif",
             Self::JpegExif => "jpeg_exif",
+            Self::JpegDqt => "jpeg_dqt",
             Self::Png => "png",
             Self::Pdf => "pdf",
             Self::Gif => "gif",
@@ -351,6 +355,7 @@ impl PreValidate {
             "zip" => Some(Self::Zip),
             "jpeg_jfif" => Some(Self::JpegJfif),
             "jpeg_exif" => Some(Self::JpegExif),
+            "jpeg_dqt" => Some(Self::JpegDqt),
             "png" => Some(Self::Png),
             "pdf" => Some(Self::Pdf),
             "gif" => Some(Self::Gif),
@@ -458,6 +463,7 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Zip => validate_zip(data, pos),
         PreValidate::JpegJfif => validate_jpeg_jfif(data, pos),
         PreValidate::JpegExif => validate_jpeg_exif(data, pos),
+        PreValidate::JpegDqt => validate_jpeg_dqt(data, pos),
         PreValidate::Png => validate_png(data, pos),
         PreValidate::Pdf => validate_pdf(data, pos),
         PreValidate::Gif => validate_gif(data, pos),
@@ -662,6 +668,21 @@ fn validate_jpeg_exif(data: &[u8], pos: usize) -> bool {
         return true;
     }
     if &data[pos + 6..pos + 10] != b"Exif" {
+        return false;
+    }
+    !jpeg_is_embedded(data, pos)
+}
+
+fn validate_jpeg_dqt(data: &[u8], pos: usize) -> bool {
+    // FF D8 FF DB [len_hi] [len_lo] — JPEG starting directly with a DQT
+    // (Define Quantization Table) segment, no APP0/APP1 header.
+    // DQT segment length (u16 BE at pos+4..+6) includes its own 2 length
+    // bytes: min 67 (one 8-bit table), max 518 (four 16-bit tables).
+    if need(data, pos, 6) {
+        return true;
+    }
+    let dqt_len = u16::from_be_bytes([data[pos + 4], data[pos + 5]]) as usize;
+    if !(67..=518).contains(&dqt_len) {
         return false;
     }
     !jpeg_is_embedded(data, pos)
@@ -2704,6 +2725,56 @@ mod tests {
         buf[205] = 0x20;
         buf[206..210].copy_from_slice(b"Exif");
         assert!(!validate_jpeg_exif(&buf, 200));
+    }
+
+    // ── JPEG DQT ──────────────────────────────────────────────────────────────
+
+    fn make_jpeg_dqt(dqt_len: u16) -> Vec<u8> {
+        // FF D8 FF DB [len_hi] [len_lo] + padding
+        let mut data = vec![0u8; 8];
+        data[0] = 0xFF;
+        data[1] = 0xD8;
+        data[2] = 0xFF;
+        data[3] = 0xDB;
+        let [hi, lo] = dqt_len.to_be_bytes();
+        data[4] = hi;
+        data[5] = lo;
+        data
+    }
+
+    #[test]
+    fn jpeg_dqt_valid_one_table_accepted() {
+        // DQT length 67 = minimum (1 eight-bit table: 2 len + 1 precision + 64 values).
+        let data = make_jpeg_dqt(67);
+        assert!(validate_jpeg_dqt(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_dqt_valid_two_tables_accepted() {
+        // DQT length 132 = 2+2*65, two 8-bit tables packed in one segment.
+        let data = make_jpeg_dqt(132);
+        assert!(validate_jpeg_dqt(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_dqt_too_short_rejected() {
+        // Length below minimum (67) → rejected.
+        let data = make_jpeg_dqt(20);
+        assert!(!validate_jpeg_dqt(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_dqt_too_long_rejected() {
+        // Length above maximum (518) → likely not a DQT → rejected.
+        let data = make_jpeg_dqt(600);
+        assert!(!validate_jpeg_dqt(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_dqt_truncated_accepted() {
+        // Fewer than 6 bytes available — give benefit of doubt.
+        let data = vec![0xFF, 0xD8, 0xFF, 0xDB];
+        assert!(validate_jpeg_dqt(&data, 0));
     }
 
     // ── BMP ───────────────────────────────────────────────────────────────────

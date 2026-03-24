@@ -50,9 +50,13 @@ mod tests {
     fn builtin_signatures_parse() {
         let toml = include_str!("../../../config/signatures.toml");
         let cfg = CarvingConfig::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.signatures.len(), 99, "expected 99 built-in signatures");
+        assert_eq!(
+            cfg.signatures.len(),
+            100,
+            "expected 100 built-in signatures"
+        );
 
-        // Both JPEG variants must be present with 4-byte headers.
+        // All three JPEG variants must be present with 4-byte headers.
         let jpeg_jfif = cfg
             .signatures
             .iter()
@@ -74,6 +78,17 @@ mod tests {
             &[Some(0xFF), Some(0xD8), Some(0xFF), Some(0xE1)]
         );
         assert_eq!(jpeg_exif.footer, &[0xFF, 0xD9]);
+
+        let jpeg_dqt = cfg
+            .signatures
+            .iter()
+            .find(|s| s.extension == "jpg" && s.header.get(3) == Some(&Some(0xDB)))
+            .expect("JPEG Raw/DQT (FF D8 FF DB) not found");
+        assert_eq!(
+            jpeg_dqt.header,
+            &[Some(0xFF), Some(0xD8), Some(0xFF), Some(0xDB)]
+        );
+        assert_eq!(jpeg_dqt.footer, &[0xFF, 0xD9]);
 
         // PDF must use footer_last mode.
         let pdf = cfg
