@@ -170,6 +170,12 @@ impl App {
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         // Session manager overlay gets first priority when visible.
         if self.session_manager.visible {
+            // Ctrl+V must be handled here because the return below bypasses the
+            // global Ctrl+V handler further down.
+            if code == KeyCode::Char('v') && modifiers == KeyModifiers::CONTROL {
+                self.ctrl_v_paste();
+                return;
+            }
             if let Some(msg) = self.session_manager.handle_key(code, modifiers) {
                 match msg {
                     SessionMsg::Resume { session, device } => {

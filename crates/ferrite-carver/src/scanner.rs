@@ -305,13 +305,20 @@ impl Carver {
         // If the signature carries a size hint, read the true file length from
         // the embedded field.  Fall back to max_size if the read fails or the
         // parsed value exceeds max_size (corrupt / stale data).
+        //
+        // Additionally, never extract more bytes than physically remain on the
+        // device from hit.byte_offset onwards.  This prevents a bogus size-hint
+        // value (false-positive hit whose header fields contain garbage) from
+        // producing a file larger than the source device — which is impossible
+        // for any real file.
+        let remaining_on_device = device_size.saturating_sub(hit.byte_offset);
         let (extraction_size, hint_resolved) = if let Some(hint) = &sig.size_hint {
             match read_size_hint(self.device.as_ref(), hit.byte_offset, hint, sig.max_size) {
-                Some(size) => (size.min(sig.max_size), true),
-                None => (sig.max_size, false),
+                Some(size) => (size.min(sig.max_size).min(remaining_on_device), true),
+                None => (sig.max_size.min(remaining_on_device), false),
             }
         } else {
-            (sig.max_size, false)
+            (sig.max_size.min(remaining_on_device), false)
         };
 
         // If the resolved size is below the signature's minimum, skip extraction.

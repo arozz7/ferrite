@@ -97,19 +97,22 @@ impl SessionManagerState {
             self.verify = VerifyState::Unknown;
             return;
         };
-        // Physical drive: match by serial + size.
-        if let Some((path, _)) = self.connected.iter().find(|(_, info)| {
-            s.matches_drive(info.serial.as_deref().unwrap_or(""), info.size_bytes)
-        }) {
-            self.verify = VerifyState::Matched(path.clone());
-            return;
-        }
-        // Image file: check that the stored path still exists on disk.
+        // Image file override: if the user has explicitly linked an image file,
+        // use it even when the original physical drive is still connected.
+        // This lets users work from a .img on a fast SSD rather than the slow
+        // failing source drive.
         if !s.device_path.is_empty()
             && !is_physical_drive(&s.device_path)
             && std::path::Path::new(&s.device_path).exists()
         {
             self.verify = VerifyState::Matched(s.device_path.clone());
+            return;
+        }
+        // Physical drive: match by serial + size.
+        if let Some((path, _)) = self.connected.iter().find(|(_, info)| {
+            s.matches_drive(info.serial.as_deref().unwrap_or(""), info.size_bytes)
+        }) {
+            self.verify = VerifyState::Matched(path.clone());
             return;
         }
         self.verify = VerifyState::NotFound;
@@ -142,9 +145,9 @@ impl SessionManagerState {
                     input.pop();
                     self.image_error = None;
                 }
-                // Only push printable characters; modifier combos (Ctrl+V etc.)
-                // are handled at the App level before reaching here.
-                KeyCode::Char(c) if mods.is_empty() => {
+                // Accept printable characters, including Shift-modified ones
+                // (e.g. ':' on Windows is sent as Shift+';').
+                KeyCode::Char(c) if mods.is_empty() || mods == KeyModifiers::SHIFT => {
                     input.push(c);
                     self.image_error = None;
                 }

@@ -34,7 +34,6 @@ pub(crate) use preview::ColorCap;
 /// counted in `total_hits_found` but not stored in memory.
 pub(crate) const DISPLAY_CAP: usize = 100_000;
 
-
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// Which scan-range LBA field is currently being edited.

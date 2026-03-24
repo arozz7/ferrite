@@ -16,8 +16,8 @@ extension    = "jpg"
 # 4-byte header: FF D8 FF E0 — standard JFIF JPEGs written by cameras/software.
 header       = "FF D8 FF E0"
 footer       = "FF D9"
-min_size     = 4096        # Skip embedded thumbnails (< 4 KiB)
-max_size     = 10_485_760  # 10 MiB
+min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
+max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
 # Validates "JFIF\0" identifier at offset 6 to reject FF D8 FF E0 hits
 # that appear inside other binary formats.
 pre_validate = "jpeg_jfif"
@@ -28,8 +28,8 @@ extension    = "jpg"
 # 4-byte header: FF D8 FF E1 — camera photos with EXIF/APP1 metadata block.
 header       = "FF D8 FF E1"
 footer       = "FF D9"
-min_size     = 4096        # Skip embedded thumbnails (< 4 KiB)
-max_size     = 10_485_760  # 10 MiB
+min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
+max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
 # Validates "Exif" identifier at offset 6.
 pre_validate = "jpeg_exif"
 
@@ -38,7 +38,7 @@ name           = "PNG Image"
 extension      = "png"
 header         = "89 50 4E 47 0D 0A 1A 0A"
 footer         = "49 45 4E 44 AE 42 60 82"
-max_size       = 52_428_800  # 50 MiB
+max_size       = 209_715_200  # 200 MiB — 100 MP PNG export ~100-180 MB compressed
 size_hint_kind = "png"
 # Validates that the first chunk is IHDR with length == 13 (required by spec).
 pre_validate   = "png"
@@ -91,7 +91,7 @@ extension        = "bmp"
 # 10-byte header: "BM" + 4-byte file size (wildcarded) + reserved 00 00 00 00.
 header           = "42 4D ?? ?? ?? ?? 00 00 00 00"
 footer           = ""
-max_size         = 52_428_800  # 50 MiB hard cap
+max_size         = 314_572_800  # 300 MiB — uncompressed 100 MP BMP ~300 MB
 size_hint_offset = 2
 size_hint_len    = 4
 size_hint_endian = "le"
@@ -429,7 +429,7 @@ extension      = "heic"
 header         = "?? ?? ?? ?? 66 74 79 70 68 65 69 63"
 footer         = ""
 min_size       = 16384         # 16 KiB
-max_size       = 100_000_000   # 100 MB — HEIC is highly compressed
+max_size       = 209_715_200   # 200 MB — covers Apple ProRAW and future high-MP iPhones
 # ISOBMFF box walker derives true file size.
 size_hint_kind = "mp4"
 # Validates ftyp box size in [12, 512].
@@ -443,7 +443,7 @@ extension      = "heic"
 header         = "?? ?? ?? ?? 66 74 79 70 68 65 69 78"
 footer         = ""
 min_size       = 16384
-max_size       = 100_000_000
+max_size       = 209_715_200   # 200 MB — heic/heix both raised to match
 size_hint_kind = "mp4"
 pre_validate   = "heic"
 
@@ -555,7 +555,7 @@ extension    = "webp"
 # Shares the RIFF 4-byte size field pattern with WAV and AVI.
 header       = "52 49 46 46 ?? ?? ?? ?? 57 45 42 50"
 footer       = ""
-max_size     = 52_428_800  # 50 MiB
+max_size     = 104_857_600  # 100 MiB — high-quality lossless WebP from modern cameras
 size_hint_offset = 4
 size_hint_len    = 4
 size_hint_endian = "le"
@@ -771,7 +771,7 @@ extension      = "pef"
 header         = "49 49 2A 00"
 footer         = ""
 min_size       = 1_000_000    # 1 MB — RAW files are never tiny
-max_size       = 100_000_000  # 100 MB — covers 645Z (51 MP)
+max_size       = 157_286_400  # 150 MB — covers Pentax K-3 III (26 MP) and 645Z (51 MP)
 # TIFF IFD walker derives true size.
 size_hint_kind = "tiff"
 # Validates IFD offset in [8,4096] and "PENTAX " in first 512 bytes.
@@ -814,7 +814,7 @@ extension      = "sr2"
 header         = "49 49 2A 00 08 00 00 00"
 footer         = ""
 min_size       = 1_000_000    # 1 MB — RAW files are never tiny
-max_size       = 50_000_000   # 50 MB — Cyber-shot / R1 sensors (6-14 MP)
+max_size       = 104_857_600  # 100 MB — SR2 is older but giving headroom for edge cases
 # TIFF IFD walker derives true file size.
 size_hint_kind = "tiff"
 # Validates IFD entry count in [3, 50], "SONY" in first 512 bytes, and
@@ -1103,7 +1103,7 @@ extension    = "x3f"
 header       = "46 4F 56 62"
 footer       = ""
 min_size     = 100_000       # 100 KB — RAW files are not tiny
-max_size     = 50_000_000    # 50 MB — Sigma high-res sensors
+max_size     = 157_286_400   # 150 MB — Sigma fp L (61 MP Foveon), Quattro H (51 MP)
 # Validates version major byte (LE @5) in {2, 3}.
 pre_validate = "x3f"
 

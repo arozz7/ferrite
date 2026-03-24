@@ -2024,14 +2024,44 @@ fn validate_dcr(data: &[u8], pos: usize) -> bool {
 
 fn validate_iso(data: &[u8], pos: usize) -> bool {
     // ISO 9660: `CD001` magic at offset 32769 within the file (pos points here).
-    // Byte at pos+5 is the Volume Descriptor version — must be 1.
-    // Byte immediately before pos (at pos-1, if present) is the Descriptor Type
-    // — must be 0x01 (Primary Volume Descriptor) or 0xFF (Volume Descriptor Set
-    // Terminator); we accept any type to avoid false negatives on supplementary VDs.
+    // The PVD starts one byte before pos (Descriptor Type at pos-1).
+    //
+    // Check 1: Version byte at pos+5 must be 0x01.
     if need(data, pos, 6) {
         return true;
     }
-    data[pos + 5] == 0x01
+    if data[pos + 5] != 0x01 {
+        return false;
+    }
+    // Check 2: Descriptor Type byte at pos-1 must be 0x01 (Primary Volume
+    // Descriptor).  We only carve PVD hits, not Supplementary VDs.
+    if pos >= 1 && data[pos - 1] != 0x01 {
+        return false;
+    }
+    // Check 3: Volume Space Size is stored as a Both-Byte-Order (BBO) field —
+    // 4-byte LE at PVD+80 followed by 4-byte BE at PVD+84 (both encoding the
+    // same value).  For random/garbage data the probability of these matching is
+    // ~1 in 4 billion, making this an extremely strong false-positive filter.
+    //
+    // PVD+80 = (pos-1)+80 = pos+79 in the buffer.
+    if !need(data, pos, 87) {
+        let vss_le = u32::from_le_bytes([
+            data[pos + 79],
+            data[pos + 80],
+            data[pos + 81],
+            data[pos + 82],
+        ]);
+        let vss_be = u32::from_be_bytes([
+            data[pos + 83],
+            data[pos + 84],
+            data[pos + 85],
+            data[pos + 86],
+        ]);
+        if vss_le != vss_be || vss_le == 0 {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_dicom(data: &[u8], pos: usize) -> bool {
@@ -4825,8 +4855,27 @@ mod tests {
 
     // ── ISO ───────────────────────────────────────────────────────────────────
 
-    fn make_iso_pvd() -> Vec<u8> {
-        // Magic "CD001" + version byte 0x01 (6 bytes total).
+    /// Build a full PVD buffer with descriptor type, magic, version, and
+    /// Volume Space Size BBO fields so all three validation checks can fire.
+    ///
+    /// `pos` is the position of the `CD001` magic within the returned buffer.
+    /// We set pos=1 so that buf[0] holds the descriptor type byte (0x01).
+    /// The VSS BBO fields live at buf[pos+79] (LE) and buf[pos+83] (BE).
+    fn make_iso_pvd_full(vss: u32) -> (Vec<u8>, usize) {
+        // Need at least pos + 87 bytes; pos = 1, so 88 bytes total.
+        let pos = 1usize;
+        let mut buf = vec![0u8; pos + 88];
+        buf[pos - 1] = 0x01; // Descriptor Type: Primary Volume Descriptor
+        buf[pos..pos + 5].copy_from_slice(b"CD001");
+        buf[pos + 5] = 0x01; // Version
+                             // Volume Space Size (Both Byte Order) at PVD+80 = buf[pos+79].
+        buf[pos + 79..pos + 83].copy_from_slice(&vss.to_le_bytes());
+        buf[pos + 83..pos + 87].copy_from_slice(&vss.to_be_bytes());
+        (buf, pos)
+    }
+
+    /// Minimal buffer — only has magic + version, not enough for BBO check.
+    fn make_iso_pvd_short() -> Vec<u8> {
         let mut buf = vec![0u8; 8];
         buf[0..5].copy_from_slice(b"CD001");
         buf[5] = 0x01; // version
@@ -4834,15 +4883,44 @@ mod tests {
     }
 
     #[test]
-    fn iso_pvd_accepted() {
-        assert!(validate_iso(&make_iso_pvd(), 0));
+    fn iso_pvd_short_accepted() {
+        // Insufficient data for BBO check → accepted (can't reject without data).
+        assert!(validate_iso(&make_iso_pvd_short(), 0));
+    }
+
+    #[test]
+    fn iso_pvd_full_accepted() {
+        let (buf, pos) = make_iso_pvd_full(700_000);
+        assert!(validate_iso(&buf, pos));
     }
 
     #[test]
     fn iso_bad_version_rejected() {
-        let mut buf = make_iso_pvd();
-        buf[5] = 0x02;
-        assert!(!validate_iso(&buf, 0));
+        let (mut buf, pos) = make_iso_pvd_full(700_000);
+        buf[pos + 5] = 0x02; // corrupt version
+        assert!(!validate_iso(&buf, pos));
+    }
+
+    #[test]
+    fn iso_bad_descriptor_type_rejected() {
+        let (mut buf, pos) = make_iso_pvd_full(700_000);
+        buf[pos - 1] = 0x02; // Supplementary VD, not Primary
+        assert!(!validate_iso(&buf, pos));
+    }
+
+    #[test]
+    fn iso_bbo_mismatch_rejected() {
+        let (mut buf, pos) = make_iso_pvd_full(700_000);
+        // Corrupt the BE copy so LE != BE.
+        buf[pos + 83] ^= 0xFF;
+        assert!(!validate_iso(&buf, pos));
+    }
+
+    #[test]
+    fn iso_zero_vss_rejected() {
+        // VSS = 0 is invalid for a real ISO.
+        let (buf, pos) = make_iso_pvd_full(0);
+        assert!(!validate_iso(&buf, pos));
     }
 
     // ── DICOM ─────────────────────────────────────────────────────────────────
