@@ -1134,29 +1134,22 @@ Added 14 signatures covering developer workstation and scientific data formats.
 
 ---
 
-## Phase 104 — Signature Quality: Size Hints for New Formats (Planned)
+## Phase 104 — Size-Hint Walkers for CAB, DEX, WOFF2, DjVu (Done)
 
 **No new signatures — improves extraction accuracy for existing entries.**
+**637 tests in ferrite-carver (+8), all passing.**
 
-Several formats added in Phases 100–103 produce oversized extractions because they
-lack size hints and fall back to `max_size`. This phase adds size-hint walkers for
-the highest-impact cases.
+All four use the existing `SizeHint::Linear` via TOML field injection — no new
+Rust enum variants required.
 
-| Format | Size Hint Logic |
-|--------|----------------|
-| **CAB** | Cabinet file size is at bytes 8–11 (u32 LE) — read directly, same pattern as OLE2 |
-| **Java Class** | Class file size is not embedded; keep max_size cap (50 MiB is already tight) |
-| **DEX** | File size at bytes 32–35 (u32 LE) — embed as `SizeHint::Dex` |
-| **WOFF2** | Total file length at bytes 8–11 (u32 BE) — embed as `SizeHint::Woff2` |
-| **OTF** | No embedded size; use TTF size-hint walker (numTables × table sizes) |
-| **DjVu** | FORM chunk size at bytes 4–7 (u32 BE) + 8 — same pattern as RIFF/AIFF |
-| **OpenEXR** | No simple header size field; rely on footer search or max_size |
+| Format | Size field | Endian | Add | Result |
+|--------|-----------|--------|-----|--------|
+| **CAB** | `cbCabinet` u32 @8 | LE | 0 | Exact file size |
+| **DEX** | `file_size` u32 @32 | LE | 0 | Exact file size |
+| **WOFF2** | `length` u32 @8 | BE | 0 | Exact file size |
+| **DjVu** | IFF `chunk_size` u32 @8 | BE | +12 | Exact file size |
 
-**Changes:**
-- `crates/ferrite-carver/src/size_hint.rs` — add `SizeHint::Dex`, `SizeHint::Woff2`,
-  `SizeHint::Djvu` (reuse RIFF size pattern), `SizeHint::Cab`
-- `config/signatures.toml` — add `size_hint_kind` to CAB, DEX, WOFF2, DjVu entries
-- Tests: each size hint reads correct value from a synthetic byte slice
+Formats with no embeddable size (Java Class, OTF, OpenEXR) retain their `max_size` cap.
 
 ---
 

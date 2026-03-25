@@ -1321,7 +1321,10 @@ footer       = ""
 min_size     = 32            # Minimum valid cabinet header
 max_size     = 536_870_912   # 512 MiB — large installer packages
 # Validates reserved1 field (bytes 4–7) == 0 and cabinet size (bytes 8–11) > 0.
-pre_validate = "cab"
+pre_validate    = "cab"
+# cbCabinet (u32 LE @8) is the exact total file size.
+size_hint_offset = 8
+size_hint_len    = 4
 
 [[signature]]
 name         = "OpenType Font (OTF)"
@@ -1345,7 +1348,11 @@ footer       = ""
 min_size     = 48            # Minimum valid WOFF2 header
 max_size     = 52_428_800    # 50 MiB — same as TTF/WOFF
 # Validates sfnt flavor in {0x00010000, 0x4F54544F} and numTables in [1, 50].
-pre_validate = "woff2"
+pre_validate    = "woff2"
+# length (u32 BE @8) is the exact total WOFF2 file size.
+size_hint_offset = 8
+size_hint_len    = 4
+size_hint_endian = "be"
 
 [[signature]]
 name         = "Android Dalvik Executable"
@@ -1357,7 +1364,10 @@ footer       = ""
 min_size     = 112           # Minimum DEX header size (112 bytes)
 max_size     = 104_857_600   # 100 MiB — large apps can have 20–30 MiB dex files
 # Validates version string: 3 ASCII digits followed by null at bytes 4–7.
-pre_validate = "dex"
+pre_validate    = "dex"
+# file_size (u32 LE @32) is the exact total DEX file size.
+size_hint_offset = 32
+size_hint_len    = 4
 
 [[signature]]
 name         = "Adobe Photoshop Large Document (PSB)"
@@ -1410,7 +1420,13 @@ footer       = ""
 min_size     = 20            # Header + size field + form type
 max_size     = 209_715_200   # 200 MiB — large scanned document collections
 # Validates form type at bytes 12–15.
-pre_validate = "djvu"
+pre_validate    = "djvu"
+# IFF FORM chunk_size (u32 BE @8) + 12 = total file size.
+# The 12 accounts for "AT&T" (4) + "FORM" (4) + size_field (4) = 12 bytes before payload.
+size_hint_offset = 8
+size_hint_len    = 4
+size_hint_endian = "be"
+size_hint_add    = 12
 
 [[signature]]
 name         = "OpenEXR High Dynamic Range Image"

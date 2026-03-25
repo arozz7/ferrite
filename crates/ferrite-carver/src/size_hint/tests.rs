@@ -413,3 +413,165 @@ fn pdf_linearized_no_l_key_returns_none() {
     let result = read_size_hint(dev.as_ref(), 0, &SizeHint::Pdf, u64::MAX);
     assert_eq!(result, None);
 }
+
+// ── CAB size hint tests ────────────────────────────────────────────────────
+
+#[test]
+fn cab_size_hint_reads_cbcabinet() {
+    // cbCabinet (u32 LE) at bytes 8–11 = total file size.
+    let mut data = vec![0u8; 512];
+    data[0..4].copy_from_slice(b"MSCF");
+    // bytes 4–7: reserved1 = 0 (already zero)
+    data[8..12].copy_from_slice(&143_360u32.to_le_bytes()); // 140 KiB
+    let dev = device_from(data);
+    let hint = SizeHint::Linear {
+        offset: 8,
+        len: 4,
+        little_endian: true,
+        add: 0,
+    };
+    assert_eq!(
+        read_size_hint(dev.as_ref(), 0, &hint, u64::MAX),
+        Some(143_360)
+    );
+}
+
+#[test]
+fn cab_size_hint_zero_returns_zero() {
+    let mut data = vec![0u8; 512];
+    data[0..4].copy_from_slice(b"MSCF");
+    // cbCabinet = 0 — degenerate; hint returns 0, carver falls back
+    let dev = device_from(data);
+    let hint = SizeHint::Linear {
+        offset: 8,
+        len: 4,
+        little_endian: true,
+        add: 0,
+    };
+    assert_eq!(read_size_hint(dev.as_ref(), 0, &hint, u64::MAX), Some(0));
+}
+
+// ── DEX size hint tests ────────────────────────────────────────────────────
+
+#[test]
+fn dex_size_hint_reads_file_size() {
+    // file_size (u32 LE) at bytes 32–35 = total DEX file size.
+    let mut data = vec![0u8; 512];
+    data[0..4].copy_from_slice(b"dex\n");
+    data[4..8].copy_from_slice(b"035\0");
+    data[32..36].copy_from_slice(&4_096u32.to_le_bytes()); // 4 KiB
+    let dev = device_from(data);
+    let hint = SizeHint::Linear {
+        offset: 32,
+        len: 4,
+        little_endian: true,
+        add: 0,
+    };
+    assert_eq!(
+        read_size_hint(dev.as_ref(), 0, &hint, u64::MAX),
+        Some(4_096)
+    );
+}
+
+#[test]
+fn dex_size_hint_large_value() {
+    let mut data = vec![0u8; 512];
+    data[0..4].copy_from_slice(b"dex\n");
+    data[4..8].copy_from_slice(b"039\0");
+    data[32..36].copy_from_slice(&15_728_640u32.to_le_bytes()); // 15 MiB
+    let dev = device_from(data);
+    let hint = SizeHint::Linear {
+        offset: 32,
+        len: 4,
+        little_endian: true,
+        add: 0,
+    };
+    assert_eq!(
+        read_size_hint(dev.as_ref(), 0, &hint, u64::MAX),
+        Some(15_728_640)
+    );
+}
+
+// ── WOFF2 size hint tests ──────────────────────────────────────────────────
+
+#[test]
+fn woff2_size_hint_reads_length() {
+    // length (u32 BE) at bytes 8–11 = total WOFF2 file size.
+    let mut data = vec![0u8; 512];
+    data[0..4].copy_from_slice(b"wOF2");
+    data[8..12].copy_from_slice(&98_304u32.to_be_bytes()); // 96 KiB
+    let dev = device_from(data);
+    let hint = SizeHint::Linear {
+        offset: 8,
+        len: 4,
+        little_endian: false,
+        add: 0,
+    };
+    assert_eq!(
+        read_size_hint(dev.as_ref(), 0, &hint, u64::MAX),
+        Some(98_304)
+    );
+}
+
+#[test]
+fn woff2_size_hint_big_endian_bytes() {
+    // Verify big-endian parsing: 0x00 0x01 0x86 0xA0 = 100_000.
+    let mut data = vec![0u8; 512];
+    data[0..4].copy_from_slice(b"wOF2");
+    data[8..12].copy_from_slice(&100_000u32.to_be_bytes());
+    let dev = device_from(data);
+    let hint = SizeHint::Linear {
+        offset: 8,
+        len: 4,
+        little_endian: false,
+        add: 0,
+    };
+    assert_eq!(
+        read_size_hint(dev.as_ref(), 0, &hint, u64::MAX),
+        Some(100_000)
+    );
+}
+
+// ── DjVu size hint tests ───────────────────────────────────────────────────
+
+#[test]
+fn djvu_size_hint_single_page() {
+    // IFF FORM structure: chunk_size (u32 BE @8) + 12 = total file size.
+    // "AT&TFORM" @0-7, chunk_size @8-11, form_type @12-15.
+    let mut data = vec![0u8; 512];
+    data[0..8].copy_from_slice(b"AT&TFORM");
+    let chunk_size: u32 = 65_524; // total = 65_524 + 12 = 65_536
+    data[8..12].copy_from_slice(&chunk_size.to_be_bytes());
+    data[12..16].copy_from_slice(b"DJVU");
+    let dev = device_from(data);
+    let hint = SizeHint::Linear {
+        offset: 8,
+        len: 4,
+        little_endian: false,
+        add: 12,
+    };
+    assert_eq!(
+        read_size_hint(dev.as_ref(), 0, &hint, u64::MAX),
+        Some(65_536)
+    );
+}
+
+#[test]
+fn djvu_size_hint_multi_page() {
+    let mut data = vec![0u8; 512];
+    data[0..8].copy_from_slice(b"AT&TFORM");
+    let chunk_size: u32 = 2_097_140; // total = 2_097_152 = 2 MiB
+    data[8..12].copy_from_slice(&chunk_size.to_be_bytes());
+    data[12..16].copy_from_slice(b"DJVM");
+    let dev = device_from(data);
+    let hint = SizeHint::Linear {
+        offset: 8,
+        len: 4,
+        little_endian: false,
+        add: 12,
+    };
+    assert_eq!(
+        read_size_hint(dev.as_ref(), 0, &hint, u64::MAX),
+        Some(2_097_152)
+    );
+}
