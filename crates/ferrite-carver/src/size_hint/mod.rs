@@ -6,6 +6,7 @@
 //! falls back to `max_size`).
 
 mod asf;
+mod au;
 mod ebml;
 mod elf;
 mod gif;
@@ -13,6 +14,7 @@ pub(crate) mod helpers;
 mod iso9660;
 mod isobmff;
 mod linear;
+mod midi;
 mod mpeg_ps;
 mod mpeg_ts;
 mod ogg;
@@ -111,6 +113,10 @@ pub(crate) fn read_size_hint(
         SizeHint::Tar => tar::tar_hint(device, file_offset, max_size),
 
         SizeHint::MpegPs => mpeg_ps::mpeg_ps_hint(device, file_offset, max_size),
+
+        SizeHint::Au => au::au_hint(device, file_offset),
+
+        SizeHint::Midi => midi::midi_hint(device, file_offset),
     }
 }
 

@@ -256,6 +256,35 @@ pub enum SizeHint {
     /// the byte immediately after the PSEND code when found, or an estimate
     /// based on the last observed pack header when sync is lost.
     MpegPs,
+
+    /// Sun/NeXT AU audio file size hint.
+    ///
+    /// The AU header encodes two fields that together define the data extent:
+    ///
+    /// ```text
+    /// offset  4: data_offset — u32 BE; byte offset to the audio data
+    /// offset  8: data_size   — u32 BE; byte length of the audio data
+    /// ```
+    ///
+    /// `total_size = data_offset + data_size`
+    ///
+    /// When `data_size == 0xFFFF_FFFF` (streaming / unknown length),
+    /// returns `None` and falls back to `max_size`.
+    Au,
+
+    /// Standard MIDI File (SMF) chunk walker.
+    ///
+    /// The MIDI header chunk (MThd) at offset 0 provides:
+    ///
+    /// ```text
+    /// offset  8: format   — u16 BE (0 = single track, 1/2 = multi-track)
+    /// offset 10: nTracks  — u16 BE; number of MTrk chunks that follow
+    /// ```
+    ///
+    /// Total file size = 14 (MThd header) + sum over each MTrk of
+    /// `8 + track_data_len`, where `track_data_len` is the u32 BE length
+    /// field at MTrk+4.
+    Midi,
 }
 
 impl SizeHint {
@@ -285,6 +314,8 @@ impl SizeHint {
             SizeHint::Asf => "asf",
             SizeHint::Tar => "tar",
             SizeHint::MpegPs => "mpeg_ps",
+            SizeHint::Au => "au",
+            SizeHint::Midi => "midi",
         }
     }
 }
@@ -487,6 +518,8 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("asf") => Some(SizeHint::Asf),
                     Some(k) if k.eq_ignore_ascii_case("tar") => Some(SizeHint::Tar),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ps") => Some(SizeHint::MpegPs),
+                    Some(k) if k.eq_ignore_ascii_case("au") => Some(SizeHint::Au),
+                    Some(k) if k.eq_ignore_ascii_case("midi") => Some(SizeHint::Midi),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
                         match (r.size_hint_ts_offset, r.size_hint_stride) {
                             (Some(ts_offset), Some(stride)) => {
