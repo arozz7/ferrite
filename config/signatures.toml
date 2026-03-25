@@ -1370,3 +1370,100 @@ min_size     = 26            # Minimum valid header (same as PSD)
 max_size     = 2_147_483_648 # 2 GiB — PSB files can be very large
 # Reuses PSD validator: version in {1, 2}, channels in [1, 56].
 pre_validate = "psd"
+
+# ── Phase 101 — Consumer Format Signatures ────────────────────────────────────
+
+[[signature]]
+name         = "Raw AAC Audio (MPEG-4 ADTS)"
+extension    = "aac"
+# 2-byte header: FF F1 = ADTS sync (0xFFF) + MPEG-4 ID (0) + Layer (00) +
+# protection_absent (1).  ADTS is the raw container for AAC audio used in
+# broadcast, streaming, and consumer devices.
+header       = "FF F1"
+footer       = ""
+min_size     = 128           # At least a few complete frames
+max_size     = 52_428_800    # 50 MiB — typical AAC audio file
+# Validates: layer bits must be 00; sampling_freq_index @byte2 in [0, 12].
+pre_validate = "aac"
+
+[[signature]]
+name         = "Raw AAC Audio (MPEG-2 ADTS)"
+extension    = "aac"
+# 2-byte header: FF F9 = ADTS sync (0xFFF) + MPEG-2 ID (1) + Layer (00) +
+# protection_absent (1).  The MPEG-2 ADTS variant is common in broadcast and
+# legacy devices.
+header       = "FF F9"
+footer       = ""
+min_size     = 128           # At least a few complete frames
+max_size     = 52_428_800    # 50 MiB
+# Validates: layer bits must be 00; sampling_freq_index @byte2 in [0, 12].
+pre_validate = "aac"
+
+[[signature]]
+name         = "DjVu Document"
+extension    = "djvu"
+# 8-byte header: 41 54 26 54 46 4F 52 4D = "AT&TFORM" — RIFF-like container
+# used for the DjVu document format.  Bytes 12–15 (form type) must be "DJVU"
+# (single page), "DJVM" (multi-page), "DJVI" (include file), or "THUM" (thumbnail).
+header       = "41 54 26 54 46 4F 52 4D"
+footer       = ""
+min_size     = 20            # Header + size field + form type
+max_size     = 209_715_200   # 200 MiB — large scanned document collections
+# Validates form type at bytes 12–15.
+pre_validate = "djvu"
+
+[[signature]]
+name         = "OpenEXR High Dynamic Range Image"
+extension    = "exr"
+# 4-byte header: 76 2F 31 01 = OpenEXR magic (ILM's format for visual effects).
+# The magic is globally unique; no further pre-validation required.
+header       = "76 2F 31 01"
+footer       = ""
+min_size     = 256           # Minimum valid EXR header with at least one attribute
+max_size     = 524_288_000   # 500 MiB — 4K HDR images can be large
+
+[[signature]]
+name         = "GIMP XCF Image"
+extension    = "xcf"
+# 10-byte header: 67 69 6D 70 20 78 63 66 20 76 = "gimp xcf v".  Followed by
+# version string: "file\0" (very old) or 3 decimal digits + "\0" (e.g. "003\0").
+header       = "67 69 6D 70 20 78 63 66 20 76"
+footer       = ""
+min_size     = 20            # Header + version string + minimum attributes
+max_size     = 524_288_000   # 500 MiB — complex multi-layer canvases
+# Validates version string at bytes 10–14.
+pre_validate = "xcf"
+
+[[signature]]
+name         = "JPEG 2000 Image"
+extension    = "jp2"
+# 12-byte signature box: 00 00 00 0C 6A 50 20 20 0D 0A 87 0A.
+# This is the ISO 15444-1 JP2 Signature Box — globally unique.
+header       = "00 00 00 0C 6A 50 20 20 0D 0A 87 0A"
+footer       = ""
+min_size     = 32            # Signature box + at minimum one following box
+max_size     = 524_288_000   # 500 MiB — high-res medical/archival images
+
+[[signature]]
+name         = "PCX Image"
+extension    = "pcx"
+# 1-byte manufacturer field: 0A = ZSoft PCX.  The manufacturer byte 0x0A is
+# common in binary data, so validation is strict: version, encoding, bits-per-
+# plane, and image geometry must all be consistent.
+header       = "0A"
+footer       = ""
+min_size     = 128           # Full 128-byte PCX header
+max_size     = 52_428_800    # 50 MiB — large uncompressed PCX files
+# Strict: version @1 in {0,2,3,4,5}; encoding @2 in {0,1}; bpp @3 in {1,2,4,8};
+# xMax >= xMin; yMax >= yMin; reserved @64 == 0; color planes @65 in {1,3,4}.
+pre_validate = "pcx"
+
+[[signature]]
+name         = "BPG Image"
+extension    = "bpg"
+# 4-byte header: 42 50 47 FB = "BPG\xFB" — Better Portable Graphics format
+# by Fabrice Bellard.  The magic is globally unique; no pre-validation required.
+header       = "42 50 47 FB"
+footer       = ""
+min_size     = 16            # Minimum valid BPG header
+max_size     = 52_428_800    # 50 MiB

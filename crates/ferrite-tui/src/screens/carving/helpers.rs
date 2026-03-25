@@ -40,14 +40,17 @@ const GROUP_ORDER: &[&str] = &[
 /// Returns the group label for a given file extension.
 fn sig_group_label(ext: &str) -> &'static str {
     match ext {
-        "jpg" | "png" | "gif" | "bmp" | "tif" | "webp" | "psd" => "Images",
+        "jpg" | "png" | "gif" | "bmp" | "tif" | "webp" | "psd" | "exr" | "xcf" | "jp2" | "pcx"
+        | "bpg" => "Images",
         "arw" | "cr2" | "nef" | "rw2" | "raf" | "heic" | "orf" | "pef" | "cr3" | "sr2" | "dcr"
         | "crw" | "mrw" | "x3f" => "RAW Photos",
         "mp4" | "mov" | "m4v" | "3gp" | "avi" | "mkv" | "webm" | "wmv" | "flv" | "mpg" | "rm"
         | "swf" | "ts" | "m2ts" | "wtv" => "Video",
-        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "mid" | "aif" | "wv" | "ape" | "au" => "Audio",
+        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "mid" | "aif" | "wv" | "ape" | "au" | "aac" => {
+            "Audio"
+        }
         "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" | "eml" | "epub" | "odt" | "cdr" | "ttf"
-        | "woff" | "chm" | "blend" | "indd" | "php" | "sh" => "Documents",
+        | "woff" | "chm" | "blend" | "indd" | "php" | "sh" | "djvu" => "Documents",
         "zip" | "ole" | "pst" | "msg" => "Office & Email",
         "rar" | "7z" | "gz" | "xz" | "bz2" | "iso" | "tar" => "Archives",
         "db" | "vmdk" | "evtx" | "exe" | "elf" | "dat" | "vhd" | "vhdx" | "qcow2" | "macho"

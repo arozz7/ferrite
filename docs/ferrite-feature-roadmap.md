@@ -1,20 +1,20 @@
 # Ferrite — Comprehensive Feature Roadmap
-**Reviewed as of Phase 100 (107 signatures) — Status updated 2026-03-24**
+**Reviewed as of Phase 101 (115 signatures) — Status updated 2026-03-24**
 *Senior Data Recovery & Digital Forensics Perspective*
 
 ---
 
 ## Executive Summary
 
-Ferrite has completed all planned phases through Phase 64. As of this update:
+Ferrite has completed all planned phases through Phase 101. As of this update:
 
-- **99 signatures** across 10 format categories (up from 43 at initial audit)
+- **115 signatures** across 10 format categories (up from 43 at initial audit)
 - **All workflow features delivered:** SHA-256 hash, thermal guard, write-blocker
   verification, Quick Deleted-File Recovery, custom user signatures, forensic artifact
   scanning, heuristic text block scanner, non-zero-offset scan infrastructure
 - **10 TUI tabs** — Drives / Health / Imaging / Partitions / Files / Carving / Hex /
   Quick Recover / Artifacts / Text Scan
-- **658 unit tests**, clippy-clean, `cargo fmt --check` passing
+- **987 unit tests**, clippy-clean, `cargo fmt --check` passing
 
 **All planned phases complete.** Phase 58 (exFAT + APFS MVP) was delivered as:
 - **Phase 58a** — `ExFatParser`: full read-only exFAT `FilesystemParser` (668 tests)
@@ -1071,29 +1071,25 @@ to the existing JFIF/Exif-only signatures. Pre-validator checks DQT segment leng
 
 ---
 
-## Phase 101 — PhotoRec Gap Batch 2: Common Consumer Formats (Planned)
+## Phase 101 — PhotoRec Gap Batch 2: Common Consumer Formats ✅ Done (2026-03-24)
 
-**Target: 107 → ~120 signatures.**
+**115 signatures total after this phase.**
 
-Formats with high hit rate on typical consumer/office drives. All are quick-wins —
+Added 8 signatures covering common consumer formats. All are quick-wins —
 new signature + lightweight pre-validator, no scanner infrastructure changes.
 
-| Format | Ext | Header (hex) | Pre-validate | Max size | Priority |
-|--------|-----|-------------|--------------|----------|----------|
-| Raw AAC (ADTS) | `aac` | `FF F1` / `FF F9` | sync word check; first 4 frames consecutive | 50 MiB | High |
-| DjVu | `djvu` | `41 54 26 54 46 4F 52 4D` | `AT&TFORM`; subtype `DJVU`/`DJVM` @12 | 200 MiB | Medium |
-| OpenEXR | `exr` | `76 2F 31 01` | 4-byte magic is globally unique | 500 MiB | Medium |
-| GIMP XCF | `xcf` | `67 69 6D 70 20 78 63 66 20 76` | version string @10 is "file" or 3 digits | 500 MiB | Medium |
-| JPEG 2000 | `jp2` | `00 00 00 0C 6A 50 20 20 0D 0A 87 0A` | 12-byte sig box; JP2 header box follows | 500 MiB | Low |
-| PCX | `pcx` | `0A` | version byte @1 ∈ {0,2,3,4,5}; encoding @2 == 1 | 50 MiB | Low |
-| BPG Image | `bpg` | `42 50 47 FB` | 4-byte magic globally unique | 50 MiB | Low |
+| # | Format | Header | Pre-validate | Max size |
+|---|--------|--------|--------------|----------|
+| 108 | Raw AAC MPEG-4 ADTS | `FF F1` | `Aac`: layer==00; sfi≤12 | 50 MiB |
+| 109 | Raw AAC MPEG-2 ADTS | `FF F9` | `Aac` (shared) | 50 MiB |
+| 110 | DjVu Document | `AT&TFORM` (8 B) | `Djvu`: form type ∈ {DJVU,DJVM,DJVI,THUM} | 200 MiB |
+| 111 | OpenEXR HDR Image | `76 2F 31 01` | — (4-byte unique) | 500 MiB |
+| 112 | GIMP XCF Image | `gimp xcf v` (10 B) | `Xcf`: version `file\0` or 3 digits+`\0` | 500 MiB |
+| 113 | JPEG 2000 | 12-byte sig box | — (globally unique) | 500 MiB |
+| 114 | PCX Image | `0A` | `Pcx`: strict 7-field check | 50 MiB |
+| 115 | BPG Image | `42 50 47 FB` | — (4-byte unique) | 50 MiB |
 
-**Implementation notes:**
-- AAC: two header bytes `FF F1` (MPEG-4 ADTS) and `FF F9` (MPEG-2 ADTS); need separate
-  signatures + validator checking protection bits and layer are valid
-- DjVu: RIFF-like container; subtype at bytes 8–11 must be `DJVU` (single page) or
-  `DJVM` (multi-page)
-- XCF: `gimp xcf v` + version; version = `file` (very old) or 3 decimal digits (`001`–`019`)
+**Total: 107 → 115 signatures. 587 tests in ferrite-carver (+26), all passing.**
 
 ---
 

@@ -264,6 +264,19 @@ pub enum PreValidate {
     /// Android Dalvik Executable: version string at bytes 4–7 must be three
     /// ASCII digits followed by a null byte.
     Dex,
+    /// Raw AAC/ADTS audio: ADTS layer bits (bits 1–2 of byte 1) must be 0x00;
+    /// sampling_freq_index ((byte2 >> 2) & 0x0F) must be in [0, 12].
+    Aac,
+    /// DjVu document: `AT&TFORM` container; form type at bytes 12–15 must be
+    /// one of `DJVU`, `DJVM`, `DJVI`, or `THUM`.
+    Djvu,
+    /// GIMP XCF image: version string at bytes 10–14 must be `file\0` (very
+    /// old) or three ASCII decimal digits followed by `\0`.
+    Xcf,
+    /// ZSoft PCX image: version @1 in {0,2,3,4,5}; encoding @2 in {0,1};
+    /// bitsPerPlane @3 in {1,2,4,8}; xMax >= xMin; yMax >= yMin;
+    /// reserved @64 == 0; colorPlanes @65 in {1,3,4}.
+    Pcx,
 }
 
 impl PreValidate {
@@ -370,6 +383,10 @@ impl PreValidate {
             Self::Otf => "otf",
             Self::Woff2 => "woff2",
             Self::Dex => "dex",
+            Self::Aac => "aac",
+            Self::Djvu => "djvu",
+            Self::Xcf => "xcf",
+            Self::Pcx => "pcx",
         }
     }
 
@@ -476,6 +493,10 @@ impl PreValidate {
             "otf" => Some(Self::Otf),
             "woff2" => Some(Self::Woff2),
             "dex" => Some(Self::Dex),
+            "aac" => Some(Self::Aac),
+            "djvu" => Some(Self::Djvu),
+            "xcf" => Some(Self::Xcf),
+            "pcx" => Some(Self::Pcx),
             _ => None,
         }
     }
@@ -590,6 +611,10 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Otf => validate_otf(data, pos),
         PreValidate::Woff2 => validate_woff2(data, pos),
         PreValidate::Dex => validate_dex(data, pos),
+        PreValidate::Aac => validate_aac(data, pos),
+        PreValidate::Djvu => validate_djvu(data, pos),
+        PreValidate::Xcf => validate_xcf(data, pos),
+        PreValidate::Pcx => validate_pcx(data, pos),
     }
 }
 
@@ -793,6 +818,99 @@ fn validate_dex(data: &[u8], pos: usize) -> bool {
     }
     let v = &data[pos + 4..pos + 8];
     v[0].is_ascii_digit() && v[1].is_ascii_digit() && v[2].is_ascii_digit() && v[3] == 0x00
+}
+
+fn validate_aac(data: &[u8], pos: usize) -> bool {
+    // ADTS frame header layout (bytes relative to pos):
+    //   0:   0xFF (sync high — already matched by magic)
+    //   1:   sync[3:0] + ID + layer[1:0] + protection
+    //        layer bits (1–2) MUST be 00 for AAC ADTS (not MPEG audio layers)
+    //   2:   profile[1:0] + sampling_freq_idx[3:0] + private + channel_cfg[2]
+    //        sampling_freq_idx in [0, 12]; 13–15 are reserved/invalid
+    if need(data, pos, 3) {
+        return true;
+    }
+    let b1 = data[pos + 1];
+    let b2 = data[pos + 2];
+    // Layer must be 00 (bits 1–2 of byte 1)
+    if b1 & 0x06 != 0x00 {
+        return false;
+    }
+    // sampling_freq_index (bits 5–2 of byte 2) must be in [0, 12]
+    let sfi = (b2 >> 2) & 0x0F;
+    sfi <= 12
+}
+
+fn validate_djvu(data: &[u8], pos: usize) -> bool {
+    // "AT&TFORM" (8 bytes) + u32 BE size (4 bytes) + form type (4 bytes) = 16 bytes
+    // Form type at bytes 12–15 must be one of the known DjVu types.
+    if need(data, pos, 16) {
+        return true;
+    }
+    let form_type = &data[pos + 12..pos + 16];
+    matches!(form_type, b"DJVU" | b"DJVM" | b"DJVI" | b"THUM")
+}
+
+fn validate_xcf(data: &[u8], pos: usize) -> bool {
+    // "gimp xcf v" (10 bytes) + version string.
+    // Version is either "file\0" (legacy) or exactly 3 ASCII decimal digits + "\0"
+    // (e.g. "001\0" through "019\0").
+    if need(data, pos, 15) {
+        return true;
+    }
+    let ver = &data[pos + 10..pos + 15];
+    // Legacy format: "file\0"
+    if ver == b"file\0" {
+        return true;
+    }
+    // Modern format: 3 decimal digits + null
+    ver[0].is_ascii_digit() && ver[1].is_ascii_digit() && ver[2].is_ascii_digit() && ver[3] == 0x00
+}
+
+fn validate_pcx(data: &[u8], pos: usize) -> bool {
+    // PCX 128-byte fixed header; need at least 68 bytes for the full validation.
+    if need(data, pos, 68) {
+        return true;
+    }
+    // @1: version — only {0, 2, 3, 4, 5} are defined (1 = obsolete, 6+ invalid)
+    let version = data[pos + 1];
+    if !matches!(version, 0 | 2 | 3 | 4 | 5) {
+        return false;
+    }
+    // @2: encoding — 0 = uncompressed (rare), 1 = RLE (standard)
+    let encoding = data[pos + 2];
+    if encoding > 1 {
+        return false;
+    }
+    // @3: bits per plane — must be a power of two in {1, 2, 4, 8}
+    let bpp = data[pos + 3];
+    if !matches!(bpp, 1 | 2 | 4 | 8) {
+        return false;
+    }
+    // @4–5: xMin (LE), @8–9: xMax (LE) — xMax must be >= xMin
+    let x_min = u16::from_le_bytes([data[pos + 4], data[pos + 5]]);
+    let x_max = u16::from_le_bytes([data[pos + 8], data[pos + 9]]);
+    if x_max < x_min {
+        return false;
+    }
+    // @6–7: yMin (LE), @10–11: yMax (LE) — yMax must be >= yMin
+    let y_min = u16::from_le_bytes([data[pos + 6], data[pos + 7]]);
+    let y_max = u16::from_le_bytes([data[pos + 10], data[pos + 11]]);
+    if y_max < y_min {
+        return false;
+    }
+    // @64: reserved — must be 0 per ZSoft specification
+    if data[pos + 64] != 0x00 {
+        return false;
+    }
+    // @65: color planes — {1, 3, 4} are valid; 2 is theoretically valid but extremely rare
+    let planes = data[pos + 65];
+    if !matches!(planes, 1 | 3 | 4) {
+        return false;
+    }
+    // @66–67: bytes per line (LE) — must be > 0
+    let bpl = u16::from_le_bytes([data[pos + 66], data[pos + 67]]);
+    bpl > 0
 }
 
 /// Returns `true` when `pos` appears to be an embedded JPEG (thumbnail) inside
@@ -5627,5 +5745,282 @@ mod tests {
     fn shebang_too_short_passes() {
         // Only 2 bytes — benefit of doubt.
         assert!(validate_shebang(b"#!", 0));
+    }
+
+    // ── AAC ───────────────────────────────────────────────────────────────────
+
+    fn make_aac(id: u8, sfi: u8) -> Vec<u8> {
+        // Construct a minimal ADTS frame header.
+        // Byte 1: sync(4) + ID(1) + layer(00) + protection(1)
+        let b1 = 0xF0 | (id << 3) | 0x01;
+        // Byte 2: profile(00) + sampling_freq_idx(4 bits) + private(0) + channel_hi(0)
+        let b2 = (sfi & 0x0F) << 2;
+        vec![0xFF, b1, b2, 0x00, 0x00, 0x00, 0x00]
+    }
+
+    #[test]
+    fn aac_mpeg4_valid() {
+        assert!(validate_aac(&make_aac(0, 3), 0)); // MPEG-4, 48000 Hz (sfi=3)
+    }
+
+    #[test]
+    fn aac_mpeg2_valid() {
+        assert!(validate_aac(&make_aac(1, 4), 0)); // MPEG-2, 44100 Hz (sfi=4)
+    }
+
+    #[test]
+    fn aac_invalid_layer_rejected() {
+        // layer bits set to 01 (Layer I) — invalid for ADTS
+        let mut buf = make_aac(0, 4);
+        buf[1] |= 0x02;
+        assert!(!validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_reserved_sfi_rejected() {
+        // sfi = 13 (reserved) — invalid
+        assert!(!validate_aac(&make_aac(0, 13), 0));
+    }
+
+    #[test]
+    fn aac_too_short_passes() {
+        assert!(validate_aac(b"\xFF\xF1", 0));
+    }
+
+    // ── DjVu ──────────────────────────────────────────────────────────────────
+
+    fn make_djvu(form_type: &[u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[..8].copy_from_slice(b"AT&TFORM");
+        // u32 BE size at bytes 8–11
+        buf[8..12].copy_from_slice(&8u32.to_be_bytes());
+        buf[12..16].copy_from_slice(form_type);
+        buf
+    }
+
+    #[test]
+    fn djvu_single_page_accepted() {
+        assert!(validate_djvu(&make_djvu(b"DJVU"), 0));
+    }
+
+    #[test]
+    fn djvu_multi_page_accepted() {
+        assert!(validate_djvu(&make_djvu(b"DJVM"), 0));
+    }
+
+    #[test]
+    fn djvu_include_accepted() {
+        assert!(validate_djvu(&make_djvu(b"DJVI"), 0));
+    }
+
+    #[test]
+    fn djvu_thumbnail_accepted() {
+        assert!(validate_djvu(&make_djvu(b"THUM"), 0));
+    }
+
+    #[test]
+    fn djvu_unknown_form_type_rejected() {
+        assert!(!validate_djvu(&make_djvu(b"WAVE"), 0));
+    }
+
+    #[test]
+    fn djvu_too_short_passes() {
+        assert!(validate_djvu(b"AT&TFORM", 0));
+    }
+
+    // ── XCF ───────────────────────────────────────────────────────────────────
+
+    fn make_xcf(version: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(15);
+        buf.extend_from_slice(b"gimp xcf v");
+        buf.extend_from_slice(version);
+        while buf.len() < 15 {
+            buf.push(0);
+        }
+        buf
+    }
+
+    #[test]
+    fn xcf_legacy_version_accepted() {
+        assert!(validate_xcf(&make_xcf(b"file\0"), 0));
+    }
+
+    #[test]
+    fn xcf_modern_version_accepted() {
+        assert!(validate_xcf(&make_xcf(b"003\0!"), 0));
+    }
+
+    #[test]
+    fn xcf_invalid_version_rejected() {
+        assert!(!validate_xcf(&make_xcf(b"xyz\0!"), 0));
+    }
+
+    #[test]
+    fn xcf_too_short_passes() {
+        assert!(validate_xcf(b"gimp xcf v", 0));
+    }
+
+    // ── PCX ───────────────────────────────────────────────────────────────────
+
+    struct PcxParams {
+        version: u8,
+        encoding: u8,
+        bpp: u8,
+        x_min: u16,
+        y_min: u16,
+        x_max: u16,
+        y_max: u16,
+        reserved: u8,
+        planes: u8,
+        bpl: u16,
+    }
+
+    impl Default for PcxParams {
+        fn default() -> Self {
+            Self {
+                version: 5,
+                encoding: 1,
+                bpp: 8,
+                x_min: 0,
+                y_min: 0,
+                x_max: 639,
+                y_max: 479,
+                reserved: 0,
+                planes: 3,
+                bpl: 640,
+            }
+        }
+    }
+
+    fn make_pcx(p: PcxParams) -> Vec<u8> {
+        let mut buf = vec![0u8; 128];
+        buf[0] = 0x0A;
+        buf[1] = p.version;
+        buf[2] = p.encoding;
+        buf[3] = p.bpp;
+        buf[4..6].copy_from_slice(&p.x_min.to_le_bytes());
+        buf[6..8].copy_from_slice(&p.y_min.to_le_bytes());
+        buf[8..10].copy_from_slice(&p.x_max.to_le_bytes());
+        buf[10..12].copy_from_slice(&p.y_max.to_le_bytes());
+        buf[64] = p.reserved;
+        buf[65] = p.planes;
+        buf[66..68].copy_from_slice(&p.bpl.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn pcx_valid_v5_accepted() {
+        assert!(validate_pcx(&make_pcx(PcxParams::default()), 0));
+    }
+
+    #[test]
+    fn pcx_valid_v3_mono_accepted() {
+        assert!(validate_pcx(
+            &make_pcx(PcxParams {
+                version: 3,
+                bpp: 1,
+                x_max: 319,
+                y_max: 199,
+                planes: 1,
+                bpl: 40,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_invalid_version_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                version: 1,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_invalid_encoding_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                encoding: 2,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_invalid_bpp_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                bpp: 16,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_xmax_less_than_xmin_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                x_min: 100,
+                x_max: 50,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_ymax_less_than_ymin_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                y_min: 100,
+                y_max: 50,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_nonzero_reserved_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                reserved: 1,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_invalid_planes_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                planes: 5,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_zero_bpl_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                bpl: 0,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_too_short_passes() {
+        assert!(validate_pcx(b"\x0a\x05\x01\x08", 0));
     }
 }
