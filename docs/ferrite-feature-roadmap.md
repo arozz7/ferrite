@@ -1113,30 +1113,24 @@ Added 14 signatures covering developer workstation and scientific data formats.
 
 ---
 
-## Phase 103 — PhotoRec Gap Batch 4: Forensic & System Formats (Planned)
+## Phase 103 — Forensic & System Format Signatures (Done)
 
-**Target: ~130 → ~140 signatures.**
+**129 → 139 signatures. 629 tests in ferrite-carver (+23), all passing.**
 
-Formats with high forensic / data-recovery value that require more careful validation
-or larger max_size caps.
+| # | Name | Header | Pre-validate | Max size |
+|---|------|--------|--------------|----------|
+| 130 | VirtualBox VDI | `7F 10 DA BE` @offset 64 | `Vdi`: image_type u32 LE @8 ∈ {1–4} | 2 GiB |
+| 131 | AFF Forensic Image | `AFF\0\0\0\1` (7 B) | — (7-byte unique) | 2 GiB |
+| 132 | Windows LNK | 20-byte HeaderSize+CLSID | `Lnk`: FileAttributes non-zero, no reserved bits | 1 MiB |
+| 133 | Prefetch WinXP | `11 00 00 00` | `Prefetch`: "SCCA" @4 | 10 MiB |
+| 134 | Prefetch Vista/7 | `17 00 00 00` | `Prefetch` (shared) | 10 MiB |
+| 135 | Prefetch Win8.1 | `1A 00 00 00` | `Prefetch` (shared) | 10 MiB |
+| 136 | Prefetch Win10/11 | `1E 00 00 00` | `Prefetch` (shared) | 10 MiB |
+| 137 | Windows EVT | `30 00 00 00 4C 66 4C 65` | `Evt`: MajorVersion==1, MinorVersion==1 | 100 MiB |
+| 138 | PEM Certificate/Key | `-----BEGIN` (10 B) | `Pem`: space @10; uppercase @11 | 1 MiB |
+| 139 | Bitcoin Wallet (BDB) | `62 31 05 00 09 00` | — (6-byte magic) | 100 MiB |
 
-| Format | Ext | Header (hex) | Pre-validate | Max size | Priority |
-|--------|-----|-------------|--------------|----------|----------|
-| VirtualBox VDI | `vdi` | `7F 10 DA BE` at offset 0x40 | header_offset = 64; image type u32 LE @72 ∈ {1,2} | 2 TiB | High |
-| AFF forensic image | `aff` | `41 46 46` | `AFF` magic; version u32 BE @3 ∈ {1} | 2 TiB | High |
-| Windows LNK (Shell Link) | `lnk` | `4C 00 00 00 01 14 02 00` | 8-byte CLSID prefix; FileAttributes u32 LE @24 plausible | 1 MiB | High |
-| Windows Prefetch | `pf` | `11 00 00 00` / `17 00 00 00` / `1A 00 00 00` | version byte ∈ {17, 23, 26, 30} | 10 MiB | Medium |
-| Windows Event Log (EVT) | `evt` | `30 00 00 00 4C 66 4C 65` | 8-byte magic; OldestRecord u32 LE @16 > 0 | 100 MiB | Medium |
-| PEM certificate | `pem` | `2D 2D 2D 2D 2D 42 45 47 49 4E` | `-----BEGIN`; next non-space byte valid label char | 1 MiB | Medium |
-| Bitcoin wallet | `wallet` | `62 31 05 00 09 00` | Berkeley DB wallet; magic + version | 100 MiB | Low |
-| Ethereum keystore | `json` | `7B 22 63 72 79 70 74 6F` | `{"crypto`; JSON structure for ETH keystore | 1 MiB | Low |
-
-**Implementation notes:**
-- VDI: `header_offset = 64` (uses non-zero-offset scanner infrastructure from Phase 62).
-  Magic `7F 10 DA BE` is the VirtualBox disk image identifier at byte 64.
-- LNK: Windows Shell Link files are ubiquitous on any Windows drive; the 8-byte prefix
-  (`4C 00 00 00` = size 76 + `01 14 02 00 00 00 00 00` = Shell Link CLSID) is distinctive
-- PEM: extremely common in `~/.ssh/`, server configs, certificate stores
+**TUI groups:** `vdi`, `lnk`, `pf`, `evt`, `wallet` → System; `aff` → Archives; `pem` → Documents
 
 ---
 

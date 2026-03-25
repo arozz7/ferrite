@@ -289,6 +289,22 @@ pub enum PreValidate {
     /// FITS astronomy image: value indicator byte @9 must be space; logical
     /// value byte @29 must be `T` (FITS boolean True).
     Fits,
+    /// VirtualBox VDI disk image: image type u32 LE at bytes 8–11 (relative to
+    /// the magic at file offset 64) must be 1–4 (normal/fixed/undo/diff).
+    Vdi,
+    /// Windows Shell Link (LNK): FileAttributes u32 LE @24 must be non-zero
+    /// and have no reserved high bits set (bits 16–31 must be 0).
+    Lnk,
+    /// Windows Prefetch file: bytes 4–7 must equal `SCCA` (the Prefetch
+    /// signature that follows the version field in all known versions).
+    Prefetch,
+    /// Windows legacy Event Log (EVT): MajorVersion u32 LE @8 must be 1 and
+    /// MinorVersion u32 LE @12 must be 1.
+    Evt,
+    /// PEM-encoded certificate / key: byte @10 must be a space (separator
+    /// after `-----BEGIN`) and byte @11 must be an ASCII uppercase letter
+    /// (start of the type label, e.g. `C` for CERTIFICATE).
+    Pem,
 }
 
 impl PreValidate {
@@ -403,6 +419,11 @@ impl PreValidate {
             Self::Lzh => "lzh",
             Self::Hdf5 => "hdf5",
             Self::Fits => "fits",
+            Self::Vdi => "vdi",
+            Self::Lnk => "lnk",
+            Self::Prefetch => "prefetch",
+            Self::Evt => "evt",
+            Self::Pem => "pem",
         }
     }
 
@@ -517,6 +538,11 @@ impl PreValidate {
             "lzh" => Some(Self::Lzh),
             "hdf5" => Some(Self::Hdf5),
             "fits" => Some(Self::Fits),
+            "vdi" => Some(Self::Vdi),
+            "lnk" => Some(Self::Lnk),
+            "prefetch" => Some(Self::Prefetch),
+            "evt" => Some(Self::Evt),
+            "pem" => Some(Self::Pem),
             _ => None,
         }
     }
@@ -639,6 +665,11 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Lzh => validate_lzh(data, pos),
         PreValidate::Hdf5 => validate_hdf5(data, pos),
         PreValidate::Fits => validate_fits(data, pos),
+        PreValidate::Vdi => validate_vdi(data, pos),
+        PreValidate::Lnk => validate_lnk(data, pos),
+        PreValidate::Prefetch => validate_prefetch(data, pos),
+        PreValidate::Evt => validate_evt(data, pos),
+        PreValidate::Pem => validate_pem(data, pos),
     }
 }
 
@@ -842,6 +873,76 @@ fn validate_dex(data: &[u8], pos: usize) -> bool {
     }
     let v = &data[pos + 4..pos + 8];
     v[0].is_ascii_digit() && v[1].is_ascii_digit() && v[2].is_ascii_digit() && v[3] == 0x00
+}
+
+fn validate_vdi(data: &[u8], pos: usize) -> bool {
+    // pos points to the VDI magic `7F 10 DA BE` at file offset 64 (header_offset=64).
+    // The VDI pre-header is: 64-byte description + 4-byte magic + 4-byte version.
+    // The main header starts immediately after (file offset 72 = pos+8).
+    // uImageType is the first field of the main header (u32 LE at pos+8).
+    if need(data, pos, 12) {
+        return true;
+    }
+    let image_type =
+        u32::from_le_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    // 1=normal/dynamic, 2=fixed, 3=undo, 4=diff — all are valid VDI images
+    matches!(image_type, 1..=4)
+}
+
+fn validate_lnk(data: &[u8], pos: usize) -> bool {
+    // pos points to the 20-byte LNK magic (HeaderSize + full Shell Link CLSID).
+    // FileAttributes (u32 LE) is at bytes 24–27.
+    if need(data, pos, 28) {
+        return true;
+    }
+    let attrs = u32::from_le_bytes([
+        data[pos + 24],
+        data[pos + 25],
+        data[pos + 26],
+        data[pos + 27],
+    ]);
+    // FileAttributes must be non-zero (every file has at least one attribute set)
+    // and must not use reserved high bits (bits 16–31).
+    attrs != 0 && attrs & 0xFFFF_0000 == 0
+}
+
+fn validate_prefetch(data: &[u8], pos: usize) -> bool {
+    // Windows Prefetch header: Version (u32 LE @0) + Signature "SCCA" @4–7.
+    // pos already points to the version field; we just verify the SCCA signature.
+    if need(data, pos, 8) {
+        return true;
+    }
+    &data[pos + 4..pos + 8] == b"SCCA"
+}
+
+fn validate_evt(data: &[u8], pos: usize) -> bool {
+    // Legacy Windows Event Log (EVT) header:
+    //   @0–3:  HeaderSize = 48  (already matched by magic)
+    //   @4–7:  Signature "LfLe" (already matched by magic)
+    //   @8–11: MajorVersion (u32 LE) — must be 1
+    //   @12–15: MinorVersion (u32 LE) — must be 1
+    if need(data, pos, 16) {
+        return true;
+    }
+    let major = u32::from_le_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    let minor = u32::from_le_bytes([
+        data[pos + 12],
+        data[pos + 13],
+        data[pos + 14],
+        data[pos + 15],
+    ]);
+    major == 1 && minor == 1
+}
+
+fn validate_pem(data: &[u8], pos: usize) -> bool {
+    // PEM format: "-----BEGIN TYPE-----\n..."
+    // After the 10-byte magic "-----BEGIN":
+    //   @10: must be a space (separator before the type label)
+    //   @11: must be an ASCII uppercase letter (start of label, e.g. 'C' for CERTIFICATE)
+    if need(data, pos, 12) {
+        return true;
+    }
+    data[pos + 10] == b' ' && data[pos + 11].is_ascii_uppercase()
 }
 
 fn validate_jar(data: &[u8], pos: usize) -> bool {
@@ -6234,5 +6335,171 @@ mod tests {
     #[test]
     fn fits_too_short_passes() {
         assert!(validate_fits(b"SIMPLE  = ", 0));
+    }
+
+    // ── VDI ───────────────────────────────────────────────────────────────────
+
+    fn make_vdi(image_type: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[..4].copy_from_slice(&[0x7F, 0x10, 0xDA, 0xBE]);
+        // version at pos+4..pos+7 (leave as zeros = ok)
+        buf[8..12].copy_from_slice(&image_type.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn vdi_type_1_normal_accepted() {
+        assert!(validate_vdi(&make_vdi(1), 0));
+    }
+
+    #[test]
+    fn vdi_type_2_fixed_accepted() {
+        assert!(validate_vdi(&make_vdi(2), 0));
+    }
+
+    #[test]
+    fn vdi_type_4_diff_accepted() {
+        assert!(validate_vdi(&make_vdi(4), 0));
+    }
+
+    #[test]
+    fn vdi_type_0_rejected() {
+        assert!(!validate_vdi(&make_vdi(0), 0));
+    }
+
+    #[test]
+    fn vdi_type_5_rejected() {
+        assert!(!validate_vdi(&make_vdi(5), 0));
+    }
+
+    #[test]
+    fn vdi_too_short_passes() {
+        assert!(validate_vdi(&[0x7F, 0x10, 0xDA, 0xBE], 0));
+    }
+
+    // ── LNK ───────────────────────────────────────────────────────────────────
+
+    fn make_lnk(attrs: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 32];
+        // HeaderSize at pos+0..pos+3
+        buf[0..4].copy_from_slice(&0x4Cu32.to_le_bytes());
+        // CLSID at pos+4..pos+19 (skip — already checked by magic)
+        // FileAttributes at pos+24..pos+27
+        buf[24..28].copy_from_slice(&attrs.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn lnk_normal_file_accepted() {
+        assert!(validate_lnk(&make_lnk(0x0020), 0)); // FILE_ATTRIBUTE_ARCHIVE
+    }
+
+    #[test]
+    fn lnk_zero_attrs_rejected() {
+        assert!(!validate_lnk(&make_lnk(0), 0));
+    }
+
+    #[test]
+    fn lnk_reserved_high_bits_rejected() {
+        assert!(!validate_lnk(&make_lnk(0x0001_0020), 0));
+    }
+
+    #[test]
+    fn lnk_too_short_passes() {
+        assert!(validate_lnk(&[0x4C, 0x00, 0x00, 0x00], 0));
+    }
+
+    // ── Prefetch ──────────────────────────────────────────────────────────────
+
+    fn make_prefetch(version: u32, sig: &[u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[0..4].copy_from_slice(&version.to_le_bytes());
+        buf[4..8].copy_from_slice(sig);
+        buf
+    }
+
+    #[test]
+    fn prefetch_xp_accepted() {
+        assert!(validate_prefetch(&make_prefetch(17, b"SCCA"), 0));
+    }
+
+    #[test]
+    fn prefetch_win10_accepted() {
+        assert!(validate_prefetch(&make_prefetch(30, b"SCCA"), 0));
+    }
+
+    #[test]
+    fn prefetch_wrong_sig_rejected() {
+        assert!(!validate_prefetch(&make_prefetch(17, b"XXXX"), 0));
+    }
+
+    #[test]
+    fn prefetch_too_short_passes() {
+        assert!(validate_prefetch(&[0x11, 0x00, 0x00, 0x00], 0));
+    }
+
+    // ── EVT ───────────────────────────────────────────────────────────────────
+
+    fn make_evt(major: u32, minor: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 20];
+        buf[0..4].copy_from_slice(&48u32.to_le_bytes()); // HeaderSize
+        buf[4..8].copy_from_slice(b"LfLe"); // Signature
+        buf[8..12].copy_from_slice(&major.to_le_bytes());
+        buf[12..16].copy_from_slice(&minor.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn evt_version_1_1_accepted() {
+        assert!(validate_evt(&make_evt(1, 1), 0));
+    }
+
+    #[test]
+    fn evt_wrong_major_rejected() {
+        assert!(!validate_evt(&make_evt(2, 1), 0));
+    }
+
+    #[test]
+    fn evt_wrong_minor_rejected() {
+        assert!(!validate_evt(&make_evt(1, 2), 0));
+    }
+
+    #[test]
+    fn evt_too_short_passes() {
+        assert!(validate_evt(b"0\x00\x00\x00LfLe", 0));
+    }
+
+    // ── PEM ───────────────────────────────────────────────────────────────────
+
+    fn make_pem(sep: u8, label_start: u8) -> Vec<u8> {
+        let mut buf = b"-----BEGIN  CERTIFICATE-----\n".to_vec();
+        buf[10] = sep;
+        buf[11] = label_start;
+        buf
+    }
+
+    #[test]
+    fn pem_certificate_accepted() {
+        assert!(validate_pem(&make_pem(b' ', b'C'), 0));
+    }
+
+    #[test]
+    fn pem_private_key_accepted() {
+        assert!(validate_pem(&make_pem(b' ', b'P'), 0));
+    }
+
+    #[test]
+    fn pem_no_space_rejected() {
+        assert!(!validate_pem(&make_pem(b'-', b'C'), 0));
+    }
+
+    #[test]
+    fn pem_lowercase_label_rejected() {
+        assert!(!validate_pem(&make_pem(b' ', b'c'), 0));
+    }
+
+    #[test]
+    fn pem_too_short_passes() {
+        assert!(validate_pem(b"-----BEGIN", 0));
     }
 }

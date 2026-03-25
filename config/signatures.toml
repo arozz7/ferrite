@@ -1617,3 +1617,130 @@ header       = "58 50 44 53"
 footer       = ""
 min_size     = 2048
 max_size     = 2_147_483_648
+
+# ── Phase 103 — Forensic & System Format Signatures ───────────────────────────
+
+[[signature]]
+name          = "VirtualBox VDI Disk Image"
+extension     = "vdi"
+# 4-byte magic: 7F 10 DA BE — VirtualBox disk image identifier located at
+# byte 64 within the file (after the 64-byte human-readable description field).
+# header_offset = 64 shifts the reported hit start back to the true file origin.
+header        = "7F 10 DA BE"
+footer        = ""
+min_size      = 512          # Minimum valid VDI header (pre-header + main header)
+max_size      = 2_147_483_648 # 2 GiB cap (no size hint yet; Phase 104 will add one)
+header_offset = 64
+# Validates image type u32 LE @8 (relative to magic) ∈ {1=normal, 2=fixed, 3=undo, 4=diff}.
+pre_validate  = "vdi"
+
+[[signature]]
+name         = "AFF Forensic Disk Image"
+extension    = "aff"
+# 7-byte header: 41 46 46 00 00 00 01 = "AFF\0" + version 1 (u32 BE).
+# Advanced Forensics Format used by forensic tools (Sleuth Kit, Autopsy, etc.)
+# for acquiring and storing disk images with embedded metadata.
+# The version field (u32 BE @3) == 1 makes this globally unique.
+header       = "41 46 46 00 00 00 01"
+footer       = ""
+min_size     = 64            # Magic + first segment header
+max_size     = 2_147_483_648 # 2 GiB cap (no embedded size hint)
+
+[[signature]]
+name         = "Windows Shell Link (LNK)"
+extension    = "lnk"
+# 20-byte header: HeaderSize (4C 00 00 00 = 76) + full Shell Link CLSID
+# {00021401-0000-0000-C000-000000000046} in little-endian byte order.
+# LNK files are ubiquitous on Windows drives — every recent file and shortcut
+# produces one.  The 20-byte magic is globally unique.
+header       = "4C 00 00 00 01 14 02 00 00 00 00 00 C0 00 00 00 00 00 00 46"
+footer       = ""
+min_size     = 76            # Minimum valid LNK header (HeaderSize value)
+max_size     = 1_048_576     # 1 MiB — LNK files are always small
+# Validates FileAttributes (u32 LE @24): non-zero; high 16 bits (reserved) zero.
+pre_validate = "lnk"
+
+[[signature]]
+name         = "Windows Prefetch (XP / Server 2003)"
+extension    = "pf"
+# 4-byte header: 11 00 00 00 = version 17 (LE) for Windows XP / Server 2003.
+# Followed by "SCCA" signature at bytes 4–7.
+header       = "11 00 00 00"
+footer       = ""
+min_size     = 500           # Minimum valid Prefetch file
+max_size     = 10_485_760    # 10 MiB
+# Validates "SCCA" signature at bytes 4–7.
+pre_validate = "prefetch"
+
+[[signature]]
+name         = "Windows Prefetch (Vista / 7)"
+extension    = "pf"
+# 4-byte header: 17 00 00 00 = version 23 (LE) for Windows Vista / 7.
+header       = "17 00 00 00"
+footer       = ""
+min_size     = 500
+max_size     = 10_485_760
+# Validates "SCCA" signature at bytes 4–7.
+pre_validate = "prefetch"
+
+[[signature]]
+name         = "Windows Prefetch (8 / 8.1)"
+extension    = "pf"
+# 4-byte header: 1A 00 00 00 = version 26 (LE) for Windows 8 / 8.1.
+header       = "1A 00 00 00"
+footer       = ""
+min_size     = 500
+max_size     = 10_485_760
+# Validates "SCCA" signature at bytes 4–7.
+pre_validate = "prefetch"
+
+[[signature]]
+name         = "Windows Prefetch (10 / 11)"
+extension    = "pf"
+# 4-byte header: 1E 00 00 00 = version 30 (LE) for Windows 10 / 11.
+# Note: compressed Prefetch (MAM wrapper) uses a different magic and is not
+# covered here.
+header       = "1E 00 00 00"
+footer       = ""
+min_size     = 500
+max_size     = 10_485_760
+# Validates "SCCA" signature at bytes 4–7.
+pre_validate = "prefetch"
+
+[[signature]]
+name         = "Windows Event Log (EVT)"
+extension    = "evt"
+# 8-byte header: 30 00 00 00 4C 66 4C 65 = HeaderSize (48) + "LfLe" signature.
+# Legacy Windows NT/XP/2003 event log format (.evt).  The newer EVTX format is
+# already covered by a separate signature.
+header       = "30 00 00 00 4C 66 4C 65"
+footer       = ""
+min_size     = 48            # Minimum valid EVT header record
+max_size     = 104_857_600   # 100 MiB — large server event logs
+# Validates MajorVersion u32 LE @8 == 1 and MinorVersion u32 LE @12 == 1.
+pre_validate = "evt"
+
+[[signature]]
+name         = "PEM Certificate / Key"
+extension    = "pem"
+# 10-byte header: 2D 2D 2D 2D 2D 42 45 47 49 4E = "-----BEGIN".
+# PEM (Privacy-Enhanced Mail) encoding is used for X.509 certificates, RSA/EC
+# private keys, CSRs, and public keys.  Ubiquitous in ~/.ssh/, TLS configs,
+# and PKI stores.
+header       = "2D 2D 2D 2D 2D 42 45 47 49 4E"
+footer       = ""
+min_size     = 64            # Minimum valid PEM block (header + base64 + footer)
+max_size     = 1_048_576     # 1 MiB — certificate bundles can be large
+# Validates: byte @10 == space (separator); byte @11 is ASCII uppercase letter.
+pre_validate = "pem"
+
+[[signature]]
+name         = "Bitcoin Wallet (Berkeley DB)"
+extension    = "wallet"
+# 6-byte header: 62 31 05 00 09 00 — Berkeley DB hash file magic (0x00053162 LE)
+# followed by the first two bytes of version 9.  Bitcoin Core uses BDB 4.8
+# (version 9) for its wallet.dat file.
+header       = "62 31 05 00 09 00"
+footer       = ""
+min_size     = 4096          # BDB page size minimum
+max_size     = 104_857_600   # 100 MiB — wallet files are typically small
