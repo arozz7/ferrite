@@ -25,7 +25,10 @@ mod structural_validators;
 
 pub use file_validators::{validate_pdf_file, validate_png_file, validate_sqlite_file};
 // parse_last_startxref and looks_like_xref remain pub(crate) for direct test access.
-pub use binary_validators::{validate_evtx_file, validate_exe_file, validate_riff_file};
+pub use binary_validators::{
+    validate_ebml_file, validate_evtx_file, validate_exe_file, validate_isobmff_file,
+    validate_riff_file,
+};
 pub use structural_validators::{
     validate_elf_file, validate_flac_file, validate_regf_file, validate_tiff_file,
 };

@@ -266,6 +266,15 @@ impl CarvingState {
                                     | "pef"
                                     | "sr2"
                                     | "dcr"
+                                    | "mp4"
+                                    | "mov"
+                                    | "m4v"
+                                    | "3gp"
+                                    | "m4a"
+                                    | "heic"
+                                    | "cr3"
+                                    | "mkv"
+                                    | "webm"
                             ) {
                             match hit.signature.extension.as_str() {
                                 "png" => post_validate::validate_png_file(Path::new(&filename)),
@@ -279,6 +288,12 @@ impl CarvingState {
                                 "flac" => post_validate::validate_flac_file(Path::new(&filename)),
                                 "elf" => post_validate::validate_elf_file(Path::new(&filename)),
                                 "regf" => post_validate::validate_regf_file(Path::new(&filename)),
+                                "mp4" | "mov" | "m4v" | "3gp" | "m4a" | "heic" | "cr3" => {
+                                    post_validate::validate_isobmff_file(Path::new(&filename))
+                                }
+                                "mkv" | "webm" => {
+                                    post_validate::validate_ebml_file(Path::new(&filename))
+                                }
                                 _ => post_validate::validate_tiff_file(Path::new(&filename)),
                             }
                         } else {
@@ -642,6 +657,15 @@ impl CarvingState {
                                         | "pef"
                                         | "sr2"
                                         | "dcr"
+                                        | "mp4"
+                                        | "mov"
+                                        | "m4v"
+                                        | "3gp"
+                                        | "m4a"
+                                        | "heic"
+                                        | "cr3"
+                                        | "mkv"
+                                        | "webm"
                                 )
                             {
                                 match hit.signature.extension.as_str() {
@@ -656,6 +680,12 @@ impl CarvingState {
                                     "flac" => post_validate::validate_flac_file(Path::new(&path)),
                                     "elf" => post_validate::validate_elf_file(Path::new(&path)),
                                     "regf" => post_validate::validate_regf_file(Path::new(&path)),
+                                    "mp4" | "mov" | "m4v" | "3gp" | "m4a" | "heic" | "cr3" => {
+                                        post_validate::validate_isobmff_file(Path::new(&path))
+                                    }
+                                    "mkv" | "webm" => {
+                                        post_validate::validate_ebml_file(Path::new(&path))
+                                    }
                                     _ => post_validate::validate_tiff_file(Path::new(&path)),
                                 }
                             } else {

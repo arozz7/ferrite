@@ -1177,3 +1177,97 @@ This places Ferrite at roughly **35% of PhotoRec's format family count**, with
 significantly deeper per-format validation — pre-validators for every signature,
 TIFF/ISOBMFF/OGG/SQLite/PNG/GIF/PDF size-hint walkers, and forensic-grade
 false-positive rejection that PhotoRec does not match.
+
+---
+
+## Future Phases (106–109)
+
+### Phase 106 — Post-Validator Expansion (MP4 / MKV families)
+
+**Motivation:** `validate_extracted` and the file-based validator dispatch in `extract.rs`
+already cover: JPG, PNG, GIF, PDF, HTML, ZIP/OLE/7z/PST/EPUB (head+tail), and PNG, PDF,
+SQLite, EVTX, RIFF (WAV/AVI/WebP/AIFF), EXE, FLAC, ELF, REGF, TIFF/RAW (file-based).
+The two remaining high-traffic families — ISOBMFF (MP4/MOV/M4V/3GP/M4A/HEIC/CR3) and
+EBML (MKV/WebM) — have size hints but no post-extraction integrity check.
+
+**Changes:**
+- `crates/ferrite-carver/src/post_validate/binary_validators.rs`:
+  - `validate_isobmff_file(path)` — walk 4-byte-length box headers; require a valid `ftyp`
+    box at offset 0 and at least one `moov` or `mdat` box within the first 64 boxes;
+    return `Corrupt` if any box length would overflow the file or `ftyp` is absent.
+  - `validate_ebml_file(path)` — verify EBML element (ID `0x1A45DFA3`) + Segment element
+    (ID `0x18538067`) are present and their VINT sizes are non-zero; return `Corrupt` if
+    the file is truncated before the Segment or has an invalid VINT encoding.
+- `crates/ferrite-tui/src/screens/carving/extract.rs` — add to the file-validator dispatch:
+  - `"mp4" | "mov" | "m4v" | "3gp" | "m4a" | "heic" | "cr3"` → `validate_isobmff_file`
+  - `"mkv" | "webm"` → `validate_ebml_file`
+- `crates/ferrite-carver/src/post_validate/mod.rs` — re-export new validators.
+
+**Tests (in `tests_binary.rs`):**
+- ISOBMFF: minimal valid `ftyp+moov` fixture → `Complete`; missing `ftyp` → `Corrupt`;
+  box length overflow → `Corrupt`; missing `moov`/`mdat` → `Corrupt`
+- EBML: minimal EBML+Segment fixture → `Complete`; truncated before Segment → `Corrupt`;
+  invalid VINT → `Corrupt`
+
+---
+
+### Phase 107 — Size Hint Walkers (AU / MIDI)
+
+**Motivation:** Most formats without size hints already have small `max_size` caps or lack
+a parseable size field (MP3, AAC, LZH, PEM, EVT). Two have deterministic readable sizes:
+- **AU (Sun Audio):** total = `data_offset` (u32 BE @4) + `data_size` (u32 BE @8).
+  Falls back to `max_size` when `data_size == 0xFFFF_FFFF` (streaming/unknown).
+- **MIDI:** `nTracks` (u16 BE @10) tells how many `MTrk` chunks follow; walk each chunk's
+  u32 BE length field to compute the exact archive total.
+
+Note: BMP/AIFF/WAV/AVI/WOFF already use `SizeHint::Linear` via TOML fields.
+APE (complex descriptor sum), LZH (multi-entry), PEM (text), EVT (no size field) are
+deferred — no single linear field to exploit.
+
+**Changes:**
+- `crates/ferrite-carver/src/signature.rs` — add `SizeHint::Au` and `SizeHint::Midi` variants.
+- `crates/ferrite-carver/src/size_hint/au.rs` — `au_hint(device, file_offset) -> Option<u64>`:
+  read 12 bytes from `file_offset`; return `data_offset + data_size` unless `data_size ==
+  0xFFFF_FFFF` (streaming), in which case return `None`.
+- `crates/ferrite-carver/src/size_hint/midi.rs` — `midi_hint(device, file_offset) -> Option<u64>`:
+  read MThd header (14 bytes); extract `nTracks` (u16 BE @10); walk `nTracks` MTrk chunk
+  headers (each 8 bytes: "MTrk" + u32 BE length); return `14 + sum(8 + track_len)`.
+- `crates/ferrite-carver/src/size_hint/mod.rs` — add `Au` and `Midi` arms to `read_size_hint`.
+- `config/signatures.toml` — add `size_hint_kind = "au"` to the AU entry;
+  add `size_hint_kind = "midi"` to the MIDI entry.
+
+**Tests (in `size_hint/tests.rs`):**
+- AU: valid header with known sizes → correct total; streaming (`0xFFFFFFFF`) → `None`
+- MIDI: 1-track fixture with known MTrk length → correct total; 0 tracks → 14; truncated → `None`
+
+---
+
+### Phase 108 — False-Positive Audit (Real Drive Run)
+
+**Motivation:** Run a full carve of a known 20 GB image (`O:\Carved\carving-20gb`) and
+collect false-positive rates per signature. Tighten pre-validators on the worst offenders.
+
+**Approach:**
+- Run Ferrite carver on `O:\Carved\carving-20gb` with all signatures enabled.
+- Manually inspect a random sample of each extension's output (≥ 20 files per sig).
+- For any sig with false-positive rate > 10%, tighten its pre-validator or add
+  `min_hit_gap` / increase `min_size`.
+- Document findings in `aiChangeLog/phase-108.md`.
+
+---
+
+### Phase 109 — Filesystem Recovery Hardening
+
+**Motivation:** The current filesystem parsers (NTFS/FAT32/ext4/exFAT/APFS) assume a
+reasonably intact partition table. Severely damaged drives often have no valid partition
+table at all.
+
+**Changes:**
+- `ferrite-partition/src/lib.rs` — add "signature scan" fallback: when MBR/GPT parsing
+  fails, scan the first 2 GiB of the device for known filesystem boot sector signatures
+  (`EB 58 90 NTFS`, `EB 3C 90 FAT`, ext4 `53 EF` at offset 1080) to auto-detect
+  partition start LBAs.
+- `ferrite-filesystem/src/lib.rs` — expose `detect_filesystem_at(device, lba)` to allow
+  direct filesystem detection at a user-specified offset, bypassing partition table parsing.
+- `ferrite-tui/src/screens/partitions/` — surface "Scan for filesystems" action when
+  partition parsing returns empty results; display detected offsets for manual selection.
