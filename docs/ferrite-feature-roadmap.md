@@ -1271,3 +1271,112 @@ table at all.
   direct filesystem detection at a user-specified offset, bypassing partition table parsing.
 - `ferrite-tui/src/screens/partitions/` — surface "Scan for filesystems" action when
   partition parsing returns empty results; display detected offsets for manual selection.
+
+---
+
+### Phase 110 — Sparse Image Output
+
+**Motivation:** A 4 TB source drive requires 4 TB of free space for a raw image even if
+most sectors are unwritten zeros. Sparse files let the OS skip allocating disk blocks for
+zero runs, so a 4 TB drive that is 30% full might produce a 1.2 TB image file on disk.
+Most modern filesystems (NTFS, ext4, XFS, BTRFS, APFS) support sparse files natively.
+
+**How it works:**
+- A sparse-enabled file has "holes" — ranges the OS treats as zeros without allocating
+  blocks. On NTFS this requires one `DeviceIoControl(FSCTL_SET_SPARSE)` call after open.
+  On Linux/macOS it happens automatically when you seek past unwritten regions.
+- The imaging engine pre-sets the output file size to `device_size` via `File::set_len()`
+  so the file metadata is correct from the start.
+- During each write, if the buffer is entirely zero, the engine simply seeks past it
+  instead of writing — creating a hole. Non-zero buffers are written normally.
+- The resulting `.img` file mounts/mounts identically to a dense image; tools that don't
+  understand sparse files will expand it to full size on copy, which is expected behaviour.
+
+**Changes:**
+- `ferrite-imaging/src/config.rs` — add `pub sparse_output: bool` to `ImagingConfig`
+  (default `true`; can be disabled for destinations that don't support sparse files,
+  e.g. FAT32 USB sticks).
+- `ferrite-imaging/src/sparse.rs` — new module:
+  - `enable_sparse(file: &File) -> io::Result<()>`: on Windows, calls
+    `DeviceIoControl(FSCTL_SET_SPARSE)` via `windows-sys`; on Linux/macOS, no-op
+    (holes are created automatically by seeking without writing).
+  - `write_or_skip(file: &mut File, pos: u64, buf: &[u8]) -> io::Result<()>`:
+    if `buf` is all zeros, `file.seek(SeekFrom::Start(pos + buf.len() as u64))`
+    and return; otherwise `seek` + `write_all`.
+- `ferrite-imaging/src/engine.rs`:
+  - On session init: call `sparse::enable_sparse(&output)?` if `config.sparse_output`;
+    then `output.set_len(device_size)` to pre-set file size.
+  - Thread through a `write_block(engine, pos, buf)` helper that dispatches to
+    `sparse::write_or_skip` or raw `write_all` based on the config flag.
+- `crates/ferrite-imaging/src/passes/copy.rs` (and trim/sweep/scrape/retry) — replace
+  the inline `seek + write_all` pattern with `engine.write_block(pos, buf)`.
+- `ferrite-tui/src/screens/imaging/` — add "Sparse: ON / OFF" toggle (key `S`) to the
+  imaging config panel; persist in `ImagingState`.
+
+**Tests:**
+- `sparse::write_or_skip` with all-zero buf → no bytes written to a temp file, file
+  position advances by `buf.len()`.
+- `sparse::write_or_skip` with non-zero buf → bytes written normally.
+- Integration: image a `MockBlockDevice` with alternating zero/non-zero blocks with
+  `sparse_output = true`; verify only non-zero sectors are written; verify file reads
+  back correctly (zero holes return zeros).
+
+**Limitation documented in UI:** sparse savings depend on destination filesystem support.
+FAT32 and exFAT do not support sparse files — on those destinations, disable sparse mode
+or expect full allocation. Ferrite will detect FAT32/exFAT by checking the destination
+path's filesystem type and warn the user if `sparse_output = true` is set.
+
+---
+
+### Phase 111 — Pre-flight Destination Space Check
+
+**Motivation:** Users currently discover insufficient disk space only after imaging starts
+and fails mid-way (hours into a long recovery). A pre-flight check prevents this and
+guides users toward corrective options (LBA range imaging, a larger destination, sparse
+mode).
+
+**Design:**
+- Space check runs when the user sets or changes the destination path, and again
+  immediately before the imaging thread starts.
+- Displays available vs. required space with colour-coded feedback.
+- Does **not** block the user from proceeding — professional tools allow overrides
+  (e.g. when the destination is a network share that will grow, or when sparse mode
+  is expected to cover the shortfall).
+
+**Changes:**
+- `ferrite-imaging/src/space_check.rs` — new module:
+  ```rust
+  pub struct SpaceInfo {
+      pub available: u64,   // bytes free at destination
+      pub required: u64,    // device_size (or LBA range size)
+  }
+  impl SpaceInfo {
+      pub fn ratio(&self) -> f64 { self.available as f64 / self.required as f64 }
+      pub fn sufficient(&self) -> bool { self.available >= self.required }
+  }
+  pub fn check(dest_path: &Path, required: u64) -> Option<SpaceInfo>
+  ```
+  Platform implementations:
+  - **Windows:** `GetDiskFreeSpaceExW` via `windows-sys` (already a transitive dep).
+  - **Linux/macOS:** `statvfs` via `libc`.
+  - Returns `None` if the path doesn't exist or the query fails (shown as "unknown").
+- `ferrite-tui/src/screens/imaging/` — `ImagingState` gains `space_info: Option<SpaceInfo>`;
+  updated whenever `output_path` or `device` changes.
+  - Render a "Destination space" row in the imaging config panel:
+    - Green  `✓ 2.1 TB free / 1.8 TB required` — sufficient
+    - Amber  `⚠ 1.7 TB free / 1.8 TB required` — within 10% shortfall
+    - Red    `✗ 500 GB free / 1.8 TB required — insufficient` — clear shortfall
+  - When the user presses `[Start]` with a red space status, show a one-line warning
+    bar: `"Low disk space — imaging may fail. Press Enter to proceed or Esc to cancel."`
+    (dismissible; does not abort automatically).
+  - Footnote line: `"Tip: use LBA range (R) to image only the target partition, or
+    enable sparse output (S) to skip zero sectors."` shown when space is amber or red.
+
+**Tests:**
+- `SpaceInfo::ratio()` and `sufficient()` with known values.
+- Mock `check()` returning known values; verify colour thresholds in render output.
+- Warning modal appears when `available < required`; dismissed with Enter; imaging
+  proceeds.
+
+**Out of scope for this phase:** estimating expected sparse savings (would require
+reading the device to count zero sectors — impractical pre-flight).
