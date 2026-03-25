@@ -1467,3 +1467,153 @@ header       = "42 50 47 FB"
 footer       = ""
 min_size     = 16            # Minimum valid BPG header
 max_size     = 52_428_800    # 50 MiB
+
+# ── Phase 102 — Developer & Science Format Signatures ─────────────────────────
+
+[[signature]]
+name         = "Java Archive (JAR)"
+extension    = "jar"
+# 4-byte header: 50 4B 03 04 = ZIP local file header.  Shares magic with ZIP,
+# EPUB, ODT, etc.  Validated by checking the first local file entry's filename
+# starts with "META-INF" — the mandatory JAR manifest directory.
+header       = "50 4B 03 04"
+footer       = ""
+min_size     = 38            # LFH header (30 B) + "META-INF" filename (8 B)
+max_size     = 524_288_800   # 500 MiB — large application JARs / fat jars
+# Validates: filename_len in [1, 256]; filename starts with "META-INF".
+pre_validate = "jar"
+
+[[signature]]
+name         = "Python Bytecode 3.6 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 33 0D 0D 0A = Python 3.6 ADTS magic word (3379 LE) + CRLF.
+# The magic word is globally unique per Python version.
+header       = "33 0D 0D 0A"
+footer       = ""
+min_size     = 16            # Magic (4) + timestamp (4) + source size (4) + flags (4)
+max_size     = 104_857_600   # 100 MiB — typical compiled module
+
+[[signature]]
+name         = "Python Bytecode 3.7 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 42 0D 0D 0A = Python 3.7 magic word (3394 LE) + CRLF.
+header       = "42 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+
+[[signature]]
+name         = "Python Bytecode 3.8 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 55 0D 0D 0A = Python 3.8 magic word (3413 LE) + CRLF.
+header       = "55 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+
+[[signature]]
+name         = "Python Bytecode 3.9 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 61 0D 0D 0A = Python 3.9 magic word (3425 LE) + CRLF.
+header       = "61 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+
+[[signature]]
+name         = "Python Bytecode 3.10 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 6F 0D 0D 0A = Python 3.10 magic word (3439 LE) + CRLF.
+header       = "6F 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+
+[[signature]]
+name         = "Python Bytecode 3.11 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: A7 0D 0D 0A = Python 3.11 magic word (3495 LE) + CRLF.
+header       = "A7 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+
+[[signature]]
+name         = "Python Bytecode 3.12 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: CB 0D 0D 0A = Python 3.12 magic word (3531 LE) + CRLF.
+header       = "CB 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+
+[[signature]]
+name         = "LZH / LHA Archive"
+extension    = "lzh"
+# 5-byte magic: 2D 6C 68 ?? 2D = "-lh?-" at offset 2 within the file.
+# The method field "-lh0-" through "-lh7-", "-lhd-", or "-lhs-" identifies the
+# compression algorithm.  Bytes 0–1 are the level-0 header checksum (any value).
+header        = "2D 6C 68 ?? 2D"
+footer        = ""
+min_size      = 22           # Minimum level-0 header block
+max_size      = 209_715_200  # 200 MiB — typical LZH archive
+header_offset = 2
+# Validates method char at offset 3 ∈ {'0'–'7', 'd', 's'}.
+pre_validate  = "lzh"
+
+[[signature]]
+name         = "HDF5 Scientific Data File"
+extension    = "h5"
+# 8-byte header: 89 48 44 46 0D 0A 1A 0A = HDF5 superblock signature.
+# Used by NumPy, Keras, MATLAB 7.3+, NetCDF4, and many scientific tools.
+header       = "89 48 44 46 0D 0A 1A 0A"
+footer       = ""
+min_size     = 64            # Minimum superblock size
+max_size     = 2_147_483_648 # 2 GiB — large datasets are common
+# Validates superblock version byte @8 ∈ {0, 1, 2, 3}.
+pre_validate = "hdf5"
+
+[[signature]]
+name         = "FITS Astronomy Image"
+extension    = "fits"
+# 9-byte header: 53 49 4D 50 4C 45 20 20 3D = "SIMPLE  =" — the mandatory
+# first keyword of every FITS file.  Used for telescope images, spectra, and
+# data tables in astronomy.
+header       = "53 49 4D 50 4C 45 20 20 3D"
+footer       = ""
+min_size     = 2880          # FITS files are always a multiple of 2880-byte blocks
+max_size     = 2_147_483_648 # 2 GiB — large sky survey images
+# Validates: byte @9 == space (value indicator); byte @29 == 'T' (logical True).
+pre_validate = "fits"
+
+[[signature]]
+name         = "Apache Parquet"
+extension    = "parquet"
+# 4-byte header: 50 41 52 31 = "PAR1" — Apache Parquet column-store format.
+# The same magic also appears as a footer on the last 4 bytes of the file.
+# The 4-byte magic is globally unique; no further pre-validation is required.
+header       = "50 41 52 31"
+footer       = ""
+min_size     = 20            # Magic + row-group metadata + footer + footer magic
+max_size     = 2_147_483_648 # 2 GiB — large analytical datasets
+
+[[signature]]
+name         = "DPX Film Image (Big-Endian)"
+extension    = "dpx"
+# 4-byte header: 53 44 50 58 = "SDPX" — SMPTE DPX big-endian variant.
+# DPX (Digital Picture Exchange) is used for digital intermediate film work.
+# Each file is one uncompressed frame; sequences form the video stream.
+header       = "53 44 50 58"
+footer       = ""
+min_size     = 2048          # DPX generic file header is 2048 bytes
+max_size     = 2_147_483_648 # 2 GiB — 4K 16-bit frames can exceed 100 MiB each
+
+[[signature]]
+name         = "DPX Film Image (Little-Endian)"
+extension    = "dpx"
+# 4-byte header: 58 50 44 53 = "XPDS" — SMPTE DPX little-endian variant.
+# Byte-swapped form of SDPX; same format, opposite endianness.
+header       = "58 50 44 53"
+footer       = ""
+min_size     = 2048
+max_size     = 2_147_483_648

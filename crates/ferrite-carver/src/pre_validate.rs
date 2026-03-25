@@ -277,6 +277,18 @@ pub enum PreValidate {
     /// bitsPerPlane @3 in {1,2,4,8}; xMax >= xMin; yMax >= yMin;
     /// reserved @64 == 0; colorPlanes @65 in {1,3,4}.
     Pcx,
+    /// Java Archive (JAR): ZIP container whose first local file entry filename
+    /// (bytes 30 to 30+fname_len) starts with `META-INF`.
+    Jar,
+    /// LZH/LHA archive: method character at offset 3 of the `-lh?-` magic
+    /// must be one of `0`–`7`, `d`, or `s`.
+    Lzh,
+    /// HDF5 scientific data file: superblock version byte @8 must be ≤ 3
+    /// (versions 0–3 are the only defined superblock formats).
+    Hdf5,
+    /// FITS astronomy image: value indicator byte @9 must be space; logical
+    /// value byte @29 must be `T` (FITS boolean True).
+    Fits,
 }
 
 impl PreValidate {
@@ -387,6 +399,10 @@ impl PreValidate {
             Self::Djvu => "djvu",
             Self::Xcf => "xcf",
             Self::Pcx => "pcx",
+            Self::Jar => "jar",
+            Self::Lzh => "lzh",
+            Self::Hdf5 => "hdf5",
+            Self::Fits => "fits",
         }
     }
 
@@ -497,6 +513,10 @@ impl PreValidate {
             "djvu" => Some(Self::Djvu),
             "xcf" => Some(Self::Xcf),
             "pcx" => Some(Self::Pcx),
+            "jar" => Some(Self::Jar),
+            "lzh" => Some(Self::Lzh),
+            "hdf5" => Some(Self::Hdf5),
+            "fits" => Some(Self::Fits),
             _ => None,
         }
     }
@@ -615,6 +635,10 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Djvu => validate_djvu(data, pos),
         PreValidate::Xcf => validate_xcf(data, pos),
         PreValidate::Pcx => validate_pcx(data, pos),
+        PreValidate::Jar => validate_jar(data, pos),
+        PreValidate::Lzh => validate_lzh(data, pos),
+        PreValidate::Hdf5 => validate_hdf5(data, pos),
+        PreValidate::Fits => validate_fits(data, pos),
     }
 }
 
@@ -818,6 +842,59 @@ fn validate_dex(data: &[u8], pos: usize) -> bool {
     }
     let v = &data[pos + 4..pos + 8];
     v[0].is_ascii_digit() && v[1].is_ascii_digit() && v[2].is_ascii_digit() && v[3] == 0x00
+}
+
+fn validate_jar(data: &[u8], pos: usize) -> bool {
+    // ZIP LFH layout (offsets relative to pos):
+    //   26–27  filename length (u16 LE)
+    //   30+    filename bytes
+    // JAR files must have their first local file entry filename start with "META-INF".
+    if need(data, pos, 30) {
+        return true;
+    }
+    let fname_len = u16::from_le_bytes([data[pos + 26], data[pos + 27]]) as usize;
+    if fname_len == 0 || fname_len > 256 {
+        return false;
+    }
+    if need(data, pos, 30 + fname_len) {
+        return true;
+    }
+    data[pos + 30..pos + 30 + fname_len].starts_with(b"META-INF")
+}
+
+fn validate_lzh(data: &[u8], pos: usize) -> bool {
+    // pos points to the "-lh?-" magic (header_offset = 2, so actual file starts
+    // at pos - 2 in the byte stream).  The method character at pos+3 must be a
+    // recognised LZH compression method.
+    if need(data, pos, 5) {
+        return true;
+    }
+    let method = data[pos + 3];
+    matches!(method, b'0'..=b'7' | b'd' | b's')
+}
+
+fn validate_hdf5(data: &[u8], pos: usize) -> bool {
+    // HDF5 superblock version byte immediately follows the 8-byte signature.
+    // Only versions 0–3 are defined; anything higher is invalid or future.
+    if need(data, pos, 9) {
+        return true;
+    }
+    data[pos + 8] <= 3
+}
+
+fn validate_fits(data: &[u8], pos: usize) -> bool {
+    // FITS keyword card: "SIMPLE  =" (bytes 0–8) + value indicator (byte 9 = space)
+    // + value field right-justified in bytes 10–29, where 'T' (logical True)
+    // must appear at the last value position (byte 29).
+    if need(data, pos, 30) {
+        return true;
+    }
+    // Byte @9 must be a space (FITS value indicator separator)
+    if data[pos + 9] != b' ' {
+        return false;
+    }
+    // The logical value 'T' must be at column 30 (byte index 29)
+    data[pos + 29] == b'T'
 }
 
 fn validate_aac(data: &[u8], pos: usize) -> bool {
@@ -6022,5 +6099,140 @@ mod tests {
     #[test]
     fn pcx_too_short_passes() {
         assert!(validate_pcx(b"\x0a\x05\x01\x08", 0));
+    }
+
+    // ── JAR ───────────────────────────────────────────────────────────────────
+
+    fn make_jar_lfh(fname: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 30 + fname.len()];
+        buf[0..4].copy_from_slice(b"PK\x03\x04");
+        let fn_len = fname.len() as u16;
+        buf[26..28].copy_from_slice(&fn_len.to_le_bytes());
+        buf[30..30 + fname.len()].copy_from_slice(fname);
+        buf
+    }
+
+    #[test]
+    fn jar_meta_inf_accepted() {
+        assert!(validate_jar(&make_jar_lfh(b"META-INF/"), 0));
+    }
+
+    #[test]
+    fn jar_manifest_accepted() {
+        assert!(validate_jar(&make_jar_lfh(b"META-INF/MANIFEST.MF"), 0));
+    }
+
+    #[test]
+    fn jar_non_meta_inf_rejected() {
+        assert!(!validate_jar(&make_jar_lfh(b"com/example/Main.class"), 0));
+    }
+
+    #[test]
+    fn jar_empty_fname_rejected() {
+        let mut buf = make_jar_lfh(b"");
+        buf[26] = 0;
+        buf[27] = 0;
+        assert!(!validate_jar(&buf, 0));
+    }
+
+    #[test]
+    fn jar_too_short_passes() {
+        assert!(validate_jar(b"PK\x03\x04", 0));
+    }
+
+    // ── LZH ───────────────────────────────────────────────────────────────────
+
+    fn make_lzh(method: u8) -> Vec<u8> {
+        // "-lh?-" at positions 0-4 (pre_validate receives pos pointing here)
+        vec![b'-', b'l', b'h', method, b'-', 0, 0, 0, 0, 0]
+    }
+
+    #[test]
+    fn lzh_method_0_accepted() {
+        assert!(validate_lzh(&make_lzh(b'0'), 0));
+    }
+
+    #[test]
+    fn lzh_method_5_accepted() {
+        assert!(validate_lzh(&make_lzh(b'5'), 0));
+    }
+
+    #[test]
+    fn lzh_method_d_accepted() {
+        assert!(validate_lzh(&make_lzh(b'd'), 0));
+    }
+
+    #[test]
+    fn lzh_method_s_accepted() {
+        assert!(validate_lzh(&make_lzh(b's'), 0));
+    }
+
+    #[test]
+    fn lzh_invalid_method_rejected() {
+        assert!(!validate_lzh(&make_lzh(b'z'), 0));
+    }
+
+    #[test]
+    fn lzh_too_short_passes() {
+        assert!(validate_lzh(b"-lh", 0));
+    }
+
+    // ── HDF5 ──────────────────────────────────────────────────────────────────
+
+    fn make_hdf5(version: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[..8].copy_from_slice(b"\x89HDF\r\n\x1a\n");
+        buf[8] = version;
+        buf
+    }
+
+    #[test]
+    fn hdf5_version_0_accepted() {
+        assert!(validate_hdf5(&make_hdf5(0), 0));
+    }
+
+    #[test]
+    fn hdf5_version_3_accepted() {
+        assert!(validate_hdf5(&make_hdf5(3), 0));
+    }
+
+    #[test]
+    fn hdf5_version_4_rejected() {
+        assert!(!validate_hdf5(&make_hdf5(4), 0));
+    }
+
+    #[test]
+    fn hdf5_too_short_passes() {
+        assert!(validate_hdf5(b"\x89HDF\r\n\x1a\n", 0));
+    }
+
+    // ── FITS ──────────────────────────────────────────────────────────────────
+
+    fn make_fits(space_at_9: bool, t_at_29: bool) -> Vec<u8> {
+        let mut buf = vec![b' '; 36];
+        buf[..9].copy_from_slice(b"SIMPLE  =");
+        buf[9] = if space_at_9 { b' ' } else { b'X' };
+        buf[29] = if t_at_29 { b'T' } else { b'F' };
+        buf
+    }
+
+    #[test]
+    fn fits_valid_accepted() {
+        assert!(validate_fits(&make_fits(true, true), 0));
+    }
+
+    #[test]
+    fn fits_missing_space_rejected() {
+        assert!(!validate_fits(&make_fits(false, true), 0));
+    }
+
+    #[test]
+    fn fits_false_flag_rejected() {
+        assert!(!validate_fits(&make_fits(true, false), 0));
+    }
+
+    #[test]
+    fn fits_too_short_passes() {
+        assert!(validate_fits(b"SIMPLE  = ", 0));
     }
 }

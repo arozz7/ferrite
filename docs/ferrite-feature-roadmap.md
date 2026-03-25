@@ -1,5 +1,5 @@
 # Ferrite — Comprehensive Feature Roadmap
-**Reviewed as of Phase 101 (115 signatures) — Status updated 2026-03-24**
+**Reviewed as of Phase 102 (129 signatures) — Status updated 2026-03-25**
 *Senior Data Recovery & Digital Forensics Perspective*
 
 ---
@@ -8,13 +8,13 @@
 
 Ferrite has completed all planned phases through Phase 101. As of this update:
 
-- **115 signatures** across 10 format categories (up from 43 at initial audit)
+- **129 signatures** across 10 format categories (up from 43 at initial audit)
 - **All workflow features delivered:** SHA-256 hash, thermal guard, write-blocker
   verification, Quick Deleted-File Recovery, custom user signatures, forensic artifact
   scanning, heuristic text block scanner, non-zero-offset scan infrastructure
 - **10 TUI tabs** — Drives / Health / Imaging / Partitions / Files / Carving / Hex /
   Quick Recover / Artifacts / Text Scan
-- **987 unit tests**, clippy-clean, `cargo fmt --check` passing
+- **1006 unit tests**, clippy-clean, `cargo fmt --check` passing
 
 **All planned phases complete.** Phase 58 (exFAT + APFS MVP) was delivered as:
 - **Phase 58a** — `ExFatParser`: full read-only exFAT `FilesystemParser` (668 tests)
@@ -1093,31 +1093,23 @@ new signature + lightweight pre-validator, no scanner infrastructure changes.
 
 ---
 
-## Phase 102 — PhotoRec Gap Batch 3: Developer & Science Formats (Planned)
+## Phase 102 — PhotoRec Gap Batch 3: Developer & Science Formats ✅ Done (2026-03-25)
 
-**Target: ~120 → ~130 signatures.**
+**129 signatures total after this phase.**
 
-Formats common on developer workstations, science/research machines, mobile devices.
+Added 14 signatures covering developer workstation and scientific data formats.
 
-| Format | Ext | Header (hex) | Pre-validate | Max size | Priority |
-|--------|-----|-------------|--------------|----------|----------|
-| Java Archive | `jar` | `50 4B 03 04` | ZIP with `META-INF/MANIFEST.MF` first entry | 500 MiB | High |
-| Python bytecode | `pyc` | `55 0D 0D 0A` / `33 0D 0D 0A` / others | magic = Python version word; timestamp follows | 100 MiB | Medium |
-| LZH/LHA archive | `lzh` | at offset 2: `-lh?-` | 5-char method ID; header checksum valid | 200 MiB | Medium |
-| Microsoft CAB patch | `msp` | `D0 CF 11 E0` + `MSP` stream | OLE2 with `MSP` or `Patch` stream name | 500 MiB | Medium |
-| HDF5 | `h5` | `89 48 44 46 0D 0A 1A 0A` | 8-byte magic + superblock version @8 ∈ {0,1,2,3} | 2 GiB | Low |
-| FITS | `fits` | `53 49 4D 50 4C 45 20 20 3D` | `SIMPLE  =`; value must be `T` (true) @29 | 2 GiB | Low |
-| Parquet | `parquet` | `50 41 52 31` at offset 0 AND footer | 4-byte `PAR1` magic at both start and end | 2 GiB | Low |
-| DPX (film) | `dpx` | `53 44 50 58` / `58 50 44 53` | two endian variants; magic-only check sufficient | 2 GiB | Low |
+| # | Format | Header | Pre-validate | Max size |
+|---|--------|--------|--------------|----------|
+| 116 | Java Archive (JAR) | `PK\x03\x04` | `Jar`: first entry starts with `META-INF` | 500 MiB |
+| 117–123 | Python 3.6–3.12 bytecode | `XX 0D 0D 0A` (per version) | — (4-byte unique per version) | 100 MiB |
+| 124 | LZH/LHA Archive | `-lh?-` @offset 2 | `Lzh`: method ∈ {'0'–'7','d','s'} | 200 MiB |
+| 125 | HDF5 Scientific Data | `\x89HDF\r\n\x1a\n` | `Hdf5`: superblock version ≤ 3 | 2 GiB |
+| 126 | FITS Astronomy Image | `SIMPLE  =` | `Fits`: byte@9=space; byte@29='T' | 2 GiB |
+| 127 | Apache Parquet | `PAR1` | — (4-byte unique) | 2 GiB |
+| 128–129 | DPX Film (BE + LE) | `SDPX` / `XPDS` | — (4-byte unique) | 2 GiB |
 
-**Implementation notes:**
-- JAR: distinguish from generic ZIP by checking the ZIP central directory for
-  `META-INF/MANIFEST.MF` — requires reading up to `max_size` bytes to find EOCD;
-  use the existing EPUB/ODT inner-ZIP pattern
-- Python `.pyc`: magic word varies by Python version (2.x: `0x0D0D`, 3.x: `0x0D0A`);
-  build a table of known magic words
-- LZH: the method field `-lh0-` through `-lhd-` at offset 2 is the key discriminator;
-  offsets 0 and 1 are the header checksum (any value)
+**Total: 115 → 129 signatures. 606 tests in ferrite-carver (+19), all passing.**
 
 ---
 
