@@ -52,7 +52,9 @@ fn sig_group_label(ext: &str) -> &'static str {
         "pdf" | "xml" | "html" | "rtf" | "vcf" | "ics" | "eml" | "epub" | "odt" | "cdr" | "ttf"
         | "woff" | "chm" | "blend" | "indd" | "php" | "sh" | "djvu" | "pem" => "Documents",
         "zip" | "ole" | "pst" | "msg" => "Office & Email",
-        "rar" | "7z" | "gz" | "xz" | "bz2" | "iso" | "tar" | "jar" | "lzh" | "aff" => "Archives",
+        "rar" | "7z" | "gz" | "xz" | "bz2" | "iso" | "tar" | "jar" | "lzh" | "aff" | "par2" => {
+            "Archives"
+        }
         "db" | "vmdk" | "evtx" | "exe" | "elf" | "dat" | "vhd" | "vhdx" | "qcow2" | "macho"
         | "kdbx" | "kdb" | "e01" | "pcap" | "dmp" | "plist" | "luks" | "dcm" | "pyc" | "h5"
         | "fits" | "parquet" | "vdi" | "lnk" | "pf" | "evt" | "wallet" => "System",

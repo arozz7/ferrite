@@ -1,20 +1,20 @@
 # Ferrite — Comprehensive Feature Roadmap
-**Reviewed as of Phase 102 (129 signatures) — Status updated 2026-03-25**
+**Reviewed as of Phase 104 (140 signatures) — Status updated 2026-03-25**
 *Senior Data Recovery & Digital Forensics Perspective*
 
 ---
 
 ## Executive Summary
 
-Ferrite has completed all planned phases through Phase 101. As of this update:
+Ferrite has completed all planned phases through Phase 104. As of this update:
 
-- **129 signatures** across 10 format categories (up from 43 at initial audit)
+- **140 signatures** across 10 format categories (up from 43 at initial audit)
 - **All workflow features delivered:** SHA-256 hash, thermal guard, write-blocker
   verification, Quick Deleted-File Recovery, custom user signatures, forensic artifact
   scanning, heuristic text block scanner, non-zero-offset scan infrastructure
 - **10 TUI tabs** — Drives / Health / Imaging / Partitions / Files / Carving / Hex /
   Quick Recover / Artifacts / Text Scan
-- **1006 unit tests**, clippy-clean, `cargo fmt --check` passing
+- **~1042 unit tests**, clippy-clean, `cargo fmt --check` passing
 
 **All planned phases complete.** Phase 58 (exFAT + APFS MVP) was delivered as:
 - **Phase 58a** — `ExFatParser`: full read-only exFAT `FilesystemParser` (668 tests)
@@ -1155,7 +1155,7 @@ Formats with no embeddable size (Java Class, OTF, OpenEXR) retain their `max_siz
 
 ## File Type Coverage After All Phases
 
-After phases 100–104, signature count reaches **~140**:
+After phases 100–104 + backlog cleanup, signature count reaches **140**:
 
 | Category | Formats | Count |
 |---|---|---|
@@ -1163,7 +1163,7 @@ After phases 100–104, signature count reaches **~140**:
 | RAW Photos | ARW, CR2, CR3, CRW, DCR, NEF, RW2, RAF, MRW, SR2, ORF, PEF, HEIC×2, X3F | **15** |
 | Video | MP4, MOV, M4V, 3GP, MKV, WebM, AVI, WMV, FLV, MPEG-PS, RM, SWF×3, TS, M2TS, WTV, DPX | **17** |
 | Audio | MP3, WAV, FLAC, OGG, M4A, MIDI, AIFF, WavPack, APE, AU, AAC×2 | **12** |
-| Archives | ZIP, RAR, 7-Zip, GZip, BZip2, XZ, ISO, TAR, CAB, LZH, JAR | **11** |
+| Archives | ZIP, RAR, 7-Zip, GZip, BZip2, XZ, ISO, TAR, CAB, LZH, JAR, AFF, PAR2 | **13** |
 | Documents | PDF, XML, HTML, RTF, VCF, ICS, EML, EPUB, ODT, CDR, TTF, OTF, WOFF, WOFF2, CHM, Blender, InDesign, PHP, Shebang | **19** |
 | Office & Email | ZIP-Office (OOXML), OLE2, PST, MSG | **4** |
 | System / Exec | SQLite, EVTX, EXE, ELF, VMDK, REGF, VHD, VHDX, QCOW2, Mach-O, KDBX, KDB, E01, PCAP×2, DMP, plist, LUKS, DICOM | **18** |

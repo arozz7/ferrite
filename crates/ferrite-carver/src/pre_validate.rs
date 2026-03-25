@@ -305,6 +305,9 @@ pub enum PreValidate {
     /// after `-----BEGIN`) and byte @11 must be an ASCII uppercase letter
     /// (start of the type label, e.g. `C` for CERTIFICATE).
     Pem,
+    /// Parchive PAR2 recovery set: `packet_length` u64 LE @8 must be ≥ 20
+    /// (minimum valid packet payload).
+    Par2,
 }
 
 impl PreValidate {
@@ -424,6 +427,7 @@ impl PreValidate {
             Self::Prefetch => "prefetch",
             Self::Evt => "evt",
             Self::Pem => "pem",
+            Self::Par2 => "par2",
         }
     }
 
@@ -543,6 +547,7 @@ impl PreValidate {
             "prefetch" => Some(Self::Prefetch),
             "evt" => Some(Self::Evt),
             "pem" => Some(Self::Pem),
+            "par2" => Some(Self::Par2),
             _ => None,
         }
     }
@@ -670,6 +675,7 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Prefetch => validate_prefetch(data, pos),
         PreValidate::Evt => validate_evt(data, pos),
         PreValidate::Pem => validate_pem(data, pos),
+        PreValidate::Par2 => validate_par2(data, pos),
     }
 }
 
@@ -943,6 +949,28 @@ fn validate_pem(data: &[u8], pos: usize) -> bool {
         return true;
     }
     data[pos + 10] == b' ' && data[pos + 11].is_ascii_uppercase()
+}
+
+fn validate_par2(data: &[u8], pos: usize) -> bool {
+    // PAR2 packet structure (offsets relative to pos):
+    //   0–7   magic   "PAR2\0PKT" (8 bytes, already matched by header)
+    //   8–15  packet_length (u64 LE) — total length of this packet including header
+    // Minimum valid packet: 8-byte magic + 8-byte length + at least one byte = 17 B,
+    // but the spec states header alone is 64 bytes, so require length ≥ 64.
+    if need(data, pos, 16) {
+        return true;
+    }
+    let pkt_len = u64::from_le_bytes([
+        data[pos + 8],
+        data[pos + 9],
+        data[pos + 10],
+        data[pos + 11],
+        data[pos + 12],
+        data[pos + 13],
+        data[pos + 14],
+        data[pos + 15],
+    ]);
+    pkt_len >= 64
 }
 
 fn validate_jar(data: &[u8], pos: usize) -> bool {
@@ -6501,5 +6529,39 @@ mod tests {
     #[test]
     fn pem_too_short_passes() {
         assert!(validate_pem(b"-----BEGIN", 0));
+    }
+
+    // ── PAR2 ─────────────────────────────────────────────────────────────────
+
+    fn make_par2(pkt_len: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; 64];
+        buf[0..8].copy_from_slice(b"PAR2\0PKT");
+        buf[8..16].copy_from_slice(&pkt_len.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn par2_valid_packet_length() {
+        assert!(validate_par2(&make_par2(128), 0));
+    }
+
+    #[test]
+    fn par2_minimum_valid_length() {
+        assert!(validate_par2(&make_par2(64), 0));
+    }
+
+    #[test]
+    fn par2_packet_length_too_small_rejected() {
+        assert!(!validate_par2(&make_par2(16), 0));
+    }
+
+    #[test]
+    fn par2_zero_length_rejected() {
+        assert!(!validate_par2(&make_par2(0), 0));
+    }
+
+    #[test]
+    fn par2_too_short_passes() {
+        assert!(validate_par2(b"PAR2\0PKT", 0));
     }
 }
