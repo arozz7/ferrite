@@ -1380,3 +1380,51 @@ mode).
 
 **Out of scope for this phase:** estimating expected sparse savings (would require
 reading the device to count zero sectors — impractical pre-flight).
+
+---
+
+### Phase 112 — Partitions Tab: Image-File Fallback During Active Imaging
+
+**Motivation:** When imaging is in progress on a physical device, the Partitions tab
+currently opens a second read handle to the same device and competes for I/O.  On
+a degraded drive (the exact case where recovery is most needed), this causes a second
+simultaneous timeout loop at the same bad sectors the imager is already retrying —
+slowing the imager and giving the user a misleading error when the real problem is
+I/O contention.  Additionally, sector 0 (MBR/GPT header) is often in the earliest
+bad zone and may be permanently unreadable from the live drive even after imaging
+succeeds on surrounding sectors.  A GPT backup header at the last LBA of the disk
+is frequently intact and recoverable via the partial image file.
+
+**Real-world trigger:** Observed during recovery of a WD EARX-00PASB0 (2 TB SMR,
+61 000+ power-on hours) where LBA 0 was unreadable and opening the Partitions tab
+while imaging was running returned an immediate timeout at offset 0x0.
+
+**Design:**
+1. **Contention detection** — when the Partitions tab receives a read request and
+   detects that an imaging session is active on the same device path, show an amber
+   advisory instead of silently competing:
+   `"⚠ Imaging in progress — reading from partial image file instead (if available)."`
+2. **Image-file fallback** — if the current imaging session exposes a partial `.img`
+   path and the file exists with `size > 0`, open it as a `FileBlockDevice` rather
+   than re-opening the physical drive, avoiding all I/O contention and benefiting
+   from sectors the imager has already captured.
+3. **GPT backup header recovery** — when parsing fails at LBA 0, automatically
+   attempt the GPT backup header at `device_size - 512`.  Display:
+   `"Primary GPT header unreadable — using backup GPT at last LBA."`
+4. **Graceful degradation** — if neither primary nor backup header is readable, offer
+   the full partition scan (`s` key) on the image file, probing filesystem signatures
+   at known offsets without requiring a valid header.
+
+**Changes:**
+- `ferrite-tui/src/screens/partitions.rs` — detect active imaging on same device;
+  prefer `FileBlockDevice(img_path)` over physical device when image file is
+  available; render advisory banner.
+- `ferrite-partition/src/lib.rs` — `parse_partitions()` gains a `try_backup_gpt`
+  fallback: if primary GPT parse fails, retry at `device_size - 512`.
+- `ferrite-tui/src/app.rs` — expose `active_img_path() -> Option<&Path>` so the
+  Partitions screen can query the Imaging screen's output path without tight coupling.
+
+**Tests:**
+- Unit: backup GPT parsed correctly when primary header is zeroed.
+- Integration: `FileBlockDevice` fallback triggered when imaging flag is set.
+- UI: advisory banner renders when contention is detected.
