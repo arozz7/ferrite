@@ -178,7 +178,8 @@ size_hint_offset = 4
 size_hint_len    = 4
 size_hint_endian = "le"
 size_hint_add    = 8
-# No pre_validate — the 12-byte RIFF+WAVE header is already highly discriminating.
+# Validates chunk_size (u32 LE @4) ≥ 36: minimum valid WAV with fmt+data chunks.
+pre_validate     = "wav"
 
 [[signature]]
 name             = "AVI Video (RIFF)"
@@ -191,7 +192,8 @@ size_hint_offset = 4
 size_hint_len    = 4
 size_hint_endian = "le"
 size_hint_add    = 8
-# No pre_validate — the 12-byte RIFF+AVI  header is already highly discriminating.
+# Validates chunk_size (u32 LE @4) ≥ 12: minimum valid AVI with one LIST chunk header.
+pre_validate     = "avi"
 
 [[signature]]
 name           = "Matroska / MKV Video"
@@ -1446,6 +1448,8 @@ header       = "76 2F 31 01"
 footer       = ""
 min_size     = 256           # Minimum valid EXR header with at least one attribute
 max_size     = 524_288_000   # 500 MiB — 4K HDR images can be large
+# Validates: version byte @4 == 2; reserved flag bits @5 upper nibble and @6–@7 == 0.
+pre_validate = "exr"
 
 [[signature]]
 name         = "GIMP XCF Image"
@@ -1517,6 +1521,8 @@ header       = "33 0D 0D 0A"
 footer       = ""
 min_size     = 16            # Magic (4) + timestamp (4) + source size (4) + flags (4)
 max_size     = 104_857_600   # 100 MiB — typical compiled module
+# Validates flags field (u32 LE @4) ≤ 3: only bits 0–1 (use-hash / checked-hash) defined.
+pre_validate = "pyc"
 
 [[signature]]
 name         = "Python Bytecode 3.7 (.pyc)"
@@ -1526,6 +1532,7 @@ header       = "42 0D 0D 0A"
 footer       = ""
 min_size     = 16
 max_size     = 104_857_600
+pre_validate = "pyc"
 
 [[signature]]
 name         = "Python Bytecode 3.8 (.pyc)"
@@ -1535,6 +1542,7 @@ header       = "55 0D 0D 0A"
 footer       = ""
 min_size     = 16
 max_size     = 104_857_600
+pre_validate = "pyc"
 
 [[signature]]
 name         = "Python Bytecode 3.9 (.pyc)"
@@ -1544,6 +1552,7 @@ header       = "61 0D 0D 0A"
 footer       = ""
 min_size     = 16
 max_size     = 104_857_600
+pre_validate = "pyc"
 
 [[signature]]
 name         = "Python Bytecode 3.10 (.pyc)"
@@ -1553,6 +1562,7 @@ header       = "6F 0D 0D 0A"
 footer       = ""
 min_size     = 16
 max_size     = 104_857_600
+pre_validate = "pyc"
 
 [[signature]]
 name         = "Python Bytecode 3.11 (.pyc)"
@@ -1562,6 +1572,7 @@ header       = "A7 0D 0D 0A"
 footer       = ""
 min_size     = 16
 max_size     = 104_857_600
+pre_validate = "pyc"
 
 [[signature]]
 name         = "Python Bytecode 3.12 (.pyc)"
@@ -1571,6 +1582,7 @@ header       = "CB 0D 0D 0A"
 footer       = ""
 min_size     = 16
 max_size     = 104_857_600
+pre_validate = "pyc"
 
 [[signature]]
 name         = "LZH / LHA Archive"
@@ -1632,6 +1644,8 @@ header       = "53 44 50 58"
 footer       = ""
 min_size     = 2048          # DPX generic file header is 2048 bytes
 max_size     = 2_147_483_648 # 2 GiB — 4K 16-bit frames can exceed 100 MiB each
+# Validates version ID string at bytes 8–11: must match V[digit].0 (e.g. "V1.0", "V2.0").
+pre_validate = "dpx"
 
 [[signature]]
 name         = "DPX Film Image (Little-Endian)"
@@ -1642,6 +1656,7 @@ header       = "58 50 44 53"
 footer       = ""
 min_size     = 2048
 max_size     = 2_147_483_648
+pre_validate = "dpx"
 
 # ── Phase 103 — Forensic & System Format Signatures ───────────────────────────
 

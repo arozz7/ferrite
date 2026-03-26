@@ -308,6 +308,21 @@ pub enum PreValidate {
     /// Parchive PAR2 recovery set: `packet_length` u64 LE @8 must be ≥ 20
     /// (minimum valid packet payload).
     Par2,
+    /// WAV audio (RIFF container): chunk size (u32 LE @4) must be ≥ 36
+    /// (minimum valid WAV: `WAVE` + `fmt ` chunk + `data` chunk header).
+    Wav,
+    /// AVI video (RIFF container): chunk size (u32 LE @4) must be ≥ 12
+    /// (minimum: `AVI ` subtype + at least one LIST chunk header).
+    Avi,
+    /// Python bytecode (.pyc): flags field (u32 LE @4) must be 0–3
+    /// (only bits 0–1 are defined; bit 0 = use-hash, bit 1 = checked-hash).
+    Pyc,
+    /// DPX film image (SDPX big-endian or XPDS little-endian): version ID
+    /// string at bytes 8–11 must match `V[12].0` (DPX V1.0 or V2.0).
+    Dpx,
+    /// OpenEXR HDR image: version byte @4 must be 2; reserved flag bits
+    /// @5 (upper nibble) and @6–@7 must all be zero.
+    Exr,
 }
 
 impl PreValidate {
@@ -428,6 +443,11 @@ impl PreValidate {
             Self::Evt => "evt",
             Self::Pem => "pem",
             Self::Par2 => "par2",
+            Self::Wav => "wav",
+            Self::Avi => "avi",
+            Self::Pyc => "pyc",
+            Self::Dpx => "dpx",
+            Self::Exr => "exr",
         }
     }
 
@@ -548,6 +568,11 @@ impl PreValidate {
             "evt" => Some(Self::Evt),
             "pem" => Some(Self::Pem),
             "par2" => Some(Self::Par2),
+            "wav" => Some(Self::Wav),
+            "avi" => Some(Self::Avi),
+            "pyc" => Some(Self::Pyc),
+            "dpx" => Some(Self::Dpx),
+            "exr" => Some(Self::Exr),
             _ => None,
         }
     }
@@ -676,6 +701,11 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Evt => validate_evt(data, pos),
         PreValidate::Pem => validate_pem(data, pos),
         PreValidate::Par2 => validate_par2(data, pos),
+        PreValidate::Wav => validate_wav(data, pos),
+        PreValidate::Avi => validate_avi(data, pos),
+        PreValidate::Pyc => validate_pyc(data, pos),
+        PreValidate::Dpx => validate_dpx(data, pos),
+        PreValidate::Exr => validate_exr(data, pos),
     }
 }
 
@@ -971,6 +1001,74 @@ fn validate_par2(data: &[u8], pos: usize) -> bool {
         data[pos + 15],
     ]);
     pkt_len >= 64
+}
+
+fn validate_wav(data: &[u8], pos: usize) -> bool {
+    // RIFF-WAV layout (offsets relative to pos):
+    //   0–3   "RIFF" (already matched)
+    //   4–7   chunk size (u32 LE) = file size - 8
+    //   8–11  "WAVE" (already matched by 12-byte header pattern)
+    // Minimum valid WAV: RIFF header + fmt chunk (24 bytes) + data chunk header (8 bytes)
+    //   → chunk_size ≥ 36.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let chunk_size =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    chunk_size >= 36
+}
+
+fn validate_avi(data: &[u8], pos: usize) -> bool {
+    // RIFF-AVI layout (offsets relative to pos):
+    //   0–3   "RIFF" (already matched)
+    //   4–7   chunk size (u32 LE) = file size - 8
+    //   8–11  "AVI " (already matched by 12-byte header pattern)
+    // Minimum valid AVI: RIFF header + at least one LIST chunk header (12 bytes)
+    //   → chunk_size ≥ 12.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let chunk_size =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    chunk_size >= 12
+}
+
+fn validate_pyc(data: &[u8], pos: usize) -> bool {
+    // Python bytecode layout (offsets relative to pos):
+    //   0–3   version magic (already matched, e.g. 0x330D0D0A for 3.6)
+    //   4–7   flags (u32 LE): only bits 0–1 are defined (use-hash and checked-hash);
+    //          all other bits must be zero.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let flags = u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    flags <= 3
+}
+
+fn validate_dpx(data: &[u8], pos: usize) -> bool {
+    // DPX layout (SMPTE 268M, offsets relative to pos):
+    //   0–3   magic "SDPX" or "XPDS" (already matched)
+    //   4–7   image_offset (u32) — not validated here
+    //   8–15  version ID string (8-byte null-padded ASCII): "V1.0\0…" or "V2.0\0…"
+    // Only DPX versions 1.0 and 2.0 are in common use.
+    if need(data, pos, 12) {
+        return true;
+    }
+    let v = &data[pos + 8..pos + 12];
+    v[0] == b'V' && v[1].is_ascii_digit() && v[2] == b'.' && v[3] == b'0'
+}
+
+fn validate_exr(data: &[u8], pos: usize) -> bool {
+    // OpenEXR layout (offsets relative to pos):
+    //   0–3   magic 0x762F3101 (already matched)
+    //   4–7   version (u32 LE): bits 0–7 = version number (must be 2);
+    //          bits 8–11 = flags (tile/longnames/multipart/deepdata);
+    //          bits 12–31 = reserved (must be 0).
+    // → byte @4 == 2, upper nibble of byte @5 == 0, bytes @6 and @7 == 0.
+    if need(data, pos, 8) {
+        return true;
+    }
+    data[pos + 4] == 2 && (data[pos + 5] & 0xF0) == 0 && data[pos + 6] == 0 && data[pos + 7] == 0
 }
 
 fn validate_jar(data: &[u8], pos: usize) -> bool {
@@ -6563,5 +6661,177 @@ mod tests {
     #[test]
     fn par2_too_short_passes() {
         assert!(validate_par2(b"PAR2\0PKT", 0));
+    }
+
+    // ── WAV ───────────────────────────────────────────────────────────────────
+
+    fn make_wav(chunk_size: u32) -> Vec<u8> {
+        let mut buf = b"RIFF\x00\x00\x00\x00WAVE".to_vec();
+        buf[4..8].copy_from_slice(&chunk_size.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn wav_valid_chunk_size_accepted() {
+        assert!(validate_wav(&make_wav(36), 0));
+    }
+
+    #[test]
+    fn wav_large_chunk_size_accepted() {
+        assert!(validate_wav(&make_wav(0x0400_0000), 0));
+    }
+
+    #[test]
+    fn wav_chunk_size_too_small_rejected() {
+        assert!(!validate_wav(&make_wav(8), 0));
+    }
+
+    #[test]
+    fn wav_zero_chunk_size_rejected() {
+        assert!(!validate_wav(&make_wav(0), 0));
+    }
+
+    #[test]
+    fn wav_too_short_passes() {
+        assert!(validate_wav(b"RIFF\x00", 0));
+    }
+
+    // ── AVI ───────────────────────────────────────────────────────────────────
+
+    fn make_avi(chunk_size: u32) -> Vec<u8> {
+        let mut buf = b"RIFF\x00\x00\x00\x00AVI ".to_vec();
+        buf[4..8].copy_from_slice(&chunk_size.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn avi_valid_chunk_size_accepted() {
+        assert!(validate_avi(&make_avi(512), 0));
+    }
+
+    #[test]
+    fn avi_minimum_chunk_size_accepted() {
+        assert!(validate_avi(&make_avi(12), 0));
+    }
+
+    #[test]
+    fn avi_chunk_size_too_small_rejected() {
+        assert!(!validate_avi(&make_avi(4), 0));
+    }
+
+    #[test]
+    fn avi_too_short_passes() {
+        assert!(validate_avi(b"RIFF\x00", 0));
+    }
+
+    // ── PYC ───────────────────────────────────────────────────────────────────
+
+    fn make_pyc(flags: u32) -> Vec<u8> {
+        let mut buf = b"\x33\x0d\x0d\x0a\x00\x00\x00\x00".to_vec();
+        buf[4..8].copy_from_slice(&flags.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn pyc_flags_zero_accepted() {
+        assert!(validate_pyc(&make_pyc(0), 0));
+    }
+
+    #[test]
+    fn pyc_flags_one_accepted() {
+        assert!(validate_pyc(&make_pyc(1), 0));
+    }
+
+    #[test]
+    fn pyc_flags_three_accepted() {
+        assert!(validate_pyc(&make_pyc(3), 0));
+    }
+
+    #[test]
+    fn pyc_flags_four_rejected() {
+        assert!(!validate_pyc(&make_pyc(4), 0));
+    }
+
+    #[test]
+    fn pyc_flags_high_rejected() {
+        assert!(!validate_pyc(&make_pyc(0xDEAD_BEEF), 0));
+    }
+
+    #[test]
+    fn pyc_too_short_passes() {
+        assert!(validate_pyc(b"\x33\x0d\x0d\x0a", 0));
+    }
+
+    // ── DPX ───────────────────────────────────────────────────────────────────
+
+    fn make_dpx_be(ver: &[u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[0..4].copy_from_slice(b"SDPX");
+        buf[8..12].copy_from_slice(ver);
+        buf
+    }
+
+    #[test]
+    fn dpx_v1_accepted() {
+        assert!(validate_dpx(&make_dpx_be(b"V1.0"), 0));
+    }
+
+    #[test]
+    fn dpx_v2_accepted() {
+        assert!(validate_dpx(&make_dpx_be(b"V2.0"), 0));
+    }
+
+    #[test]
+    fn dpx_garbage_version_rejected() {
+        assert!(!validate_dpx(&make_dpx_be(b"XYZ!"), 0));
+    }
+
+    #[test]
+    fn dpx_lowercase_v_rejected() {
+        assert!(!validate_dpx(&make_dpx_be(b"v1.0"), 0));
+    }
+
+    #[test]
+    fn dpx_too_short_passes() {
+        assert!(validate_dpx(b"SDPX\x00\x00\x00\x00", 0));
+    }
+
+    // ── EXR ───────────────────────────────────────────────────────────────────
+
+    fn make_exr(ver: u8, flags: u8) -> Vec<u8> {
+        vec![0x76, 0x2F, 0x31, 0x01, ver, flags, 0x00, 0x00]
+    }
+
+    #[test]
+    fn exr_version2_no_flags_accepted() {
+        assert!(validate_exr(&make_exr(2, 0x00), 0));
+    }
+
+    #[test]
+    fn exr_version2_tile_flag_accepted() {
+        // bit 8 of the version u32 = byte @5 bit 0 = 0x01
+        assert!(validate_exr(&make_exr(2, 0x01), 0));
+    }
+
+    #[test]
+    fn exr_version2_all_known_flags_accepted() {
+        // bits 8–11 set: byte @5 = 0x0F
+        assert!(validate_exr(&make_exr(2, 0x0F), 0));
+    }
+
+    #[test]
+    fn exr_wrong_version_rejected() {
+        assert!(!validate_exr(&make_exr(1, 0x00), 0));
+    }
+
+    #[test]
+    fn exr_reserved_flag_bits_rejected() {
+        // upper nibble of byte @5 is reserved
+        assert!(!validate_exr(&make_exr(2, 0xF0), 0));
+    }
+
+    #[test]
+    fn exr_too_short_passes() {
+        assert!(validate_exr(&[0x76, 0x2F, 0x31, 0x01], 0));
     }
 }
