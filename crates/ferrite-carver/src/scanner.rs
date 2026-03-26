@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -49,12 +49,13 @@ pub struct ScanProgress {
     pub scan_end: u64,
 }
 
-/// Internal 4-tuple passed through `scan_impl` for progress/cancel/pause signalling.
+/// Internal context passed through `scan_impl` for progress/cancel/pause/bytes signalling.
 type ScanCtx<'a> = Option<(
     &'a std::sync::mpsc::SyncSender<ScanProgress>,
-    &'a Arc<std::sync::atomic::AtomicBool>,
-    &'a Arc<std::sync::atomic::AtomicBool>,
-    &'a Arc<std::sync::atomic::AtomicBool>,
+    &'a Arc<std::sync::atomic::AtomicBool>, // cancel
+    &'a Arc<std::sync::atomic::AtomicBool>, // pause
+    &'a Arc<std::sync::atomic::AtomicBool>, // paused_ack
+    &'a Arc<AtomicU64>,                     // bytes_read counter
 )>;
 
 /// Signature-based file carving engine.
@@ -103,10 +104,14 @@ impl Carver {
         cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
         pause: &std::sync::Arc<std::sync::atomic::AtomicBool>,
         paused_ack: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        bytes_read: &Arc<AtomicU64>,
     ) -> Result<Vec<CarveHit>> {
         let mut all_hits = Vec::new();
         let mut collect = |batch: Vec<CarveHit>| all_hits.extend(batch);
-        self.scan_impl(Some((tx, cancel, pause, paused_ack)), &mut collect)?;
+        self.scan_impl(
+            Some((tx, cancel, pause, paused_ack, bytes_read)),
+            &mut collect,
+        )?;
         all_hits.sort_by_key(|h| h.byte_offset);
         Ok(all_hits)
     }
@@ -117,15 +122,20 @@ impl Carver {
     /// Hits within each chunk are sorted by byte offset before being delivered.
     /// Returns `Ok(())` on completion, including early cancellation (partial
     /// results have already been delivered via `on_hits`).
+    ///
+    /// `bytes_read` is a monotonic counter incremented by the number of bytes
+    /// read each chunk; share the same `Arc` with a
+    /// [`ferrite_core::ThermalGuard`] for speed-based thermal inference.
     pub fn scan_streaming(
         &self,
         tx: &std::sync::mpsc::SyncSender<ScanProgress>,
         cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
         pause: &std::sync::Arc<std::sync::atomic::AtomicBool>,
         paused_ack: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        bytes_read: &Arc<AtomicU64>,
         on_hits: &mut impl FnMut(Vec<CarveHit>),
     ) -> Result<()> {
-        self.scan_impl(Some((tx, cancel, pause, paused_ack)), on_hits)
+        self.scan_impl(Some((tx, cancel, pause, paused_ack, bytes_read)), on_hits)
     }
 
     fn scan_impl(
@@ -241,7 +251,8 @@ impl Carver {
             on_hits(chunk_hits);
             offset += chunk_size as u64;
 
-            if let Some((tx, cancel, pause, paused_ack)) = &progress {
+            if let Some((tx, cancel, pause, paused_ack, bytes_read)) = &progress {
+                bytes_read.fetch_add(read_size as u64, Ordering::Relaxed);
                 let _ = tx.try_send(ScanProgress {
                     bytes_scanned: offset.min(scan_end),
                     device_size,
@@ -294,13 +305,20 @@ impl Carver {
         // If the signature carries a size hint, read the true file length from
         // the embedded field.  Fall back to max_size if the read fails or the
         // parsed value exceeds max_size (corrupt / stale data).
+        //
+        // Additionally, never extract more bytes than physically remain on the
+        // device from hit.byte_offset onwards.  This prevents a bogus size-hint
+        // value (false-positive hit whose header fields contain garbage) from
+        // producing a file larger than the source device — which is impossible
+        // for any real file.
+        let remaining_on_device = device_size.saturating_sub(hit.byte_offset);
         let (extraction_size, hint_resolved) = if let Some(hint) = &sig.size_hint {
             match read_size_hint(self.device.as_ref(), hit.byte_offset, hint, sig.max_size) {
-                Some(size) => (size.min(sig.max_size), true),
-                None => (sig.max_size, false),
+                Some(size) => (size.min(sig.max_size).min(remaining_on_device), true),
+                None => (sig.max_size.min(remaining_on_device), false),
             }
         } else {
-            (sig.max_size, false)
+            (sig.max_size.min(remaining_on_device), false)
         };
 
         // If the resolved size is below the signature's minimum, skip extraction.

@@ -469,3 +469,129 @@ fn tiff_complete_be_header() {
     let (_f, path) = write_tmp(&data);
     assert_eq!(validate_tiff_file(&path), CarveQuality::Complete);
 }
+
+// ── validate_isobmff_file ──────────────────────────────────────────────────
+
+/// Build a minimal valid ISOBMFF file with the given top-level boxes.
+///
+/// Each entry is `(type_4cc, payload_bytes)`. The function writes the
+/// 8-byte box header (u32 BE size + 4-byte type) followed by the payload.
+fn make_isobmff(boxes: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for &(box_type, payload) in boxes {
+        let size = (8 + payload.len()) as u32;
+        out.extend_from_slice(&size.to_be_bytes());
+        out.extend_from_slice(box_type);
+        out.extend_from_slice(payload);
+    }
+    out
+}
+
+#[test]
+fn isobmff_complete_ftyp_moov() {
+    let data = make_isobmff(&[(b"ftyp", b"isom\x00\x00\x02\x00"), (b"moov", b"")]);
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_isobmff_file(&path), CarveQuality::Complete);
+}
+
+#[test]
+fn isobmff_complete_ftyp_mdat() {
+    let data = make_isobmff(&[(b"ftyp", b"mp42\x00\x00\x00\x00"), (b"mdat", &[0u8; 16])]);
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_isobmff_file(&path), CarveQuality::Complete);
+}
+
+#[test]
+fn isobmff_corrupt_missing_ftyp() {
+    let data = make_isobmff(&[(b"moov", b"")]);
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_isobmff_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn isobmff_corrupt_ftyp_only_no_media() {
+    let data = make_isobmff(&[(b"ftyp", b"isom\x00\x00\x02\x00")]);
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_isobmff_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn isobmff_corrupt_box_size_overflow() {
+    // Box declares size larger than file.
+    let mut data = vec![0u8; 32];
+    data[0..4].copy_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+    data[4..8].copy_from_slice(b"ftyp");
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_isobmff_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn isobmff_corrupt_non_ascii_box_type() {
+    let mut data = vec![0u8; 16];
+    data[0..4].copy_from_slice(&16u32.to_be_bytes());
+    data[4..8].copy_from_slice(&[0x00, 0x1F, 0xFF, 0x80]);
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_isobmff_file(&path), CarveQuality::Corrupt);
+}
+
+// ── validate_ebml_file ─────────────────────────────────────────────────────
+
+/// Build a minimal EBML+Segment byte sequence.
+fn make_ebml(header_body: &[u8], seg_size_bytes: Option<&[u8]>) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0x1A, 0x45, 0xDF, 0xA3]);
+    let sz = header_body.len() as u8;
+    out.push(0x80 | sz); // 1-byte VINT
+    out.extend_from_slice(header_body);
+    out.extend_from_slice(&[0x18, 0x53, 0x80, 0x67]);
+    match seg_size_bytes {
+        Some(vint) => out.extend_from_slice(vint),
+        None => out.push(0xFF), // 1-byte unknown size
+    }
+    out
+}
+
+#[test]
+fn ebml_complete_known_segment_size() {
+    // Segment size = 1000 encoded as 2-byte VINT: 0x43 0xE8
+    let data = make_ebml(b"\x00\x00", Some(&[0x43, 0xE8]));
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_ebml_file(&path), CarveQuality::Complete);
+}
+
+#[test]
+fn ebml_complete_unknown_segment_size() {
+    // Unknown-size Segment is valid MKV.
+    let data = make_ebml(b"\x00\x00", None);
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_ebml_file(&path), CarveQuality::Complete);
+}
+
+#[test]
+fn ebml_corrupt_wrong_element_id() {
+    let (_f, path) = write_tmp(&[0x00u8; 32]);
+    assert_eq!(validate_ebml_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn ebml_corrupt_missing_segment() {
+    let mut data = make_ebml(b"\x00\x00", Some(&[0x43, 0xE8]));
+    let seg_off = 4 + 1 + 2; // EBML ID(4) + VINT(1) + body(2)
+    data[seg_off] = 0x00;
+    data[seg_off + 1] = 0x00;
+    data[seg_off + 2] = 0x00;
+    data[seg_off + 3] = 0x00;
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_ebml_file(&path), CarveQuality::Corrupt);
+}
+
+#[test]
+fn ebml_corrupt_truncated_before_segment() {
+    let mut data = Vec::new();
+    data.extend_from_slice(&[0x1A, 0x45, 0xDF, 0xA3]);
+    data.push(0x82); // VINT size = 2
+    data.extend_from_slice(&[0x00, 0x00]);
+    // No Segment follows.
+    let (_f, path) = write_tmp(&data);
+    assert_eq!(validate_ebml_file(&path), CarveQuality::Corrupt);
+}

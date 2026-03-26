@@ -18,6 +18,6 @@ mod verdict;
 // Public API surface
 pub use error::{Result, SmartError};
 pub use runner::{query, query_and_assess};
-pub use thresholds::SmartThresholds;
+pub use thresholds::{CountThresholds, SmartThresholds};
 pub use types::{HealthVerdict, SmartAttribute, SmartData};
 pub use verdict::assess_health;

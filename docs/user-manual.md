@@ -829,6 +829,60 @@ signatures support the same header/footer/max_size fields as built-in signatures
 4. Hits are sorted by byte offset and displayed in the right panel.
 5. Scanning runs on a background thread; the TUI remains fully responsive.
 
+### Minimising background I/O (Windows)
+
+Ferrite opens the source device with **read-only** flags and does not take an exclusive
+lock.  Windows will still allow other processes — Explorer, Windows Search, antivirus
+— to read (and potentially write) the drive concurrently.  On a healthy drive this is
+harmless.  On a failing or slow drive every competing I/O operation adds wear, can
+trigger read timeouts, and will slow the scan significantly.
+
+Before starting a long carving session on a damaged drive, perform the following steps:
+
+#### 1 — Stop Windows Search (indexer)
+
+```powershell
+# Stop for this session only (restarts on next boot)
+Stop-Service WSearch
+
+# Re-enable when recovery is complete
+Start-Service WSearch
+```
+
+Alternatively: `Win + R` → `services.msc` → **Windows Search** → right-click →
+**Stop**.
+
+#### 2 — Pause Windows Defender real-time protection
+
+Settings → Privacy & Security → Windows Security → Virus & threat protection →
+**Manage settings** → toggle **Real-time protection** off.
+
+If you prefer a less disruptive option, add the drive letter as an exclusion instead:
+
+Settings → Windows Security → Virus & threat protection → Manage settings →
+**Add or remove exclusions** → add the drive letter (e.g. `E:\`).
+
+#### 3 — Disable AutoPlay for the drive
+
+Settings → Bluetooth & devices → **AutoPlay** → toggle off, or set the drive to
+**Take no action**.
+
+#### 4 — Prevent Explorer from indexing the drive
+
+Right-click the drive in Explorer → **Properties** → uncheck
+**Allow files on this drive to have contents indexed** → **OK**.
+
+#### 5 — Diagnose what is accessing the drive
+
+Download **Process Monitor** (Microsoft Sysinternals) and add a filter:
+`Path → contains → E:\` (replace `E:` with your drive letter).  Any process
+appearing in the results is generating I/O on the recovery drive.
+
+> **Note:** None of these steps are required for Ferrite to function.  They are
+> precautions that reduce unnecessary I/O load on an already-stressed drive and
+> prevent Windows from writing metadata (MFT journal, `$LogFile`) to the device
+> you are trying to recover.
+
 ### Carve quality indicators
 
 After extraction, each hit is post-validated and assigned a **CarveQuality** tag
@@ -1502,6 +1556,13 @@ and pressing `Space` before starting the scan.  Consider enabling skip-corrupt m
 When a drive shows **S.M.A.R.T. CRITICAL** and produces I/O errors at the very
 first sector (LBA 0), the Partitions and File Browser tabs will not be able to read
 partition or filesystem metadata.  The recommended approach is:
+
+**Step 0 — Minimise background I/O (Windows)**
+
+Before starting any long recovery session, stop the Windows Search indexer and
+disable Defender real-time protection (or add a drive exclusion) so they do not
+compete for reads on the failing drive.  See *Minimising background I/O* in the
+[File Carving section](#minimising-background-io-windows) for step-by-step instructions.
 
 **Step 1 — Image the drive**
 

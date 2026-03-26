@@ -230,6 +230,61 @@ pub enum SizeHint {
     /// `max_size`, writing gigabytes of trailing garbage that prevents
     /// the OS from mounting the image.
     Iso9660,
+
+    /// ASF (Advanced Systems Format) header walker for WMV / WMA files.
+    ///
+    /// Walks the sub-objects inside the ASF Header Object looking for the
+    /// File Properties Object (GUID `A1 DC AB 8C …`), then reads the exact
+    /// total file size stored as a u64 LE at offset 40 within that object.
+    ///
+    /// Without this hint WMV files are extracted at `max_size` (4 GiB),
+    /// producing huge files full of trailing garbage.
+    Asf,
+
+    /// POSIX ustar TAR archive block walker.
+    ///
+    /// Walks the sequence of 512-byte header+data blocks, parsing each
+    /// entry's size field (ASCII octal at header offset 124) and advancing
+    /// past the corresponding data blocks.  Returns the offset of the two
+    /// consecutive zero blocks that mark the end of the archive.
+    Tar,
+
+    /// MPEG-2 Program Stream pack-header walker.
+    ///
+    /// Scans forward through the stream looking for pack-start codes
+    /// (`00 00 01 BA`) and the Program End code (`00 00 01 B9`).  Returns
+    /// the byte immediately after the PSEND code when found, or an estimate
+    /// based on the last observed pack header when sync is lost.
+    MpegPs,
+
+    /// Sun/NeXT AU audio file size hint.
+    ///
+    /// The AU header encodes two fields that together define the data extent:
+    ///
+    /// ```text
+    /// offset  4: data_offset — u32 BE; byte offset to the audio data
+    /// offset  8: data_size   — u32 BE; byte length of the audio data
+    /// ```
+    ///
+    /// `total_size = data_offset + data_size`
+    ///
+    /// When `data_size == 0xFFFF_FFFF` (streaming / unknown length),
+    /// returns `None` and falls back to `max_size`.
+    Au,
+
+    /// Standard MIDI File (SMF) chunk walker.
+    ///
+    /// The MIDI header chunk (MThd) at offset 0 provides:
+    ///
+    /// ```text
+    /// offset  8: format   — u16 BE (0 = single track, 1/2 = multi-track)
+    /// offset 10: nTracks  — u16 BE; number of MTrk chunks that follow
+    /// ```
+    ///
+    /// Total file size = 14 (MThd header) + sum over each MTrk of
+    /// `8 + track_data_len`, where `track_data_len` is the u32 BE length
+    /// field at MTrk+4.
+    Midi,
 }
 
 impl SizeHint {
@@ -256,6 +311,11 @@ impl SizeHint {
             SizeHint::Gif => "gif",
             SizeHint::Png => "png",
             SizeHint::Iso9660 => "iso9660",
+            SizeHint::Asf => "asf",
+            SizeHint::Tar => "tar",
+            SizeHint::MpegPs => "mpeg_ps",
+            SizeHint::Au => "au",
+            SizeHint::Midi => "midi",
         }
     }
 }
@@ -455,6 +515,11 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("png") => Some(SizeHint::Png),
                     Some(k) if k.eq_ignore_ascii_case("gif") => Some(SizeHint::Gif),
                     Some(k) if k.eq_ignore_ascii_case("iso9660") => Some(SizeHint::Iso9660),
+                    Some(k) if k.eq_ignore_ascii_case("asf") => Some(SizeHint::Asf),
+                    Some(k) if k.eq_ignore_ascii_case("tar") => Some(SizeHint::Tar),
+                    Some(k) if k.eq_ignore_ascii_case("mpeg_ps") => Some(SizeHint::MpegPs),
+                    Some(k) if k.eq_ignore_ascii_case("au") => Some(SizeHint::Au),
+                    Some(k) if k.eq_ignore_ascii_case("midi") => Some(SizeHint::Midi),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
                         match (r.size_hint_ts_offset, r.size_hint_stride) {
                             (Some(ts_offset), Some(stride)) => {

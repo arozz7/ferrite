@@ -25,7 +25,10 @@ mod structural_validators;
 
 pub use file_validators::{validate_pdf_file, validate_png_file, validate_sqlite_file};
 // parse_last_startxref and looks_like_xref remain pub(crate) for direct test access.
-pub use binary_validators::{validate_evtx_file, validate_exe_file, validate_riff_file};
+pub use binary_validators::{
+    validate_ebml_file, validate_evtx_file, validate_exe_file, validate_isobmff_file,
+    validate_riff_file,
+};
 pub use structural_validators::{
     validate_elf_file, validate_flac_file, validate_regf_file, validate_tiff_file,
 };
@@ -78,85 +81,52 @@ pub fn validate_extracted(
 // NOTE: File-based (seek) validators live in file_validators.rs and
 // binary_validators.rs and are re-exported at the top of this module.
 
-/// JPEG: must end with the End-of-Image marker `FF D9`, the entropy
-/// (scan) data must not contain invalid marker sequences, and no second
-/// SOI (`FF D8`) may appear outside the first APP segment.
+/// JPEG: must end with the End-of-Image marker `FF D9`, and no second
+/// SOI (`FF D8`) may appear after all leading APP segments are consumed.
 ///
-/// In valid JPEG scan data every `0xFF` byte is followed by one of:
-///   - `0x00`       — byte-stuffed literal `0xFF`
-///   - `0xD0`–`0xD7` — restart markers (RST0–RST7)
-///   - `0xD9`       — end-of-image (EOI)
-///   - `0xFF`       — fill byte (padding)
+/// The embedded-SOI check catches fragmented files where the first cluster
+/// contains one JPEG's header and a later cluster contains a completely
+/// different JPEG body.  A second `FF D8` after ALL APP segments (E0–EF)
+/// is conclusive evidence of fragmentation.
 ///
-/// When sectors are overwritten by unrelated files, the random data almost
-/// always contains `0xFF` followed by bytes outside this set.  Checking the
-/// last 4 KiB of scan data (just before EOI) reliably detects this.
-///
-/// The embedded-SOI check catches a second failure mode: fragmented files
-/// where the first cluster contains one JPEG's header and a later cluster
-/// (typically at a 512-byte-aligned offset) contains a completely different
-/// JPEG body.  The carver merges them into one file that no viewer can
-/// decode.  A second `FF D8` after the first APP0/APP1 segment is
-/// conclusive evidence of this fragmentation.
+/// We skip ALL leading APPn segments (not just the first) before searching
+/// for a second SOI, because camera JPEGs frequently contain:
+///   JFIF APP0 (tiny, ~18 bytes) + EXIF APP1 (large, contains a thumbnail
+///   JPEG with its own SOI).  Stopping after only the JFIF APP0 caused
+///   false-positive Corrupt verdicts on virtually every camera photo.
 fn validate_jpeg(head: &[u8], tail: &[u8]) -> CarveQuality {
     if tail.len() < 2 || tail[tail.len() - 2..] != [0xFF, 0xD9] {
         return CarveQuality::Corrupt;
     }
 
     // ── Embedded-SOI / fragmentation check ──────────────────────────────
-    // A JPEG Exif APP1 block (FF E1) or JFIF APP0 block (FF E0) may
-    // legitimately contain a thumbnail with its own SOI.  Skip over the
-    // first APP segment before searching so we don't false-positive on
-    // that thumbnail.
-    if head.len() >= 6 {
-        // Bytes [2..3] = first marker after SOI; bytes [4..5] = segment length.
-        let first_marker = head[3];
-        let app_seg_end = if first_marker == 0xE0 || first_marker == 0xE1 {
-            let seg_len = u16::from_be_bytes([head[4], head[5]]) as usize;
-            // Segment length includes the 2-byte length field, starts at byte 2.
-            (2 + seg_len).min(head.len())
-        } else {
-            4 // no recognised APP segment — skip past the opening SOI only
-        };
-        // Any SOI after the first APP segment is a fragment boundary.
-        if head[app_seg_end..].windows(2).any(|w| w == [0xFF, 0xD8]) {
-            return CarveQuality::Corrupt;
+    // Skip all leading APPn segments (FF E0–FF EF) from position 2 (after
+    // the SOI bytes FF D8).  Each APP segment has a 2-byte length field at
+    // marker+2 that includes the length bytes themselves.
+    if head.len() >= 4 {
+        let mut pos = 2usize; // start immediately after SOI
+        while pos + 3 < head.len() && head[pos] == 0xFF {
+            let marker = head[pos + 1];
+            // APPn markers are E0–EF; skip them all.
+            if !(0xE0..=0xEF).contains(&marker) {
+                break;
+            }
+            let seg_len = u16::from_be_bytes([head[pos + 2], head[pos + 3]]) as usize;
+            // seg_len includes the 2-byte length field but not the 2-byte marker.
+            let next = pos + 2 + seg_len;
+            if next >= head.len() {
+                // APP segment extends beyond the head buffer — stop scanning.
+                pos = head.len();
+                break;
+            }
+            pos = next;
         }
-    }
-
-    // ── Entropy scan ────────────────────────────────────────────────────
-    // Scan the last 4 KiB of entropy data (before the final FF D9) for
-    // invalid marker sequences.
-    let scan_end = tail.len() - 2; // exclude EOI
-    let scan_start = scan_end.saturating_sub(4096);
-    let scan_region = &tail[scan_start..scan_end];
-
-    let mut i = 0;
-    while i < scan_region.len() {
-        if scan_region[i] == 0xFF {
-            if i + 1 >= scan_region.len() {
-                break; // 0xFF at very end of region — can't check follower
-            }
-            let follower = scan_region[i + 1];
-            match follower {
-                0x00 => {
-                    i += 2;
-                } // byte-stuffed FF
-                0xD0..=0xD7 => {
-                    i += 2;
-                } // RST marker
-                0xD9 => {
-                    i += 2;
-                } // EOI (shouldn't appear here but tolerate)
-                0xFF => {
-                    i += 1;
-                } // fill byte — advance one, recheck next
-                _ => {
-                    return CarveQuality::Corrupt;
-                } // invalid marker in scan data
-            }
-        } else {
-            i += 1;
+        // Any SOI after all APP segments is a fragment boundary.
+        if head
+            .get(pos..)
+            .is_some_and(|s| s.windows(2).any(|w| w == [0xFF, 0xD8]))
+        {
+            return CarveQuality::Corrupt;
         }
     }
 

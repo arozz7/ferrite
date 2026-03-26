@@ -1,14 +1,16 @@
 //! Key-input handling and scan lifecycle for [`CarvingState`].
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_carver::{CarveHit, Carver, CarvingConfig, ScanProgress, Signature};
+use ferrite_core::{ThermalGuard, ThermalGuardConfig};
 
 use super::{
     preview, user_sig_panel, CarveFocus, CarveMsg, CarveStatus, CarvingState, CursorRow, FormMode,
-    HitStatus, ScanRangeField, UserSigForm,
+    ScanRangeField, UserSigForm,
 };
 
 impl CarvingState {
@@ -386,7 +388,6 @@ impl CarvingState {
     }
 
     pub(super) fn start_scan(&mut self) {
-        use std::sync::atomic::Ordering;
         use std::sync::mpsc;
 
         if self.status == CarveStatus::Running {
@@ -450,23 +451,11 @@ impl CarvingState {
             self.rx = Some(rx);
 
             // Re-queue all Unextracted hits for auto-extraction if enabled.
+            // The lazy-pull model does not need a pre-built queue; resetting
+            // the index to 0 is enough — pump_auto_extract will scan forward
+            // through self.hits, skipping already-extracted entries.
             if self.auto_extract {
-                let dir = if self.output_dir.is_empty() {
-                    "carved".to_string()
-                } else {
-                    self.output_dir.clone()
-                };
-                let unextracted: Vec<(usize, ferrite_carver::CarveHit)> = self
-                    .hits
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.status == HitStatus::Unextracted)
-                    .map(|(i, e)| (i, e.hit.clone()))
-                    .collect();
-                for (i, hit) in unextracted {
-                    let path = self.filename_for_hit(&hit, &dir);
-                    self.auto_extract_queue.push_back((i, hit, path));
-                }
+                self.next_auto_extract_idx = 0;
                 self.pump_auto_extract();
             }
             return;
@@ -485,36 +474,49 @@ impl CarvingState {
             end_byte,
         };
 
-        // Set up a per-session checkpoint path so different sessions using
-        // the same output directory do not share (or pollute) each other's
-        // hit files.  The filename embeds a seconds-since-epoch timestamp
-        // so each scan start produces a unique file.  On resume the path
-        // is set by restore_from_session and this block is not reached.
-        let dir = if self.output_dir.is_empty() {
-            "carved".to_string()
-        } else {
-            self.output_dir.clone()
-        };
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let cp_path = format!("{dir}\\ferrite-hits-{ts}.jsonl");
-        self.checkpoint_path = Some(cp_path);
-        self.checkpoint_flushed = 0;
-
         self.cancel.store(false, Ordering::Relaxed);
         self.pause.store(false, Ordering::Relaxed);
-        self.hits.clear();
-        self.hit_sel = 0;
+        self.bytes_read.store(0, Ordering::Relaxed);
+        self.thermal_guard = None;
+        self.thermal_event = None;
+
+        if was_resumed {
+            // Mid-scan resume: keep the checkpoint-loaded hits and continue
+            // appending to the existing checkpoint file.  Only runtime state
+            // (progress display, pause timer, status) is reset.
+            // next_auto_extract_idx stays 0 so pump_auto_extract will process
+            // any Unextracted hits from the prior session before new ones.
+            self.hit_sel = self.hits.len().saturating_sub(1);
+        } else {
+            // Fresh scan: clear all prior state and open a new checkpoint.
+            // The filename embeds a timestamp so sessions in the same output
+            // directory do not overwrite each other.
+            let dir = if self.output_dir.is_empty() {
+                "carved".to_string()
+            } else {
+                self.output_dir.clone()
+            };
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let cp_path = format!("{dir}\\ferrite-hits-{ts}.jsonl");
+            self.checkpoint_path = Some(cp_path);
+            self.checkpoint_flushed = 0;
+            self.hits.clear();
+            self.total_hits_found = 0;
+            self.next_auto_extract_idx = 0;
+            self.seen_fingerprints.lock().unwrap().clear();
+            self.duplicates_suppressed = 0;
+            self.hit_sel = 0;
+        }
+
         self.auto_follow = true;
         self.scan_progress = None;
         self.scan_start = Some(Instant::now());
         self.paused_elapsed = std::time::Duration::ZERO;
         self.paused_since = None;
         self.status = CarveStatus::Running;
-        self.seen_fingerprints.lock().unwrap().clear();
-        self.duplicates_suppressed = 0;
 
         let (tx, rx) = mpsc::channel::<CarveMsg>();
         // Keep tx alive so extraction results can be sent back after Done.
@@ -536,6 +538,31 @@ impl CarvingState {
         let cancel_scan = Arc::clone(&self.cancel);
         let pause_scan = Arc::clone(&self.pause);
         let paused_ack_scan = Arc::clone(&self.paused_ack);
+        let bytes_read_scan = Arc::clone(&self.bytes_read);
+
+        // Start the thermal guard.  Use SMART for temperature (if the device
+        // exposes it) and the bytes_read counter for speed-based inference on
+        // USB drives / bridges that don't report temperature.
+        let smart_path = device.device_info().path.clone();
+        let thermal_bytes = Arc::clone(&self.bytes_read);
+        let thermal_tx = tx.clone();
+        let guard = ThermalGuard::start(
+            move || {
+                ferrite_smart::query(&smart_path, None)
+                    .ok()
+                    .and_then(|d| d.temperature_celsius)
+            },
+            Some(thermal_bytes),
+            ThermalGuardConfig::default(),
+            move |event| {
+                let _ = thermal_tx.send(CarveMsg::Thermal(event));
+            },
+        );
+        // The guard's pause flag replaces self.pause for thermal-triggered
+        // pauses.  We keep self.pause for user-initiated pauses.
+        // The scan thread respects self.pause; thermal pause is handled by
+        // routing ThermalEvent::Paused → set self.pause in events.rs.
+        self.thermal_guard = Some(guard);
 
         std::thread::spawn(move || {
             let carver = Carver::new(Arc::clone(&device), config);
@@ -548,6 +575,7 @@ impl CarvingState {
                 &cancel_scan,
                 &pause_scan,
                 &paused_ack_scan,
+                &bytes_read_scan,
                 &mut on_hits,
             ) {
                 Ok(()) => {
@@ -565,12 +593,16 @@ impl CarvingState {
     pub(super) fn toggle_pause(&mut self) {
         use std::sync::atomic::Ordering;
 
-        // During active extraction the scan is already Done — handle separately.
-        // Use extract_pause (not pause) so we don't interfere with back-pressure.
+        // If an extraction batch is in flight, always toggle extraction pause.
         if self.extract_progress.is_some() {
             let current = self.extract_pause.load(Ordering::Relaxed);
             self.extract_pause.store(!current, Ordering::Relaxed);
-            return;
+            // When the scan is already finished there is nothing more to toggle.
+            if matches!(self.status, CarveStatus::Done | CarveStatus::Error(_)) {
+                return;
+            }
+            // Scan is still running alongside extraction — fall through so the
+            // scan state is also toggled below.
         }
         match self.status {
             CarveStatus::Running => {

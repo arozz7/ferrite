@@ -1,7 +1,7 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use ferrite_blockdev::AlignedBuffer;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::engine::ImagingEngine;
 use crate::error::{ImagingError, Result};
@@ -60,7 +60,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
                             .mapfile
                             .update_range(rest_start, rest_size, BlockStatus::NonScraped);
                     }
-                    debug!(
+                    warn!(
                         offset = pos,
                         "sweep: first failure — rest marked NonScraped"
                     );

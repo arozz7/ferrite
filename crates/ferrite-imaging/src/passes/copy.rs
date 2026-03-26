@@ -1,7 +1,7 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use ferrite_blockdev::AlignedBuffer;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::engine::ImagingEngine;
 use crate::error::{ImagingError, Result};
@@ -82,7 +82,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
                             .mapfile
                             .update_range(pos, chunk_size, BlockStatus::NonTrimmed);
 
-                        debug!(
+                        warn!(
                             offset = pos,
                             "copy: read error, marked NonTrimmed (reverse)"
                         );
@@ -134,7 +134,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
                             .mapfile
                             .update_range(pos, chunk_size, BlockStatus::NonTrimmed);
 
-                        debug!(offset = pos, "copy: read error, marked NonTrimmed");
+                        warn!(offset = pos, "copy: read error, marked NonTrimmed");
                         pos += chunk_size;
                     }
                 }

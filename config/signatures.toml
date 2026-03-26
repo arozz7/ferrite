@@ -16,8 +16,8 @@ extension    = "jpg"
 # 4-byte header: FF D8 FF E0 — standard JFIF JPEGs written by cameras/software.
 header       = "FF D8 FF E0"
 footer       = "FF D9"
-min_size     = 4096        # Skip embedded thumbnails (< 4 KiB)
-max_size     = 10_485_760  # 10 MiB
+min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
+max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
 # Validates "JFIF\0" identifier at offset 6 to reject FF D8 FF E0 hits
 # that appear inside other binary formats.
 pre_validate = "jpeg_jfif"
@@ -28,17 +28,30 @@ extension    = "jpg"
 # 4-byte header: FF D8 FF E1 — camera photos with EXIF/APP1 metadata block.
 header       = "FF D8 FF E1"
 footer       = "FF D9"
-min_size     = 4096        # Skip embedded thumbnails (< 4 KiB)
-max_size     = 10_485_760  # 10 MiB
+min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
+max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
 # Validates "Exif" identifier at offset 6.
 pre_validate = "jpeg_exif"
+
+[[signature]]
+name         = "JPEG Image (Raw/DQT)"
+extension    = "jpg"
+# 4-byte header: FF D8 FF DB — JPEG starting directly with a Define Quantization
+# Table segment, no APP0/APP1 header.  Common in hardware encoders, stripped
+# JPEGs, and certain camera firmware output.
+header       = "FF D8 FF DB"
+footer       = "FF D9"
+min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
+max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
+# Validates DQT segment length in [67, 518] (1–4 quantization tables).
+pre_validate = "jpeg_dqt"
 
 [[signature]]
 name           = "PNG Image"
 extension      = "png"
 header         = "89 50 4E 47 0D 0A 1A 0A"
 footer         = "49 45 4E 44 AE 42 60 82"
-max_size       = 52_428_800  # 50 MiB
+max_size       = 209_715_200  # 200 MiB — 100 MP PNG export ~100-180 MB compressed
 size_hint_kind = "png"
 # Validates that the first chunk is IHDR with length == 13 (required by spec).
 pre_validate   = "png"
@@ -91,7 +104,7 @@ extension        = "bmp"
 # 10-byte header: "BM" + 4-byte file size (wildcarded) + reserved 00 00 00 00.
 header           = "42 4D ?? ?? ?? ?? 00 00 00 00"
 footer           = ""
-max_size         = 52_428_800  # 50 MiB hard cap
+max_size         = 314_572_800  # 300 MiB — uncompressed 100 MP BMP ~300 MB
 size_hint_offset = 2
 size_hint_len    = 4
 size_hint_endian = "le"
@@ -165,7 +178,8 @@ size_hint_offset = 4
 size_hint_len    = 4
 size_hint_endian = "le"
 size_hint_add    = 8
-# No pre_validate — the 12-byte RIFF+WAVE header is already highly discriminating.
+# Validates chunk_size (u32 LE @4) ≥ 36: minimum valid WAV with fmt+data chunks.
+pre_validate     = "wav"
 
 [[signature]]
 name             = "AVI Video (RIFF)"
@@ -178,7 +192,8 @@ size_hint_offset = 4
 size_hint_len    = 4
 size_hint_endian = "le"
 size_hint_add    = 8
-# No pre_validate — the 12-byte RIFF+AVI  header is already highly discriminating.
+# Validates chunk_size (u32 LE @4) ≥ 12: minimum valid AVI with one LIST chunk header.
+pre_validate     = "avi"
 
 [[signature]]
 name           = "Matroska / MKV Video"
@@ -429,7 +444,7 @@ extension      = "heic"
 header         = "?? ?? ?? ?? 66 74 79 70 68 65 69 63"
 footer         = ""
 min_size       = 16384         # 16 KiB
-max_size       = 100_000_000   # 100 MB — HEIC is highly compressed
+max_size       = 209_715_200   # 200 MB — covers Apple ProRAW and future high-MP iPhones
 # ISOBMFF box walker derives true file size.
 size_hint_kind = "mp4"
 # Validates ftyp box size in [12, 512].
@@ -443,7 +458,7 @@ extension      = "heic"
 header         = "?? ?? ?? ?? 66 74 79 70 68 65 69 78"
 footer         = ""
 min_size       = 16384
-max_size       = 100_000_000
+max_size       = 209_715_200   # 200 MB — heic/heix both raised to match
 size_hint_kind = "mp4"
 pre_validate   = "heic"
 
@@ -502,16 +517,19 @@ pre_validate = "webm"
 size_hint_kind = "ebml"
 
 [[signature]]
-name         = "Windows Media Video / ASF"
-extension    = "wmv"
+name           = "Windows Media Video / ASF"
+extension      = "wmv"
 # ASF (Advanced Systems Format) Header Object — used by WMV, WMA, and ASF
 # files.  The 16-byte GUID is globally unique; no other format shares it.
-header       = "30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C"
-footer       = ""
-min_size     = 4096
-max_size     = 4_294_967_296  # 4 GiB
+header         = "30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C"
+footer         = ""
+min_size       = 4096
+max_size       = 4_294_967_296  # 4 GiB
+# Walks ASF sub-objects to find the File Properties Object; reads exact file
+# size (u64 LE at FPO+40) — prevents extracting up to 4 GiB of garbage.
+size_hint_kind = "asf"
 # Validates ASF object size (u64 LE @16) is ≥ 30 bytes.
-pre_validate = "wmv"
+pre_validate   = "wmv"
 
 [[signature]]
 name         = "Flash Video (FLV)"
@@ -526,20 +544,24 @@ max_size     = 4_294_967_296  # 4 GiB
 pre_validate = "flv"
 
 [[signature]]
-name         = "MPEG-2 / MPEG-1 Program Stream"
-extension    = "mpg"
+name           = "MPEG-2 / MPEG-1 Program Stream"
+extension      = "mpg"
 # MPEG Program Stream pack header: 00 00 01 BA.
 # Byte @+4: top-2-bits == 01 → MPEG-2; top-4-bits == 0010 → MPEG-1.
-header       = "00 00 01 BA"
-footer       = ""
-min_size     = 4096
-max_size     = 4_294_967_296  # 4 GiB
+header         = "00 00 01 BA"
+footer         = ""
+min_size       = 4096
+max_size       = 4_294_967_296  # 4 GiB
+# Scans forward through pack headers (00 00 01 BA) and stops at the Program
+# End code (00 00 01 B9) or when sync is lost — prevents extracting 4 GiB of
+# trailing garbage from unrelated data.
+size_hint_kind = "mpeg_ps"
 # Validates MPEG-2 (0x40–0x7F) or MPEG-1 (0x20–0x2F) pack-byte pattern.
-pre_validate = "mpeg"
+pre_validate   = "mpeg"
 # Pack start code appears at every pack boundary within the stream (~every 2KB
 # on DVD), so suppress hits within 16 MiB of each other to avoid flooding the
 # hit list with intra-file duplicates.
-min_hit_gap  = 16_777_216     # 16 MiB
+min_hit_gap    = 16_777_216     # 16 MiB
 
 [[signature]]
 name         = "WebP Image"
@@ -548,7 +570,7 @@ extension    = "webp"
 # Shares the RIFF 4-byte size field pattern with WAV and AVI.
 header       = "52 49 46 46 ?? ?? ?? ?? 57 45 42 50"
 footer       = ""
-max_size     = 52_428_800  # 50 MiB
+max_size     = 104_857_600  # 100 MiB — high-quality lossless WebP from modern cameras
 size_hint_offset = 4
 size_hint_len    = 4
 size_hint_endian = "le"
@@ -667,16 +689,18 @@ max_size     = 68_719_476_736  # 64 GiB hard cap
 pre_validate = "qcow2"
 
 [[signature]]
-name         = "MIDI Audio"
-extension    = "mid"
+name           = "MIDI Audio"
+extension      = "mid"
 # "MThd" — Standard MIDI File header chunk.  Immediately followed by
 # chunk length (u32 BE = 6) and format type (u16 BE) in {0,1,2}.
-header       = "4D 54 68 64"
-footer       = ""
-min_size     = 32
-max_size     = 10_485_760   # 10 MiB
+header         = "4D 54 68 64"
+footer         = ""
+min_size       = 32
+max_size       = 10_485_760   # 10 MiB
 # Validates chunk length @4 == 6 and format @8 in {0,1,2}.
-pre_validate = "midi"
+pre_validate   = "midi"
+# Walks nTracks MTrk chunks to derive exact file size.
+size_hint_kind = "midi"
 
 [[signature]]
 name             = "AIFF Audio"
@@ -764,7 +788,7 @@ extension      = "pef"
 header         = "49 49 2A 00"
 footer         = ""
 min_size       = 1_000_000    # 1 MB — RAW files are never tiny
-max_size       = 100_000_000  # 100 MB — covers 645Z (51 MP)
+max_size       = 157_286_400  # 150 MB — covers Pentax K-3 III (26 MP) and 645Z (51 MP)
 # TIFF IFD walker derives true size.
 size_hint_kind = "tiff"
 # Validates IFD offset in [8,4096] and "PENTAX " in first 512 bytes.
@@ -807,7 +831,7 @@ extension      = "sr2"
 header         = "49 49 2A 00 08 00 00 00"
 footer         = ""
 min_size       = 1_000_000    # 1 MB — RAW files are never tiny
-max_size       = 50_000_000   # 50 MB — Cyber-shot / R1 sensors (6-14 MP)
+max_size       = 104_857_600  # 100 MB — SR2 is older but giving headroom for edge cases
 # TIFF IFD walker derives true file size.
 size_hint_kind = "tiff"
 # Validates IFD entry count in [3, 50], "SONY" in first 512 bytes, and
@@ -1096,7 +1120,7 @@ extension    = "x3f"
 header       = "46 4F 56 62"
 footer       = ""
 min_size     = 100_000       # 100 KB — RAW files are not tiny
-max_size     = 50_000_000    # 50 MB — Sigma high-res sensors
+max_size     = 157_286_400   # 150 MB — Sigma fp L (61 MP Foveon), Quattro H (51 MP)
 # Validates version major byte (LE @5) in {2, 3}.
 pre_validate = "x3f"
 
@@ -1112,15 +1136,18 @@ max_size     = 524_288_000  # 500 MiB
 pre_validate = "ape"
 
 [[signature]]
-name         = "Sun AU Audio"
-extension    = "au"
+name           = "Sun AU Audio"
+extension      = "au"
 # Sun/NeXT audio: ".snd" 4-byte ASCII magic.
-header       = "2E 73 6E 64"
-footer       = ""
-min_size     = 24           # Minimum: header only (no audio data)
-max_size     = 524_288_000  # 500 MiB
+header         = "2E 73 6E 64"
+footer         = ""
+min_size       = 24           # Minimum: header only (no audio data)
+max_size       = 524_288_000  # 500 MiB
 # Validates data_offset @4 (u32 BE) >= 24 and encoding @12 in known set.
-pre_validate = "au"
+pre_validate   = "au"
+# Total size = data_offset (u32 BE @4) + data_size (u32 BE @8).
+# Falls back to max_size when data_size == 0xFFFFFFFF (streaming).
+size_hint_kind = "au"
 
 [[signature]]
 name           = "TrueType Font (TTF)"
@@ -1149,7 +1176,11 @@ footer       = ""
 min_size     = 44           # Minimum WOFF header + 1 table directory entry
 max_size     = 52_428_800   # 50 MiB
 # Validates flavor in {TTF, OTF, true}, length >= 44, numTables in [1, 50].
-pre_validate = "woff"
+pre_validate    = "woff"
+# length (u32 BE @8) is the exact total WOFF file size (same field position as WOFF2).
+size_hint_offset = 8
+size_hint_len    = 4
+size_hint_endian = "be"
 
 [[signature]]
 name         = "Microsoft Compiled HTML Help (CHM)"
@@ -1228,17 +1259,20 @@ header_offset = 128
 pre_validate  = "dicom"
 
 [[signature]]
-name          = "TAR Archive (POSIX ustar)"
-extension     = "tar"
+name           = "TAR Archive (POSIX ustar)"
+extension      = "tar"
 # POSIX ustar magic "ustar\0" at offset 257 within the first 512-byte header block.
 # Version string "00" or "  " at offset 263 (6 bytes after the magic).
-header        = "75 73 74 61 72 00"
-footer        = ""
-min_size      = 512          # Minimum: one 512-byte header block
-max_size      = 2_147_483_648 # 2 GiB
-header_offset = 257
+header         = "75 73 74 61 72 00"
+footer         = ""
+min_size       = 512          # Minimum: one 512-byte header block
+max_size       = 2_147_483_648 # 2 GiB
+header_offset  = 257
+# Walks 512-byte header+data blocks and stops at the double-zero end-of-archive
+# marker — extracts the exact archive size rather than up to 2 GiB.
+size_hint_kind = "tar"
 # Validates version string at offset 6 from magic is "00" or "  ".
-pre_validate  = "tar"
+pre_validate   = "tar"
 
 [[signature]]
 name         = "PHP Script"
@@ -1263,3 +1297,504 @@ max_size     = 1_048_576     # 1 MiB — scripts >1 MiB are very rare
 min_hit_gap  = 1_048_576     # 1 MiB — "#!/" appears in binary data
 # Validates "#!/bin/" or "#!/usr/" path prefix + printable ASCII in path.
 pre_validate = "shebang"
+
+[[signature]]
+name         = "JPEG Image (COM)"
+extension    = "jpg"
+# 4-byte header: FF D8 FF FE — JPEG starting with a Comment marker directly
+# after SOI.  Produced by some encoders that embed a comment before any other
+# segment (e.g. Intel JPEG Library writes a COM with a version string).
+header       = "FF D8 FF FE"
+footer       = "FF D9"
+min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
+max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
+# Validates COM segment length ≥ 2; rejects embedded thumbnails.
+pre_validate = "jpeg_com"
+
+[[signature]]
+name         = "Java Class File"
+extension    = "class"
+# 4-byte header: CA FE BA BE — Java bytecode magic number.
+header       = "CA FE BA BE"
+footer       = ""
+min_size     = 32            # Minimum viable class file
+max_size     = 52_428_800    # 50 MiB — generous upper bound for generated/obfuscated classes
+# Validates major version in [45, 80] (Java 1 through Java 36+).
+pre_validate = "java_class"
+
+[[signature]]
+name         = "Microsoft Cabinet"
+extension    = "cab"
+# 4-byte header: 4D 53 43 46 = "MSCF" — Microsoft Cabinet archive format used
+# for Windows installers, driver packages, and Windows Update payloads.
+header       = "4D 53 43 46"
+footer       = ""
+min_size     = 32            # Minimum valid cabinet header
+max_size     = 536_870_912   # 512 MiB — large installer packages
+# Validates reserved1 field (bytes 4–7) == 0 and cabinet size (bytes 8–11) > 0.
+pre_validate    = "cab"
+# cbCabinet (u32 LE @8) is the exact total file size.
+size_hint_offset = 8
+size_hint_len    = 4
+
+[[signature]]
+name         = "OpenType Font (OTF)"
+extension    = "otf"
+# 4-byte header: 4F 54 54 4F = "OTTO" — OpenType font with PostScript (CFF) outlines.
+# Distinct from TrueType (00 01 00 00) which uses TrueType glyph outlines.
+header       = "4F 54 54 4F"
+footer       = ""
+min_size     = 256           # Minimum valid font header + at least one table
+max_size     = 52_428_800    # 50 MiB — same as TTF/WOFF
+# Validates numTables (u16 BE @4) in [1, 50].
+pre_validate = "otf"
+
+[[signature]]
+name         = "WOFF2 Web Font"
+extension    = "woff2"
+# 4-byte header: 77 4F 46 32 = "wOF2" — Web Open Font Format version 2.
+# Uses Brotli compression internally.  Distinct from WOFF1 (77 4F 46 46 "wOFF").
+header       = "77 4F 46 32"
+footer       = ""
+min_size     = 48            # Minimum valid WOFF2 header
+max_size     = 52_428_800    # 50 MiB — same as TTF/WOFF
+# Validates sfnt flavor in {0x00010000, 0x4F54544F} and numTables in [1, 50].
+pre_validate    = "woff2"
+# length (u32 BE @8) is the exact total WOFF2 file size.
+size_hint_offset = 8
+size_hint_len    = 4
+size_hint_endian = "be"
+
+[[signature]]
+name         = "Android Dalvik Executable"
+extension    = "dex"
+# 4-byte header: 64 65 78 0A = "dex\n" — Android Dalvik bytecode format.
+# Versions include 035, 036, 037, 038, 039, 040, 041 (ASCII digits + null @4–7).
+header       = "64 65 78 0A"
+footer       = ""
+min_size     = 112           # Minimum DEX header size (112 bytes)
+max_size     = 104_857_600   # 100 MiB — large apps can have 20–30 MiB dex files
+# Validates version string: 3 ASCII digits followed by null at bytes 4–7.
+pre_validate    = "dex"
+# file_size (u32 LE @32) is the exact total DEX file size.
+size_hint_offset = 32
+size_hint_len    = 4
+
+[[signature]]
+name         = "Adobe Photoshop Large Document (PSB)"
+extension    = "psb"
+# 6-byte header: 38 42 50 53 00 02 = "8BPS" + version 2.
+# PSB is the large-document variant of PSD; supports up to 300,000×300,000 px.
+header       = "38 42 50 53 00 02"
+footer       = ""
+min_size     = 26            # Minimum valid header (same as PSD)
+max_size     = 2_147_483_648 # 2 GiB — PSB files can be very large
+# Reuses PSD validator: version in {1, 2}, channels in [1, 56].
+pre_validate = "psd"
+
+# ── Phase 101 — Consumer Format Signatures ────────────────────────────────────
+
+[[signature]]
+name         = "Raw AAC Audio (MPEG-4 ADTS)"
+extension    = "aac"
+# 2-byte header: FF F1 = ADTS sync (0xFFF) + MPEG-4 ID (0) + Layer (00) +
+# protection_absent (1).  ADTS is the raw container for AAC audio used in
+# broadcast, streaming, and consumer devices.
+header       = "FF F1"
+footer       = ""
+min_size     = 128           # At least a few complete frames
+max_size     = 52_428_800    # 50 MiB — typical AAC audio file
+# Validates: layer bits must be 00; sampling_freq_index @byte2 in [0, 12].
+pre_validate = "aac"
+
+[[signature]]
+name         = "Raw AAC Audio (MPEG-2 ADTS)"
+extension    = "aac"
+# 2-byte header: FF F9 = ADTS sync (0xFFF) + MPEG-2 ID (1) + Layer (00) +
+# protection_absent (1).  The MPEG-2 ADTS variant is common in broadcast and
+# legacy devices.
+header       = "FF F9"
+footer       = ""
+min_size     = 128           # At least a few complete frames
+max_size     = 52_428_800    # 50 MiB
+# Validates: layer bits must be 00; sampling_freq_index @byte2 in [0, 12].
+pre_validate = "aac"
+
+[[signature]]
+name         = "DjVu Document"
+extension    = "djvu"
+# 8-byte header: 41 54 26 54 46 4F 52 4D = "AT&TFORM" — RIFF-like container
+# used for the DjVu document format.  Bytes 12–15 (form type) must be "DJVU"
+# (single page), "DJVM" (multi-page), "DJVI" (include file), or "THUM" (thumbnail).
+header       = "41 54 26 54 46 4F 52 4D"
+footer       = ""
+min_size     = 20            # Header + size field + form type
+max_size     = 209_715_200   # 200 MiB — large scanned document collections
+# Validates form type at bytes 12–15.
+pre_validate    = "djvu"
+# IFF FORM chunk_size (u32 BE @8) + 12 = total file size.
+# The 12 accounts for "AT&T" (4) + "FORM" (4) + size_field (4) = 12 bytes before payload.
+size_hint_offset = 8
+size_hint_len    = 4
+size_hint_endian = "be"
+size_hint_add    = 12
+
+[[signature]]
+name         = "OpenEXR High Dynamic Range Image"
+extension    = "exr"
+# 4-byte header: 76 2F 31 01 = OpenEXR magic (ILM's format for visual effects).
+# The magic is globally unique; no further pre-validation required.
+header       = "76 2F 31 01"
+footer       = ""
+min_size     = 256           # Minimum valid EXR header with at least one attribute
+max_size     = 524_288_000   # 500 MiB — 4K HDR images can be large
+# Validates: version byte @4 == 2; reserved flag bits @5 upper nibble and @6–@7 == 0.
+pre_validate = "exr"
+
+[[signature]]
+name         = "GIMP XCF Image"
+extension    = "xcf"
+# 10-byte header: 67 69 6D 70 20 78 63 66 20 76 = "gimp xcf v".  Followed by
+# version string: "file\0" (very old) or 3 decimal digits + "\0" (e.g. "003\0").
+header       = "67 69 6D 70 20 78 63 66 20 76"
+footer       = ""
+min_size     = 20            # Header + version string + minimum attributes
+max_size     = 524_288_000   # 500 MiB — complex multi-layer canvases
+# Validates version string at bytes 10–14.
+pre_validate = "xcf"
+
+[[signature]]
+name         = "JPEG 2000 Image"
+extension    = "jp2"
+# 12-byte signature box: 00 00 00 0C 6A 50 20 20 0D 0A 87 0A.
+# This is the ISO 15444-1 JP2 Signature Box — globally unique.
+header       = "00 00 00 0C 6A 50 20 20 0D 0A 87 0A"
+footer       = ""
+min_size     = 32            # Signature box + at minimum one following box
+max_size     = 524_288_000   # 500 MiB — high-res medical/archival images
+
+[[signature]]
+name         = "PCX Image"
+extension    = "pcx"
+# 1-byte manufacturer field: 0A = ZSoft PCX.  The manufacturer byte 0x0A is
+# common in binary data, so validation is strict: version, encoding, bits-per-
+# plane, and image geometry must all be consistent.
+header       = "0A"
+footer       = ""
+min_size     = 128           # Full 128-byte PCX header
+max_size     = 52_428_800    # 50 MiB — large uncompressed PCX files
+# Strict: version @1 in {0,2,3,4,5}; encoding @2 in {0,1}; bpp @3 in {1,2,4,8};
+# xMax >= xMin; yMax >= yMin; reserved @64 == 0; color planes @65 in {1,3,4}.
+pre_validate = "pcx"
+
+[[signature]]
+name         = "BPG Image"
+extension    = "bpg"
+# 4-byte header: 42 50 47 FB = "BPG\xFB" — Better Portable Graphics format
+# by Fabrice Bellard.  The magic is globally unique; no pre-validation required.
+header       = "42 50 47 FB"
+footer       = ""
+min_size     = 16            # Minimum valid BPG header
+max_size     = 52_428_800    # 50 MiB
+
+# ── Phase 102 — Developer & Science Format Signatures ─────────────────────────
+
+[[signature]]
+name         = "Java Archive (JAR)"
+extension    = "jar"
+# 4-byte header: 50 4B 03 04 = ZIP local file header.  Shares magic with ZIP,
+# EPUB, ODT, etc.  Validated by checking the first local file entry's filename
+# starts with "META-INF" — the mandatory JAR manifest directory.
+header       = "50 4B 03 04"
+footer       = ""
+min_size     = 38            # LFH header (30 B) + "META-INF" filename (8 B)
+max_size     = 524_288_800   # 500 MiB — large application JARs / fat jars
+# Validates: filename_len in [1, 256]; filename starts with "META-INF".
+pre_validate = "jar"
+
+[[signature]]
+name         = "Python Bytecode 3.6 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 33 0D 0D 0A = Python 3.6 ADTS magic word (3379 LE) + CRLF.
+# The magic word is globally unique per Python version.
+header       = "33 0D 0D 0A"
+footer       = ""
+min_size     = 16            # Magic (4) + timestamp (4) + source size (4) + flags (4)
+max_size     = 104_857_600   # 100 MiB — typical compiled module
+# Validates flags field (u32 LE @4) ≤ 3: only bits 0–1 (use-hash / checked-hash) defined.
+pre_validate = "pyc"
+
+[[signature]]
+name         = "Python Bytecode 3.7 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 42 0D 0D 0A = Python 3.7 magic word (3394 LE) + CRLF.
+header       = "42 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+pre_validate = "pyc"
+
+[[signature]]
+name         = "Python Bytecode 3.8 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 55 0D 0D 0A = Python 3.8 magic word (3413 LE) + CRLF.
+header       = "55 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+pre_validate = "pyc"
+
+[[signature]]
+name         = "Python Bytecode 3.9 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 61 0D 0D 0A = Python 3.9 magic word (3425 LE) + CRLF.
+header       = "61 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+pre_validate = "pyc"
+
+[[signature]]
+name         = "Python Bytecode 3.10 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: 6F 0D 0D 0A = Python 3.10 magic word (3439 LE) + CRLF.
+header       = "6F 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+pre_validate = "pyc"
+
+[[signature]]
+name         = "Python Bytecode 3.11 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: A7 0D 0D 0A = Python 3.11 magic word (3495 LE) + CRLF.
+header       = "A7 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+pre_validate = "pyc"
+
+[[signature]]
+name         = "Python Bytecode 3.12 (.pyc)"
+extension    = "pyc"
+# 4-byte magic: CB 0D 0D 0A = Python 3.12 magic word (3531 LE) + CRLF.
+header       = "CB 0D 0D 0A"
+footer       = ""
+min_size     = 16
+max_size     = 104_857_600
+pre_validate = "pyc"
+
+[[signature]]
+name         = "LZH / LHA Archive"
+extension    = "lzh"
+# 5-byte magic: 2D 6C 68 ?? 2D = "-lh?-" at offset 2 within the file.
+# The method field "-lh0-" through "-lh7-", "-lhd-", or "-lhs-" identifies the
+# compression algorithm.  Bytes 0–1 are the level-0 header checksum (any value).
+header        = "2D 6C 68 ?? 2D"
+footer        = ""
+min_size      = 22           # Minimum level-0 header block
+max_size      = 209_715_200  # 200 MiB — typical LZH archive
+header_offset = 2
+# Validates method char at offset 3 ∈ {'0'–'7', 'd', 's'}.
+pre_validate  = "lzh"
+
+[[signature]]
+name         = "HDF5 Scientific Data File"
+extension    = "h5"
+# 8-byte header: 89 48 44 46 0D 0A 1A 0A = HDF5 superblock signature.
+# Used by NumPy, Keras, MATLAB 7.3+, NetCDF4, and many scientific tools.
+header       = "89 48 44 46 0D 0A 1A 0A"
+footer       = ""
+min_size     = 64            # Minimum superblock size
+max_size     = 2_147_483_648 # 2 GiB — large datasets are common
+# Validates superblock version byte @8 ∈ {0, 1, 2, 3}.
+pre_validate = "hdf5"
+
+[[signature]]
+name         = "FITS Astronomy Image"
+extension    = "fits"
+# 9-byte header: 53 49 4D 50 4C 45 20 20 3D = "SIMPLE  =" — the mandatory
+# first keyword of every FITS file.  Used for telescope images, spectra, and
+# data tables in astronomy.
+header       = "53 49 4D 50 4C 45 20 20 3D"
+footer       = ""
+min_size     = 2880          # FITS files are always a multiple of 2880-byte blocks
+max_size     = 2_147_483_648 # 2 GiB — large sky survey images
+# Validates: byte @9 == space (value indicator); byte @29 == 'T' (logical True).
+pre_validate = "fits"
+
+[[signature]]
+name         = "Apache Parquet"
+extension    = "parquet"
+# 4-byte header: 50 41 52 31 = "PAR1" — Apache Parquet column-store format.
+# The same magic also appears as a footer on the last 4 bytes of the file.
+# The 4-byte magic is globally unique; no further pre-validation is required.
+header       = "50 41 52 31"
+footer       = ""
+min_size     = 20            # Magic + row-group metadata + footer + footer magic
+max_size     = 2_147_483_648 # 2 GiB — large analytical datasets
+
+[[signature]]
+name         = "DPX Film Image (Big-Endian)"
+extension    = "dpx"
+# 4-byte header: 53 44 50 58 = "SDPX" — SMPTE DPX big-endian variant.
+# DPX (Digital Picture Exchange) is used for digital intermediate film work.
+# Each file is one uncompressed frame; sequences form the video stream.
+header       = "53 44 50 58"
+footer       = ""
+min_size     = 2048          # DPX generic file header is 2048 bytes
+max_size     = 2_147_483_648 # 2 GiB — 4K 16-bit frames can exceed 100 MiB each
+# Validates version ID string at bytes 8–11: must match V[digit].0 (e.g. "V1.0", "V2.0").
+pre_validate = "dpx"
+
+[[signature]]
+name         = "DPX Film Image (Little-Endian)"
+extension    = "dpx"
+# 4-byte header: 58 50 44 53 = "XPDS" — SMPTE DPX little-endian variant.
+# Byte-swapped form of SDPX; same format, opposite endianness.
+header       = "58 50 44 53"
+footer       = ""
+min_size     = 2048
+max_size     = 2_147_483_648
+pre_validate = "dpx"
+
+# ── Phase 103 — Forensic & System Format Signatures ───────────────────────────
+
+[[signature]]
+name          = "VirtualBox VDI Disk Image"
+extension     = "vdi"
+# 4-byte magic: 7F 10 DA BE — VirtualBox disk image identifier located at
+# byte 64 within the file (after the 64-byte human-readable description field).
+# header_offset = 64 shifts the reported hit start back to the true file origin.
+header        = "7F 10 DA BE"
+footer        = ""
+min_size      = 512          # Minimum valid VDI header (pre-header + main header)
+max_size      = 2_147_483_648 # 2 GiB cap (no size hint yet; Phase 104 will add one)
+header_offset = 64
+# Validates image type u32 LE @8 (relative to magic) ∈ {1=normal, 2=fixed, 3=undo, 4=diff}.
+pre_validate  = "vdi"
+
+[[signature]]
+name         = "AFF Forensic Disk Image"
+extension    = "aff"
+# 7-byte header: 41 46 46 00 00 00 01 = "AFF\0" + version 1 (u32 BE).
+# Advanced Forensics Format used by forensic tools (Sleuth Kit, Autopsy, etc.)
+# for acquiring and storing disk images with embedded metadata.
+# The version field (u32 BE @3) == 1 makes this globally unique.
+header       = "41 46 46 00 00 00 01"
+footer       = ""
+min_size     = 64            # Magic + first segment header
+max_size     = 2_147_483_648 # 2 GiB cap (no embedded size hint)
+
+[[signature]]
+name         = "Windows Shell Link (LNK)"
+extension    = "lnk"
+# 20-byte header: HeaderSize (4C 00 00 00 = 76) + full Shell Link CLSID
+# {00021401-0000-0000-C000-000000000046} in little-endian byte order.
+# LNK files are ubiquitous on Windows drives — every recent file and shortcut
+# produces one.  The 20-byte magic is globally unique.
+header       = "4C 00 00 00 01 14 02 00 00 00 00 00 C0 00 00 00 00 00 00 46"
+footer       = ""
+min_size     = 76            # Minimum valid LNK header (HeaderSize value)
+max_size     = 1_048_576     # 1 MiB — LNK files are always small
+# Validates FileAttributes (u32 LE @24): non-zero; high 16 bits (reserved) zero.
+pre_validate = "lnk"
+
+[[signature]]
+name         = "Windows Prefetch (XP / Server 2003)"
+extension    = "pf"
+# 4-byte header: 11 00 00 00 = version 17 (LE) for Windows XP / Server 2003.
+# Followed by "SCCA" signature at bytes 4–7.
+header       = "11 00 00 00"
+footer       = ""
+min_size     = 500           # Minimum valid Prefetch file
+max_size     = 10_485_760    # 10 MiB
+# Validates "SCCA" signature at bytes 4–7.
+pre_validate = "prefetch"
+
+[[signature]]
+name         = "Windows Prefetch (Vista / 7)"
+extension    = "pf"
+# 4-byte header: 17 00 00 00 = version 23 (LE) for Windows Vista / 7.
+header       = "17 00 00 00"
+footer       = ""
+min_size     = 500
+max_size     = 10_485_760
+# Validates "SCCA" signature at bytes 4–7.
+pre_validate = "prefetch"
+
+[[signature]]
+name         = "Windows Prefetch (8 / 8.1)"
+extension    = "pf"
+# 4-byte header: 1A 00 00 00 = version 26 (LE) for Windows 8 / 8.1.
+header       = "1A 00 00 00"
+footer       = ""
+min_size     = 500
+max_size     = 10_485_760
+# Validates "SCCA" signature at bytes 4–7.
+pre_validate = "prefetch"
+
+[[signature]]
+name         = "Windows Prefetch (10 / 11)"
+extension    = "pf"
+# 4-byte header: 1E 00 00 00 = version 30 (LE) for Windows 10 / 11.
+# Note: compressed Prefetch (MAM wrapper) uses a different magic and is not
+# covered here.
+header       = "1E 00 00 00"
+footer       = ""
+min_size     = 500
+max_size     = 10_485_760
+# Validates "SCCA" signature at bytes 4–7.
+pre_validate = "prefetch"
+
+[[signature]]
+name         = "Windows Event Log (EVT)"
+extension    = "evt"
+# 8-byte header: 30 00 00 00 4C 66 4C 65 = HeaderSize (48) + "LfLe" signature.
+# Legacy Windows NT/XP/2003 event log format (.evt).  The newer EVTX format is
+# already covered by a separate signature.
+header       = "30 00 00 00 4C 66 4C 65"
+footer       = ""
+min_size     = 48            # Minimum valid EVT header record
+max_size     = 104_857_600   # 100 MiB — large server event logs
+# Validates MajorVersion u32 LE @8 == 1 and MinorVersion u32 LE @12 == 1.
+pre_validate = "evt"
+
+[[signature]]
+name         = "PEM Certificate / Key"
+extension    = "pem"
+# 10-byte header: 2D 2D 2D 2D 2D 42 45 47 49 4E = "-----BEGIN".
+# PEM (Privacy-Enhanced Mail) encoding is used for X.509 certificates, RSA/EC
+# private keys, CSRs, and public keys.  Ubiquitous in ~/.ssh/, TLS configs,
+# and PKI stores.
+header       = "2D 2D 2D 2D 2D 42 45 47 49 4E"
+footer       = ""
+min_size     = 64            # Minimum valid PEM block (header + base64 + footer)
+max_size     = 1_048_576     # 1 MiB — certificate bundles can be large
+# Validates: byte @10 == space (separator); byte @11 is ASCII uppercase letter.
+pre_validate = "pem"
+
+[[signature]]
+name         = "Bitcoin Wallet (Berkeley DB)"
+extension    = "wallet"
+# 6-byte header: 62 31 05 00 09 00 — Berkeley DB hash file magic (0x00053162 LE)
+# followed by the first two bytes of version 9.  Bitcoin Core uses BDB 4.8
+# (version 9) for its wallet.dat file.
+header       = "62 31 05 00 09 00"
+footer       = ""
+min_size     = 4096          # BDB page size minimum
+max_size     = 104_857_600   # 100 MiB — wallet files are typically small
+
+
+[[signature]]
+name         = "Parchive PAR2 Recovery Set"
+extension    = "par2"
+# 8-byte header: 50 41 52 32 00 50 4B 54 = "PAR2\0PKT" — PAR2.0 packet magic.
+# PAR2 (Parity Archive version 2) is used to create repair/recovery files for
+# data sets.  Common in Usenet archives alongside RAR volumes.
+header       = "50 41 52 32 00 50 4B 54"
+footer       = ""
+min_size     = 64            # Minimum valid packet header (64 bytes)
+max_size     = 1_073_741_824 # 1 GiB — large recovery sets for multi-part archives
+# Validates packet_length u64 LE @8 ≥ 64 (minimum valid packet size).
+pre_validate = "par2"

@@ -266,6 +266,15 @@ impl CarvingState {
                                     | "pef"
                                     | "sr2"
                                     | "dcr"
+                                    | "mp4"
+                                    | "mov"
+                                    | "m4v"
+                                    | "3gp"
+                                    | "m4a"
+                                    | "heic"
+                                    | "cr3"
+                                    | "mkv"
+                                    | "webm"
                             ) {
                             match hit.signature.extension.as_str() {
                                 "png" => post_validate::validate_png_file(Path::new(&filename)),
@@ -279,6 +288,12 @@ impl CarvingState {
                                 "flac" => post_validate::validate_flac_file(Path::new(&filename)),
                                 "elf" => post_validate::validate_elf_file(Path::new(&filename)),
                                 "regf" => post_validate::validate_regf_file(Path::new(&filename)),
+                                "mp4" | "mov" | "m4v" | "3gp" | "m4a" | "heic" | "cr3" => {
+                                    post_validate::validate_isobmff_file(Path::new(&filename))
+                                }
+                                "mkv" | "webm" => {
+                                    post_validate::validate_ebml_file(Path::new(&filename))
+                                }
                                 _ => post_validate::validate_tiff_file(Path::new(&filename)),
                             }
                         } else {
@@ -342,18 +357,55 @@ impl CarvingState {
         self.start_extraction_batch(work);
     }
 
-    /// Drain the auto-extract queue and start a new extraction batch if none
-    /// is currently running.  Lifts the back-pressure scan pause only when the
-    /// queue is fully empty (no remaining items to extract).
+    /// Start a new extraction batch from the next unprocessed hits in
+    /// `self.hits`, if no batch is currently in flight.
+    ///
+    /// Uses a lazy-pull model: `next_auto_extract_idx` tracks how far through
+    /// `self.hits` we have submitted to extraction.  This keeps the effective
+    /// "queue depth" bounded to one batch (≤500 items) regardless of how many
+    /// hits a single dense scan chunk produces.
+    ///
+    /// Back-pressure (scan pause) is applied after starting the batch when
+    /// more hits are waiting beyond the current batch window.
     pub(super) fn pump_auto_extract(&mut self) {
         if self.extract_progress.is_some() {
-            return; // a batch is already in flight
+            // A batch is already in flight — ensure back-pressure is active so
+            // the scan stays paused.  This catches the case where the index
+            // caught up to hits.len() (so the batch was started without the
+            // previous back-pressure check firing), and new hits have since
+            // arrived while the batch is still running.
+            if !self.backpressure_paused && self.status == CarveStatus::Running {
+                self.pause.store(true, Ordering::Relaxed);
+                self.backpressure_paused = true;
+            }
+            return;
         }
 
-        // Queue empty: lift back-pressure and let the scan continue.
-        // We only resume here — never mid-batch — so scanning is fully
-        // paused while any extraction work remains in the queue.
-        if self.auto_extract_queue.is_empty() {
+        let dir = if self.output_dir.is_empty() {
+            "carved".to_string()
+        } else {
+            self.output_dir.clone()
+        };
+
+        // Collect up to BATCH Unextracted hits starting from next_auto_extract_idx.
+        // Hits that are already extracted (from a resumed session) are skipped.
+        const BATCH: usize = 500;
+        let mut work: Vec<(usize, CarveHit, String)> = Vec::new();
+        while work.len() < BATCH && self.next_auto_extract_idx < self.hits.len() {
+            let i = self.next_auto_extract_idx;
+            self.next_auto_extract_idx += 1;
+            if self.hits[i].status != HitStatus::Unextracted {
+                continue;
+            }
+            let hit = self.hits[i].hit.clone();
+            let path = self.filename_for_hit(&hit, &dir);
+            work.push((i, hit, path));
+        }
+
+        if work.is_empty() {
+            // All known hits have been submitted — lift back-pressure so the
+            // scan can find new hits.  If hits arrive during the next batch
+            // the early-return block above re-applies back-pressure.
             if self.backpressure_paused {
                 self.backpressure_paused = false;
                 if self.status == CarveStatus::Running {
@@ -362,10 +414,18 @@ impl CarvingState {
             }
             return;
         }
-        const BATCH: usize = 500;
-        let n = BATCH.min(self.auto_extract_queue.len());
-        let work: Vec<(usize, CarveHit, String)> = self.auto_extract_queue.drain(..n).collect();
+
         self.start_extraction_batch(work);
+
+        // Always pause the scan while any extraction batch is in flight.
+        // Without this, the scan races ahead between the time back-pressure
+        // is "applied" and the time the scan thread actually checks the flag,
+        // producing more hits per burst than each 500-item batch can consume,
+        // causing the pending queue to grow unboundedly over time.
+        if !self.backpressure_paused && self.status == CarveStatus::Running {
+            self.pause.store(true, Ordering::Relaxed);
+            self.backpressure_paused = true;
+        }
     }
 
     /// Core extraction coordinator: takes a pre-built work list and starts
@@ -597,6 +657,15 @@ impl CarvingState {
                                         | "pef"
                                         | "sr2"
                                         | "dcr"
+                                        | "mp4"
+                                        | "mov"
+                                        | "m4v"
+                                        | "3gp"
+                                        | "m4a"
+                                        | "heic"
+                                        | "cr3"
+                                        | "mkv"
+                                        | "webm"
                                 )
                             {
                                 match hit.signature.extension.as_str() {
@@ -611,6 +680,12 @@ impl CarvingState {
                                     "flac" => post_validate::validate_flac_file(Path::new(&path)),
                                     "elf" => post_validate::validate_elf_file(Path::new(&path)),
                                     "regf" => post_validate::validate_regf_file(Path::new(&path)),
+                                    "mp4" | "mov" | "m4v" | "3gp" | "m4a" | "heic" | "cr3" => {
+                                        post_validate::validate_isobmff_file(Path::new(&path))
+                                    }
+                                    "mkv" | "webm" => {
+                                        post_validate::validate_ebml_file(Path::new(&path))
+                                    }
                                     _ => post_validate::validate_tiff_file(Path::new(&path)),
                                 }
                             } else {

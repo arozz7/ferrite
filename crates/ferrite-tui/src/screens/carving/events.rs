@@ -8,7 +8,7 @@ use ferrite_filesystem::build_metadata_index;
 
 use super::{
     checkpoint, CarveMsg, CarveStatus, CarvingState, ExtractionSummary, HitEntry, HitStatus,
-    AUTO_EXTRACT_HIGH_WATER, DISPLAY_CAP,
+    DISPLAY_CAP,
 };
 
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -49,25 +49,6 @@ impl CarvingState {
                     let batch_len = batch.len();
                     self.total_hits_found += batch_len;
 
-                    // Queue for auto-extract before moving into self.hits.
-                    if self.auto_extract {
-                        let dir = if self.output_dir.is_empty() {
-                            "carved".to_string()
-                        } else {
-                            self.output_dir.clone()
-                        };
-                        for (i, hit) in batch.iter().enumerate() {
-                            let display_idx = self.hits.len() + i;
-                            let idx = if display_idx < DISPLAY_CAP {
-                                display_idx
-                            } else {
-                                usize::MAX
-                            };
-                            let path = self.filename_for_hit(hit, &dir);
-                            self.auto_extract_queue.push_back((idx, hit.clone(), path));
-                        }
-                    }
-
                     // Add to display list up to the cap.
                     for hit in batch {
                         if self.hits.len() < DISPLAY_CAP {
@@ -97,24 +78,13 @@ impl CarvingState {
                         }
                     }
 
-                    // Pump auto-extract pipeline if a batch is not already running.
+                    // Pump the auto-extract pipeline.  Back-pressure (pausing the
+                    // scan while a batch is in flight and more hits are pending) is
+                    // applied inside pump_auto_extract so the queue depth is bounded
+                    // to one batch (≤500 items) rather than the full hit density of
+                    // a single 4 MiB scan chunk.
                     if self.auto_extract {
                         self.pump_auto_extract();
-                    }
-
-                    // Back-pressure: pause the scan whenever an extraction batch
-                    // is in flight, OR the queue has grown past the high-water
-                    // mark.  The primary trigger is the in-flight batch: at high
-                    // hit densities the scan enqueues thousands of items per
-                    // second and a simple size threshold is too slow to react.
-                    if self.auto_extract
-                        && !self.backpressure_paused
-                        && self.status == CarveStatus::Running
-                        && (self.extract_progress.is_some()
-                            || self.auto_extract_queue.len() > AUTO_EXTRACT_HIGH_WATER)
-                    {
-                        self.pause.store(true, Ordering::Relaxed);
-                        self.backpressure_paused = true;
                     }
                 }
                 Ok(CarveMsg::Done) => {
@@ -214,6 +184,24 @@ impl CarvingState {
                     self.extract_progress = None;
                     self.extract_cancel.store(false, Ordering::Relaxed);
                     self.extract_pause.store(false, Ordering::Relaxed);
+                    // Any hit still in Queued state at this point was part of
+                    // the just-finished batch but was never processed (e.g. the
+                    // batch was cancelled before the worker reached it).  Reset
+                    // those hits to Unextracted and rewind next_auto_extract_idx
+                    // to the earliest such hit so pump_auto_extract picks them
+                    // up in the next batch within this session.
+                    {
+                        let mut earliest = self.next_auto_extract_idx;
+                        for (i, entry) in self.hits.iter_mut().enumerate() {
+                            if entry.status == HitStatus::Queued {
+                                entry.status = HitStatus::Unextracted;
+                                if i < earliest {
+                                    earliest = i;
+                                }
+                            }
+                        }
+                        self.next_auto_extract_idx = earliest;
+                    }
                     // Flush extraction status updates to the checkpoint file
                     // so that resume correctly skips already-extracted hits.
                     if let Some(cp) = &self.checkpoint_path {
@@ -272,6 +260,33 @@ impl CarvingState {
                     // Continue draining the auto-extract queue if enabled.
                     if self.auto_extract {
                         self.pump_auto_extract();
+                    }
+                }
+                Ok(CarveMsg::Thermal(event)) => {
+                    use ferrite_core::ThermalEvent;
+                    self.thermal_event = Some(event);
+                    match event {
+                        // Thermal pause: set the scan pause flag (same flag the
+                        // scan thread spins on) and transition to Pausing state.
+                        ThermalEvent::Paused | ThermalEvent::SpeedThrottle => {
+                            if self.status == CarveStatus::Running {
+                                self.pause.store(true, Ordering::Relaxed);
+                                self.status = CarveStatus::Pausing;
+                            }
+                        }
+                        // Thermal resume: clear the pause flag.
+                        ThermalEvent::Resumed | ThermalEvent::SpeedResumed => {
+                            self.pause.store(false, Ordering::Relaxed);
+                            if self.status == CarveStatus::Paused
+                                || self.status == CarveStatus::Pausing
+                            {
+                                self.status = CarveStatus::Running;
+                                if let Some(since) = self.paused_since.take() {
+                                    self.paused_elapsed += since.elapsed();
+                                }
+                            }
+                        }
+                        ThermalEvent::Temperature(_) | ThermalEvent::SpeedBaseline(_) => {}
                     }
                 }
                 Ok(CarveMsg::Error(e)) => {

@@ -1,20 +1,20 @@
 # Ferrite — Comprehensive Feature Roadmap
-**Reviewed as of Phase 64 (99 signatures) — Status updated 2026-03-17**
+**Reviewed as of Phase 104 (140 signatures) — Status updated 2026-03-25**
 *Senior Data Recovery & Digital Forensics Perspective*
 
 ---
 
 ## Executive Summary
 
-Ferrite has completed all planned phases through Phase 64. As of this update:
+Ferrite has completed all planned phases through Phase 104. As of this update:
 
-- **99 signatures** across 10 format categories (up from 43 at initial audit)
+- **140 signatures** across 10 format categories (up from 43 at initial audit)
 - **All workflow features delivered:** SHA-256 hash, thermal guard, write-blocker
   verification, Quick Deleted-File Recovery, custom user signatures, forensic artifact
   scanning, heuristic text block scanner, non-zero-offset scan infrastructure
 - **10 TUI tabs** — Drives / Health / Imaging / Partitions / Files / Carving / Hex /
   Quick Recover / Artifacts / Text Scan
-- **658 unit tests**, clippy-clean, `cargo fmt --check` passing
+- **~1042 unit tests**, clippy-clean, `cargo fmt --check` passing
 
 **All planned phases complete.** Phase 58 (exFAT + APFS MVP) was delivered as:
 - **Phase 58a** — `ExFatParser`: full read-only exFAT `FilesystemParser` (668 tests)
@@ -1041,30 +1041,342 @@ gets it to "recovers actual files."
 
 ---
 
+---
+
+## Phase 100 — PhotoRec Gap Batch 1: High-Impact Quick Wins ✅ Done (2026-03-24)
+
+**107 signatures total after this phase.**
+
+Systematic cross-reference of Ferrite's signature database against the full PhotoRec
+source tree (`ajnelson/photorec-testdisk` on GitHub). Two commits:
+
+### Commit 1 — JPEG Raw/DQT (FF D8 FF DB)
+Root-cause analysis of a live 20 GB image file revealed that 972 large photos (>100 KB)
+start with `FF D8 FF DB` (DQT directly after SOI, no APP header). These were invisible
+to the existing JFIF/Exif-only signatures. Pre-validator checks DQT segment length in
+[67, 518]. **100 → 100 signatures.**
+
+### Commit 2 — 7-signature batch
+| # | Format | Header | Notes |
+|---|--------|--------|-------|
+| 101 | JPEG/COM | `FF D8 FF FE` | JPEG starting with Comment marker |
+| 102 | Java Class | `CA FE BA BE` | Major version [45,80] validator |
+| 103 | Microsoft Cabinet | `4D 53 43 46` | reserved1==0, size>0 validator; 512 MiB cap |
+| 104 | OpenType Font OTF | `4F 54 54 4F` | `OTTO`; numTables [1,50] |
+| 105 | WOFF2 | `77 4F 46 32` | `wOF2`; flavor ∈ {TrueType, CFF}; numTables [1,50] |
+| 106 | Android DEX | `64 65 78 0A` | version = 3 ASCII digits + null |
+| 107 | Adobe PSB | `38 42 50 53 00 02` | Photoshop Large Doc; reuses PSD validator; 2 GiB cap |
+
+**Total: 100 → 107 signatures. 561 tests, all passing.**
+
+---
+
+## Phase 101 — PhotoRec Gap Batch 2: Common Consumer Formats ✅ Done (2026-03-24)
+
+**115 signatures total after this phase.**
+
+Added 8 signatures covering common consumer formats. All are quick-wins —
+new signature + lightweight pre-validator, no scanner infrastructure changes.
+
+| # | Format | Header | Pre-validate | Max size |
+|---|--------|--------|--------------|----------|
+| 108 | Raw AAC MPEG-4 ADTS | `FF F1` | `Aac`: layer==00; sfi≤12 | 50 MiB |
+| 109 | Raw AAC MPEG-2 ADTS | `FF F9` | `Aac` (shared) | 50 MiB |
+| 110 | DjVu Document | `AT&TFORM` (8 B) | `Djvu`: form type ∈ {DJVU,DJVM,DJVI,THUM} | 200 MiB |
+| 111 | OpenEXR HDR Image | `76 2F 31 01` | — (4-byte unique) | 500 MiB |
+| 112 | GIMP XCF Image | `gimp xcf v` (10 B) | `Xcf`: version `file\0` or 3 digits+`\0` | 500 MiB |
+| 113 | JPEG 2000 | 12-byte sig box | — (globally unique) | 500 MiB |
+| 114 | PCX Image | `0A` | `Pcx`: strict 7-field check | 50 MiB |
+| 115 | BPG Image | `42 50 47 FB` | — (4-byte unique) | 50 MiB |
+
+**Total: 107 → 115 signatures. 587 tests in ferrite-carver (+26), all passing.**
+
+---
+
+## Phase 102 — PhotoRec Gap Batch 3: Developer & Science Formats ✅ Done (2026-03-25)
+
+**129 signatures total after this phase.**
+
+Added 14 signatures covering developer workstation and scientific data formats.
+
+| # | Format | Header | Pre-validate | Max size |
+|---|--------|--------|--------------|----------|
+| 116 | Java Archive (JAR) | `PK\x03\x04` | `Jar`: first entry starts with `META-INF` | 500 MiB |
+| 117–123 | Python 3.6–3.12 bytecode | `XX 0D 0D 0A` (per version) | — (4-byte unique per version) | 100 MiB |
+| 124 | LZH/LHA Archive | `-lh?-` @offset 2 | `Lzh`: method ∈ {'0'–'7','d','s'} | 200 MiB |
+| 125 | HDF5 Scientific Data | `\x89HDF\r\n\x1a\n` | `Hdf5`: superblock version ≤ 3 | 2 GiB |
+| 126 | FITS Astronomy Image | `SIMPLE  =` | `Fits`: byte@9=space; byte@29='T' | 2 GiB |
+| 127 | Apache Parquet | `PAR1` | — (4-byte unique) | 2 GiB |
+| 128–129 | DPX Film (BE + LE) | `SDPX` / `XPDS` | — (4-byte unique) | 2 GiB |
+
+**Total: 115 → 129 signatures. 606 tests in ferrite-carver (+19), all passing.**
+
+---
+
+## Phase 103 — Forensic & System Format Signatures (Done)
+
+**129 → 139 signatures. 629 tests in ferrite-carver (+23), all passing.**
+
+| # | Name | Header | Pre-validate | Max size |
+|---|------|--------|--------------|----------|
+| 130 | VirtualBox VDI | `7F 10 DA BE` @offset 64 | `Vdi`: image_type u32 LE @8 ∈ {1–4} | 2 GiB |
+| 131 | AFF Forensic Image | `AFF\0\0\0\1` (7 B) | — (7-byte unique) | 2 GiB |
+| 132 | Windows LNK | 20-byte HeaderSize+CLSID | `Lnk`: FileAttributes non-zero, no reserved bits | 1 MiB |
+| 133 | Prefetch WinXP | `11 00 00 00` | `Prefetch`: "SCCA" @4 | 10 MiB |
+| 134 | Prefetch Vista/7 | `17 00 00 00` | `Prefetch` (shared) | 10 MiB |
+| 135 | Prefetch Win8.1 | `1A 00 00 00` | `Prefetch` (shared) | 10 MiB |
+| 136 | Prefetch Win10/11 | `1E 00 00 00` | `Prefetch` (shared) | 10 MiB |
+| 137 | Windows EVT | `30 00 00 00 4C 66 4C 65` | `Evt`: MajorVersion==1, MinorVersion==1 | 100 MiB |
+| 138 | PEM Certificate/Key | `-----BEGIN` (10 B) | `Pem`: space @10; uppercase @11 | 1 MiB |
+| 139 | Bitcoin Wallet (BDB) | `62 31 05 00 09 00` | — (6-byte magic) | 100 MiB |
+
+**TUI groups:** `vdi`, `lnk`, `pf`, `evt`, `wallet` → System; `aff` → Archives; `pem` → Documents
+
+---
+
+## Phase 104 — Size-Hint Walkers for CAB, DEX, WOFF2, DjVu (Done)
+
+**No new signatures — improves extraction accuracy for existing entries.**
+**637 tests in ferrite-carver (+8), all passing.**
+
+All four use the existing `SizeHint::Linear` via TOML field injection — no new
+Rust enum variants required.
+
+| Format | Size field | Endian | Add | Result |
+|--------|-----------|--------|-----|--------|
+| **CAB** | `cbCabinet` u32 @8 | LE | 0 | Exact file size |
+| **DEX** | `file_size` u32 @32 | LE | 0 | Exact file size |
+| **WOFF2** | `length` u32 @8 | BE | 0 | Exact file size |
+| **DjVu** | IFF `chunk_size` u32 @8 | BE | +12 | Exact file size |
+
+Formats with no embeddable size (Java Class, OTF, OpenEXR) retain their `max_size` cap.
+
+---
+
 ## File Type Coverage After All Phases
 
-After all planned phases (46 + 52 + 59 + 60 + 61 + 62), signature count reaches **~93**:
+After phases 100–104 + backlog cleanup, signature count reaches **140**:
 
 | Category | Formats | Count |
 |---|---|---|
-| Images (raster) | JPEG×2, PNG, GIF, BMP, TIFF LE/BE, WebP, ICO, PSD, DPX, XCF, JP2, PCX | **13** |
-| RAW Photos | ARW, CR2, CR3, CRW, DCR, NEF, RW2, RAF, MRW, SR2, ORF, PEF, HEIC×2, Sigma X3F | **15** |
-| Video | MP4, MOV, M4V, 3GP, MKV, WebM, AVI, WMV, FLV, MPEG-PS, RealMedia, TS, M2TS, WTV | **14** |
-| Audio | MP3, WAV, FLAC, OGG, AAC/M4A, MIDI, AIFF, WavPack, APE, AU, XZ (compressed) | **11** |
-| Archives | ZIP, RAR, 7-Zip, GZip, BZip2, XZ, TAR, CAB (future), PAR2 | **9** |
-| Documents | PDF, RTF, XML, HTML, OLE2, EML, EMLX, EPUB, ODT, InDesign, CorelDRAW, SWF | **12** |
-| Email / PIM | PST/OST, VCF, ICS, MSG | **4** |
-| System / Exec | EXE (PE), ELF, Mach-O | **3** |
-| Forensic | REGF, EVTX, LNK (future), E01, PCAP, LUKS, Windows Dump | **7** |
-| Database / Config | SQLite, KeePass 1.x, KeePass 2.x, Apple plist | **4** |
-| Virtual Disk | VMDK, VHD, VHDX, QCOW2, ISO (Phase 62) | **5** |
-| Fonts | TTF, WOFF | **2** |
-| Medical / Science | DICOM (Phase 62), FITS | **2** |
-| 3D / Design | Blender, CHM, Parchive | **3** |
+| Images (raster) | JPEG×4, PNG, GIF, BMP, TIFF×2, WebP, ICO, PSD, PSB, DjVu, EXR, JP2, PCX, BPG, XCF | **18** |
+| RAW Photos | ARW, CR2, CR3, CRW, DCR, NEF, RW2, RAF, MRW, SR2, ORF, PEF, HEIC×2, X3F | **15** |
+| Video | MP4, MOV, M4V, 3GP, MKV, WebM, AVI, WMV, FLV, MPEG-PS, RM, SWF×3, TS, M2TS, WTV, DPX | **17** |
+| Audio | MP3, WAV, FLAC, OGG, M4A, MIDI, AIFF, WavPack, APE, AU, AAC×2 | **12** |
+| Archives | ZIP, RAR, 7-Zip, GZip, BZip2, XZ, ISO, TAR, CAB, LZH, JAR, AFF, PAR2 | **13** |
+| Documents | PDF, XML, HTML, RTF, VCF, ICS, EML, EPUB, ODT, CDR, TTF, OTF, WOFF, WOFF2, CHM, Blender, InDesign, PHP, Shebang | **19** |
+| Office & Email | ZIP-Office (OOXML), OLE2, PST, MSG | **4** |
+| System / Exec | SQLite, EVTX, EXE, ELF, VMDK, REGF, VHD, VHDX, QCOW2, Mach-O, KDBX, KDB, E01, PCAP×2, DMP, plist, LUKS, DICOM | **18** |
+| Developer | Java Class, Android DEX, Python `.pyc`, HDF5, FITS, Parquet | **6** |
+| Forensic | VDI, AFF, LNK, Windows Prefetch, EVT, PEM | **6** |
+| Fonts | TTF, OTF, WOFF, WOFF2 | **4** |
 
-**Total: ~104 signatures across ~93 format families**
+**Total: ~140 signatures across ~120 format families**
 
-This places Ferrite at roughly **31% of PhotoRec's format family count**, but with
+This places Ferrite at roughly **35% of PhotoRec's format family count**, with
 significantly deeper per-format validation — pre-validators for every signature,
-TIFF/ISOBMFF/OGG/SQLite size-hint walkers, and forensic-grade false-positive
-rejection that PhotoRec does not match.
+TIFF/ISOBMFF/OGG/SQLite/PNG/GIF/PDF size-hint walkers, and forensic-grade
+false-positive rejection that PhotoRec does not match.
+
+---
+
+## Future Phases (106–109)
+
+### Phase 106 — Post-Validator Expansion (MP4 / MKV families)
+
+**Motivation:** `validate_extracted` and the file-based validator dispatch in `extract.rs`
+already cover: JPG, PNG, GIF, PDF, HTML, ZIP/OLE/7z/PST/EPUB (head+tail), and PNG, PDF,
+SQLite, EVTX, RIFF (WAV/AVI/WebP/AIFF), EXE, FLAC, ELF, REGF, TIFF/RAW (file-based).
+The two remaining high-traffic families — ISOBMFF (MP4/MOV/M4V/3GP/M4A/HEIC/CR3) and
+EBML (MKV/WebM) — have size hints but no post-extraction integrity check.
+
+**Changes:**
+- `crates/ferrite-carver/src/post_validate/binary_validators.rs`:
+  - `validate_isobmff_file(path)` — walk 4-byte-length box headers; require a valid `ftyp`
+    box at offset 0 and at least one `moov` or `mdat` box within the first 64 boxes;
+    return `Corrupt` if any box length would overflow the file or `ftyp` is absent.
+  - `validate_ebml_file(path)` — verify EBML element (ID `0x1A45DFA3`) + Segment element
+    (ID `0x18538067`) are present and their VINT sizes are non-zero; return `Corrupt` if
+    the file is truncated before the Segment or has an invalid VINT encoding.
+- `crates/ferrite-tui/src/screens/carving/extract.rs` — add to the file-validator dispatch:
+  - `"mp4" | "mov" | "m4v" | "3gp" | "m4a" | "heic" | "cr3"` → `validate_isobmff_file`
+  - `"mkv" | "webm"` → `validate_ebml_file`
+- `crates/ferrite-carver/src/post_validate/mod.rs` — re-export new validators.
+
+**Tests (in `tests_binary.rs`):**
+- ISOBMFF: minimal valid `ftyp+moov` fixture → `Complete`; missing `ftyp` → `Corrupt`;
+  box length overflow → `Corrupt`; missing `moov`/`mdat` → `Corrupt`
+- EBML: minimal EBML+Segment fixture → `Complete`; truncated before Segment → `Corrupt`;
+  invalid VINT → `Corrupt`
+
+---
+
+### Phase 107 — Size Hint Walkers (AU / MIDI)
+
+**Motivation:** Most formats without size hints already have small `max_size` caps or lack
+a parseable size field (MP3, AAC, LZH, PEM, EVT). Two have deterministic readable sizes:
+- **AU (Sun Audio):** total = `data_offset` (u32 BE @4) + `data_size` (u32 BE @8).
+  Falls back to `max_size` when `data_size == 0xFFFF_FFFF` (streaming/unknown).
+- **MIDI:** `nTracks` (u16 BE @10) tells how many `MTrk` chunks follow; walk each chunk's
+  u32 BE length field to compute the exact archive total.
+
+Note: BMP/AIFF/WAV/AVI/WOFF already use `SizeHint::Linear` via TOML fields.
+APE (complex descriptor sum), LZH (multi-entry), PEM (text), EVT (no size field) are
+deferred — no single linear field to exploit.
+
+**Changes:**
+- `crates/ferrite-carver/src/signature.rs` — add `SizeHint::Au` and `SizeHint::Midi` variants.
+- `crates/ferrite-carver/src/size_hint/au.rs` — `au_hint(device, file_offset) -> Option<u64>`:
+  read 12 bytes from `file_offset`; return `data_offset + data_size` unless `data_size ==
+  0xFFFF_FFFF` (streaming), in which case return `None`.
+- `crates/ferrite-carver/src/size_hint/midi.rs` — `midi_hint(device, file_offset) -> Option<u64>`:
+  read MThd header (14 bytes); extract `nTracks` (u16 BE @10); walk `nTracks` MTrk chunk
+  headers (each 8 bytes: "MTrk" + u32 BE length); return `14 + sum(8 + track_len)`.
+- `crates/ferrite-carver/src/size_hint/mod.rs` — add `Au` and `Midi` arms to `read_size_hint`.
+- `config/signatures.toml` — add `size_hint_kind = "au"` to the AU entry;
+  add `size_hint_kind = "midi"` to the MIDI entry.
+
+**Tests (in `size_hint/tests.rs`):**
+- AU: valid header with known sizes → correct total; streaming (`0xFFFFFFFF`) → `None`
+- MIDI: 1-track fixture with known MTrk length → correct total; 0 tracks → 14; truncated → `None`
+
+---
+
+### Phase 108 — False-Positive Audit (Real Drive Run)
+
+**Motivation:** Run a full carve of a known 20 GB image (`O:\Carved\carving-20gb`) and
+collect false-positive rates per signature. Tighten pre-validators on the worst offenders.
+
+**Approach:**
+- Run Ferrite carver on `O:\Carved\carving-20gb` with all signatures enabled.
+- Manually inspect a random sample of each extension's output (≥ 20 files per sig).
+- For any sig with false-positive rate > 10%, tighten its pre-validator or add
+  `min_hit_gap` / increase `min_size`.
+- Document findings in `aiChangeLog/phase-108.md`.
+
+---
+
+### Phase 109 — Filesystem Recovery Hardening
+
+**Motivation:** The current filesystem parsers (NTFS/FAT32/ext4/exFAT/APFS) assume a
+reasonably intact partition table. Severely damaged drives often have no valid partition
+table at all.
+
+**Changes:**
+- `ferrite-partition/src/lib.rs` — add "signature scan" fallback: when MBR/GPT parsing
+  fails, scan the first 2 GiB of the device for known filesystem boot sector signatures
+  (`EB 58 90 NTFS`, `EB 3C 90 FAT`, ext4 `53 EF` at offset 1080) to auto-detect
+  partition start LBAs.
+- `ferrite-filesystem/src/lib.rs` — expose `detect_filesystem_at(device, lba)` to allow
+  direct filesystem detection at a user-specified offset, bypassing partition table parsing.
+- `ferrite-tui/src/screens/partitions/` — surface "Scan for filesystems" action when
+  partition parsing returns empty results; display detected offsets for manual selection.
+
+---
+
+### Phase 110 — Sparse Image Output
+
+**Motivation:** A 4 TB source drive requires 4 TB of free space for a raw image even if
+most sectors are unwritten zeros. Sparse files let the OS skip allocating disk blocks for
+zero runs, so a 4 TB drive that is 30% full might produce a 1.2 TB image file on disk.
+Most modern filesystems (NTFS, ext4, XFS, BTRFS, APFS) support sparse files natively.
+
+**How it works:**
+- A sparse-enabled file has "holes" — ranges the OS treats as zeros without allocating
+  blocks. On NTFS this requires one `DeviceIoControl(FSCTL_SET_SPARSE)` call after open.
+  On Linux/macOS it happens automatically when you seek past unwritten regions.
+- The imaging engine pre-sets the output file size to `device_size` via `File::set_len()`
+  so the file metadata is correct from the start.
+- During each write, if the buffer is entirely zero, the engine simply seeks past it
+  instead of writing — creating a hole. Non-zero buffers are written normally.
+- The resulting `.img` file mounts/mounts identically to a dense image; tools that don't
+  understand sparse files will expand it to full size on copy, which is expected behaviour.
+
+**Changes:**
+- `ferrite-imaging/src/config.rs` — add `pub sparse_output: bool` to `ImagingConfig`
+  (default `true`; can be disabled for destinations that don't support sparse files,
+  e.g. FAT32 USB sticks).
+- `ferrite-imaging/src/sparse.rs` — new module:
+  - `enable_sparse(file: &File) -> io::Result<()>`: on Windows, calls
+    `DeviceIoControl(FSCTL_SET_SPARSE)` via `windows-sys`; on Linux/macOS, no-op
+    (holes are created automatically by seeking without writing).
+  - `write_or_skip(file: &mut File, pos: u64, buf: &[u8]) -> io::Result<()>`:
+    if `buf` is all zeros, `file.seek(SeekFrom::Start(pos + buf.len() as u64))`
+    and return; otherwise `seek` + `write_all`.
+- `ferrite-imaging/src/engine.rs`:
+  - On session init: call `sparse::enable_sparse(&output)?` if `config.sparse_output`;
+    then `output.set_len(device_size)` to pre-set file size.
+  - Thread through a `write_block(engine, pos, buf)` helper that dispatches to
+    `sparse::write_or_skip` or raw `write_all` based on the config flag.
+- `crates/ferrite-imaging/src/passes/copy.rs` (and trim/sweep/scrape/retry) — replace
+  the inline `seek + write_all` pattern with `engine.write_block(pos, buf)`.
+- `ferrite-tui/src/screens/imaging/` — add "Sparse: ON / OFF" toggle (key `S`) to the
+  imaging config panel; persist in `ImagingState`.
+
+**Tests:**
+- `sparse::write_or_skip` with all-zero buf → no bytes written to a temp file, file
+  position advances by `buf.len()`.
+- `sparse::write_or_skip` with non-zero buf → bytes written normally.
+- Integration: image a `MockBlockDevice` with alternating zero/non-zero blocks with
+  `sparse_output = true`; verify only non-zero sectors are written; verify file reads
+  back correctly (zero holes return zeros).
+
+**Limitation documented in UI:** sparse savings depend on destination filesystem support.
+FAT32 and exFAT do not support sparse files — on those destinations, disable sparse mode
+or expect full allocation. Ferrite will detect FAT32/exFAT by checking the destination
+path's filesystem type and warn the user if `sparse_output = true` is set.
+
+---
+
+### Phase 111 — Pre-flight Destination Space Check
+
+**Motivation:** Users currently discover insufficient disk space only after imaging starts
+and fails mid-way (hours into a long recovery). A pre-flight check prevents this and
+guides users toward corrective options (LBA range imaging, a larger destination, sparse
+mode).
+
+**Design:**
+- Space check runs when the user sets or changes the destination path, and again
+  immediately before the imaging thread starts.
+- Displays available vs. required space with colour-coded feedback.
+- Does **not** block the user from proceeding — professional tools allow overrides
+  (e.g. when the destination is a network share that will grow, or when sparse mode
+  is expected to cover the shortfall).
+
+**Changes:**
+- `ferrite-imaging/src/space_check.rs` — new module:
+  ```rust
+  pub struct SpaceInfo {
+      pub available: u64,   // bytes free at destination
+      pub required: u64,    // device_size (or LBA range size)
+  }
+  impl SpaceInfo {
+      pub fn ratio(&self) -> f64 { self.available as f64 / self.required as f64 }
+      pub fn sufficient(&self) -> bool { self.available >= self.required }
+  }
+  pub fn check(dest_path: &Path, required: u64) -> Option<SpaceInfo>
+  ```
+  Platform implementations:
+  - **Windows:** `GetDiskFreeSpaceExW` via `windows-sys` (already a transitive dep).
+  - **Linux/macOS:** `statvfs` via `libc`.
+  - Returns `None` if the path doesn't exist or the query fails (shown as "unknown").
+- `ferrite-tui/src/screens/imaging/` — `ImagingState` gains `space_info: Option<SpaceInfo>`;
+  updated whenever `output_path` or `device` changes.
+  - Render a "Destination space" row in the imaging config panel:
+    - Green  `✓ 2.1 TB free / 1.8 TB required` — sufficient
+    - Amber  `⚠ 1.7 TB free / 1.8 TB required` — within 10% shortfall
+    - Red    `✗ 500 GB free / 1.8 TB required — insufficient` — clear shortfall
+  - When the user presses `[Start]` with a red space status, show a one-line warning
+    bar: `"Low disk space — imaging may fail. Press Enter to proceed or Esc to cancel."`
+    (dismissible; does not abort automatically).
+  - Footnote line: `"Tip: use LBA range (R) to image only the target partition, or
+    enable sparse output (S) to skip zero sectors."` shown when space is amber or red.
+
+**Tests:**
+- `SpaceInfo::ratio()` and `sufficient()` with known values.
+- Mock `check()` returning known values; verify colour thresholds in render output.
+- Warning modal appears when `available < required`; dismissed with Enter; imaging
+  proceeds.
+
+**Out of scope for this phase:** estimating expected sparse savings (would require
+reading the device to count zero sectors — impractical pre-flight).

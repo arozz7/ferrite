@@ -5,12 +5,14 @@
 //! are variable quality and should be considered supplemental to filesystem-
 //! based recovery (Tabs 4 and 7).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::Instant;
 
 use ferrite_blockdev::BlockDevice;
+use ferrite_core::{ThermalGuard, ThermalGuardConfig};
+use ferrite_smart;
 use ferrite_textcarver::{TextBlock, TextKind, TextScanConfig, TextScanMsg, TextScanProgress};
 
 mod input;
@@ -56,6 +58,13 @@ pub struct TextScanState {
     pub(crate) blocks_page_size: usize,
     /// Error message when status is `Error`.
     pub(crate) error_msg: String,
+    /// Monotonic counter of bytes read by the scan thread; shared with the
+    /// thermal guard for speed-based inference.
+    pub(crate) bytes_read: Arc<AtomicU64>,
+    /// Pause flag shared with the thermal guard and the scan thread.
+    pub(crate) pause: Arc<AtomicBool>,
+    /// Active thermal guard (held for the duration of the scan).
+    pub(crate) thermal_guard: Option<ThermalGuard>,
 }
 
 impl Default for TextScanState {
@@ -84,6 +93,9 @@ impl TextScanState {
             export_status: None,
             blocks_page_size: 20,
             error_msg: String::new(),
+            bytes_read: Arc::new(AtomicU64::new(0)),
+            pause: Arc::new(AtomicBool::new(false)),
+            thermal_guard: None,
         }
     }
 
@@ -95,6 +107,9 @@ impl TextScanState {
         self.status = ScanStatus::Idle;
         self.progress = None;
         self.cancel.store(false, Ordering::Relaxed);
+        self.pause.store(false, Ordering::Relaxed);
+        self.bytes_read.store(0, Ordering::Relaxed);
+        self.thermal_guard = None;
         self.rx = None;
         self.export_status = None;
         self.error_msg.clear();
@@ -190,6 +205,9 @@ impl TextScanState {
         self.export_status = None;
         self.error_msg.clear();
         self.cancel.store(false, Ordering::Relaxed);
+        self.pause.store(false, Ordering::Relaxed);
+        self.bytes_read.store(0, Ordering::Relaxed);
+        self.thermal_guard = None;
 
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
@@ -197,10 +215,26 @@ impl TextScanState {
         self.scan_start = Some(Instant::now());
 
         let cancel = Arc::clone(&self.cancel);
+        let bytes_read = Arc::clone(&self.bytes_read);
         let config = TextScanConfig::default();
 
+        // Thermal guard: SMART + speed-based inference via bytes_read counter.
+        let smart_path = device.device_info().path.clone();
+        let guard = ThermalGuard::start(
+            move || {
+                ferrite_smart::query(&smart_path, None)
+                    .ok()
+                    .and_then(|d| d.temperature_celsius)
+            },
+            Some(Arc::clone(&bytes_read)),
+            ThermalGuardConfig::default(),
+            |_event| {},
+        );
+        let thermal_pause = guard.pause_flag();
+        self.thermal_guard = Some(guard);
+
         std::thread::spawn(move || {
-            ferrite_textcarver::run_scan(device, config, tx, cancel);
+            ferrite_textcarver::run_scan(device, config, tx, cancel, thermal_pause, bytes_read);
         });
     }
 

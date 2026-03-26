@@ -74,27 +74,30 @@ fn jpeg_complete_with_rst_markers() {
 }
 
 #[test]
-fn jpeg_corrupt_with_invalid_marker_in_scan_data() {
-    // Invalid: FF E0 in scan data (APP0 marker — should not appear in
-    // entropy data; indicates overwritten sectors from another file).
+fn jpeg_complete_with_app_marker_bytes_in_tail() {
+    // FF E0 (APP0) in the tail is now accepted — progressive JPEGs and files
+    // with multiple scans can legitimately produce FF Exx / FF Cxx bytes in the
+    // last 4 KiB before EOI (SOS headers, DHT markers, etc.).  The entropy scan
+    // was removed because it caused false-positive Corrupt verdicts on real
+    // camera photos.
     let mut tail = vec![0x12, 0x34, 0xFF, 0xE0, 0x56, 0x78];
     tail.extend_from_slice(&[0xFF, 0xD9]);
     assert_eq!(
         validate_extracted("jpg", &[], &tail, false, tail.len() as u64),
-        CarveQuality::Corrupt
+        CarveQuality::Complete
     );
 }
 
 #[test]
-fn jpeg_corrupt_with_ff_c0_in_scan_data() {
-    // Invalid: FF C0 (SOF0 marker) in scan data.
+fn jpeg_complete_with_sof_marker_in_tail() {
+    // FF C0 (SOF0) in the tail is accepted for the same reason as above.
     let mut tail = vec![0x00; 100];
     tail[50] = 0xFF;
     tail[51] = 0xC0;
     tail.extend_from_slice(&[0xFF, 0xD9]);
     assert_eq!(
         validate_extracted("jpg", &[], &tail, false, tail.len() as u64),
-        CarveQuality::Corrupt
+        CarveQuality::Complete
     );
 }
 
@@ -113,17 +116,21 @@ fn jpeg_complete_with_ff_fill_bytes() {
 
 #[test]
 fn jpeg_corrupt_when_second_soi_after_app1() {
-    // Simulates ferrite_jpg_7875403264.jpg pattern:
-    // bytes 0-3: SOI + APP1 marker
-    // bytes 4-5: APP1 length = 10 (ends at offset 2 + 10 = 12)
-    // bytes 12+: second SOI — outside APP1, signals fragmentation
+    // APP1 with length = 6 (2-byte length field + 4 bytes payload).
+    // Segment layout:
+    //   bytes 0-1:   SOI (FF D8)
+    //   bytes 2-3:   APP1 marker (FF E1)
+    //   bytes 4-5:   length = 6
+    //   bytes 6-9:   payload "Exif"
+    // Segment ends at byte 9 (inclusive); the next byte is 10.
+    // Second SOI at byte 10 — genuinely after the APP1 → fragmentation.
     let mut head = vec![
-        0xFF, 0xD8, // SOI
-        0xFF, 0xE1, // APP1 marker
-        0x00, 0x0A, // APP1 length = 10
-        0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" (8 bytes body)
-        0xFF, 0xD8, // second SOI — after APP1 ends at byte 12
-        0x00, 0x01, // padding
+        0xFF, 0xD8, // SOI (0,1)
+        0xFF, 0xE1, // APP1 marker (2,3)
+        0x00, 0x06, // APP1 length = 6 (4,5)
+        0x45, 0x78, 0x69, 0x66, // "Exif" payload (6-9)
+        0xFF, 0xD8, // second SOI at offset 10 — after APP1 ends (10,11)
+        0x00, 0x01, // padding (12,13)
     ];
     let tail = &[0xFF, 0xD9];
     head.extend_from_slice(tail);

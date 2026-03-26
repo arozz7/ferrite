@@ -21,6 +21,9 @@ pub enum PreValidate {
     JpegJfif,
     /// JPEG/Exif: `Exif` identifier at offset 6.
     JpegExif,
+    /// JPEG starting with DQT (Define Quantization Table) directly after SOI —
+    /// no APP0/APP1 header.  DQT segment length (u16 BE @4) must be in [67, 518].
+    JpegDqt,
     /// PNG: first chunk length == 13 and type == `IHDR`.
     Png,
     /// PDF: version string `-1.x` or `-2.x` at offset 4.
@@ -243,6 +246,83 @@ pub enum PreValidate {
     /// Extension is fixed as `.sh`; content-based classification is not performed
     /// at scan time.
     Shebang,
+    /// JPEG starting with a COM (Comment) marker directly after SOI.
+    /// COM segment length (u16 BE @4) must be ≥ 2.
+    JpegCom,
+    /// Java bytecode class file: major version (u16 BE @6) in [45, 80]
+    /// (Java 1 through Java 36, future-proofed).
+    JavaClass,
+    /// Microsoft Cabinet: reserved1 field (u32 LE @4) must be 0;
+    /// cabinet file size (u32 LE @8) must be > 0.
+    Cab,
+    /// OpenType font with PostScript outlines (`OTTO` magic); numTables
+    /// (u16 BE @4) in [1, 50].
+    Otf,
+    /// WOFF2 web font: flavor in {0x00010000, 0x4F54544F}; numTables
+    /// (u16 BE @12) in [1, 50].
+    Woff2,
+    /// Android Dalvik Executable: version string at bytes 4–7 must be three
+    /// ASCII digits followed by a null byte.
+    Dex,
+    /// Raw AAC/ADTS audio: ADTS layer bits (bits 1–2 of byte 1) must be 0x00;
+    /// sampling_freq_index ((byte2 >> 2) & 0x0F) must be in [0, 12].
+    Aac,
+    /// DjVu document: `AT&TFORM` container; form type at bytes 12–15 must be
+    /// one of `DJVU`, `DJVM`, `DJVI`, or `THUM`.
+    Djvu,
+    /// GIMP XCF image: version string at bytes 10–14 must be `file\0` (very
+    /// old) or three ASCII decimal digits followed by `\0`.
+    Xcf,
+    /// ZSoft PCX image: version @1 in {0,2,3,4,5}; encoding @2 in {0,1};
+    /// bitsPerPlane @3 in {1,2,4,8}; xMax >= xMin; yMax >= yMin;
+    /// reserved @64 == 0; colorPlanes @65 in {1,3,4}.
+    Pcx,
+    /// Java Archive (JAR): ZIP container whose first local file entry filename
+    /// (bytes 30 to 30+fname_len) starts with `META-INF`.
+    Jar,
+    /// LZH/LHA archive: method character at offset 3 of the `-lh?-` magic
+    /// must be one of `0`–`7`, `d`, or `s`.
+    Lzh,
+    /// HDF5 scientific data file: superblock version byte @8 must be ≤ 3
+    /// (versions 0–3 are the only defined superblock formats).
+    Hdf5,
+    /// FITS astronomy image: value indicator byte @9 must be space; logical
+    /// value byte @29 must be `T` (FITS boolean True).
+    Fits,
+    /// VirtualBox VDI disk image: image type u32 LE at bytes 8–11 (relative to
+    /// the magic at file offset 64) must be 1–4 (normal/fixed/undo/diff).
+    Vdi,
+    /// Windows Shell Link (LNK): FileAttributes u32 LE @24 must be non-zero
+    /// and have no reserved high bits set (bits 16–31 must be 0).
+    Lnk,
+    /// Windows Prefetch file: bytes 4–7 must equal `SCCA` (the Prefetch
+    /// signature that follows the version field in all known versions).
+    Prefetch,
+    /// Windows legacy Event Log (EVT): MajorVersion u32 LE @8 must be 1 and
+    /// MinorVersion u32 LE @12 must be 1.
+    Evt,
+    /// PEM-encoded certificate / key: byte @10 must be a space (separator
+    /// after `-----BEGIN`) and byte @11 must be an ASCII uppercase letter
+    /// (start of the type label, e.g. `C` for CERTIFICATE).
+    Pem,
+    /// Parchive PAR2 recovery set: `packet_length` u64 LE @8 must be ≥ 20
+    /// (minimum valid packet payload).
+    Par2,
+    /// WAV audio (RIFF container): chunk size (u32 LE @4) must be ≥ 36
+    /// (minimum valid WAV: `WAVE` + `fmt ` chunk + `data` chunk header).
+    Wav,
+    /// AVI video (RIFF container): chunk size (u32 LE @4) must be ≥ 12
+    /// (minimum: `AVI ` subtype + at least one LIST chunk header).
+    Avi,
+    /// Python bytecode (.pyc): flags field (u32 LE @4) must be 0–3
+    /// (only bits 0–1 are defined; bit 0 = use-hash, bit 1 = checked-hash).
+    Pyc,
+    /// DPX film image (SDPX big-endian or XPDS little-endian): version ID
+    /// string at bytes 8–11 must match `V[12].0` (DPX V1.0 or V2.0).
+    Dpx,
+    /// OpenEXR HDR image: version byte @4 must be 2; reserved flag bits
+    /// @5 (upper nibble) and @6–@7 must all be zero.
+    Exr,
 }
 
 impl PreValidate {
@@ -252,6 +332,7 @@ impl PreValidate {
             Self::Zip => "zip",
             Self::JpegJfif => "jpeg_jfif",
             Self::JpegExif => "jpeg_exif",
+            Self::JpegDqt => "jpeg_dqt",
             Self::Png => "png",
             Self::Pdf => "pdf",
             Self::Gif => "gif",
@@ -342,6 +423,31 @@ impl PreValidate {
             Self::Tar => "tar",
             Self::Php => "php",
             Self::Shebang => "shebang",
+            Self::JpegCom => "jpeg_com",
+            Self::JavaClass => "java_class",
+            Self::Cab => "cab",
+            Self::Otf => "otf",
+            Self::Woff2 => "woff2",
+            Self::Dex => "dex",
+            Self::Aac => "aac",
+            Self::Djvu => "djvu",
+            Self::Xcf => "xcf",
+            Self::Pcx => "pcx",
+            Self::Jar => "jar",
+            Self::Lzh => "lzh",
+            Self::Hdf5 => "hdf5",
+            Self::Fits => "fits",
+            Self::Vdi => "vdi",
+            Self::Lnk => "lnk",
+            Self::Prefetch => "prefetch",
+            Self::Evt => "evt",
+            Self::Pem => "pem",
+            Self::Par2 => "par2",
+            Self::Wav => "wav",
+            Self::Avi => "avi",
+            Self::Pyc => "pyc",
+            Self::Dpx => "dpx",
+            Self::Exr => "exr",
         }
     }
 
@@ -351,6 +457,7 @@ impl PreValidate {
             "zip" => Some(Self::Zip),
             "jpeg_jfif" => Some(Self::JpegJfif),
             "jpeg_exif" => Some(Self::JpegExif),
+            "jpeg_dqt" => Some(Self::JpegDqt),
             "png" => Some(Self::Png),
             "pdf" => Some(Self::Pdf),
             "gif" => Some(Self::Gif),
@@ -441,6 +548,31 @@ impl PreValidate {
             "tar" => Some(Self::Tar),
             "php" => Some(Self::Php),
             "shebang" => Some(Self::Shebang),
+            "jpeg_com" => Some(Self::JpegCom),
+            "java_class" => Some(Self::JavaClass),
+            "cab" => Some(Self::Cab),
+            "otf" => Some(Self::Otf),
+            "woff2" => Some(Self::Woff2),
+            "dex" => Some(Self::Dex),
+            "aac" => Some(Self::Aac),
+            "djvu" => Some(Self::Djvu),
+            "xcf" => Some(Self::Xcf),
+            "pcx" => Some(Self::Pcx),
+            "jar" => Some(Self::Jar),
+            "lzh" => Some(Self::Lzh),
+            "hdf5" => Some(Self::Hdf5),
+            "fits" => Some(Self::Fits),
+            "vdi" => Some(Self::Vdi),
+            "lnk" => Some(Self::Lnk),
+            "prefetch" => Some(Self::Prefetch),
+            "evt" => Some(Self::Evt),
+            "pem" => Some(Self::Pem),
+            "par2" => Some(Self::Par2),
+            "wav" => Some(Self::Wav),
+            "avi" => Some(Self::Avi),
+            "pyc" => Some(Self::Pyc),
+            "dpx" => Some(Self::Dpx),
+            "exr" => Some(Self::Exr),
             _ => None,
         }
     }
@@ -458,6 +590,7 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Zip => validate_zip(data, pos),
         PreValidate::JpegJfif => validate_jpeg_jfif(data, pos),
         PreValidate::JpegExif => validate_jpeg_exif(data, pos),
+        PreValidate::JpegDqt => validate_jpeg_dqt(data, pos),
         PreValidate::Png => validate_png(data, pos),
         PreValidate::Pdf => validate_pdf(data, pos),
         PreValidate::Gif => validate_gif(data, pos),
@@ -548,6 +681,31 @@ pub(crate) fn is_valid(kind: &PreValidate, data: &[u8], pos: usize) -> bool {
         PreValidate::Tar => validate_tar(data, pos),
         PreValidate::Php => validate_php(data, pos),
         PreValidate::Shebang => validate_shebang(data, pos),
+        PreValidate::JpegCom => validate_jpeg_com(data, pos),
+        PreValidate::JavaClass => validate_java_class(data, pos),
+        PreValidate::Cab => validate_cab(data, pos),
+        PreValidate::Otf => validate_otf(data, pos),
+        PreValidate::Woff2 => validate_woff2(data, pos),
+        PreValidate::Dex => validate_dex(data, pos),
+        PreValidate::Aac => validate_aac(data, pos),
+        PreValidate::Djvu => validate_djvu(data, pos),
+        PreValidate::Xcf => validate_xcf(data, pos),
+        PreValidate::Pcx => validate_pcx(data, pos),
+        PreValidate::Jar => validate_jar(data, pos),
+        PreValidate::Lzh => validate_lzh(data, pos),
+        PreValidate::Hdf5 => validate_hdf5(data, pos),
+        PreValidate::Fits => validate_fits(data, pos),
+        PreValidate::Vdi => validate_vdi(data, pos),
+        PreValidate::Lnk => validate_lnk(data, pos),
+        PreValidate::Prefetch => validate_prefetch(data, pos),
+        PreValidate::Evt => validate_evt(data, pos),
+        PreValidate::Pem => validate_pem(data, pos),
+        PreValidate::Par2 => validate_par2(data, pos),
+        PreValidate::Wav => validate_wav(data, pos),
+        PreValidate::Avi => validate_avi(data, pos),
+        PreValidate::Pyc => validate_pyc(data, pos),
+        PreValidate::Dpx => validate_dpx(data, pos),
+        PreValidate::Exr => validate_exr(data, pos),
     }
 }
 
@@ -665,6 +823,398 @@ fn validate_jpeg_exif(data: &[u8], pos: usize) -> bool {
         return false;
     }
     !jpeg_is_embedded(data, pos)
+}
+
+fn validate_jpeg_dqt(data: &[u8], pos: usize) -> bool {
+    // FF D8 FF DB [len_hi] [len_lo] — JPEG starting directly with a DQT
+    // (Define Quantization Table) segment, no APP0/APP1 header.
+    // DQT segment length (u16 BE at pos+4..+6) includes its own 2 length
+    // bytes: min 67 (one 8-bit table), max 518 (four 16-bit tables).
+    if need(data, pos, 6) {
+        return true;
+    }
+    let dqt_len = u16::from_be_bytes([data[pos + 4], data[pos + 5]]) as usize;
+    if !(67..=518).contains(&dqt_len) {
+        return false;
+    }
+    !jpeg_is_embedded(data, pos)
+}
+
+fn validate_jpeg_com(data: &[u8], pos: usize) -> bool {
+    // FF D8 FF FE [len_hi] [len_lo] — JPEG starting with a COM (Comment) segment.
+    // COM segment length (u16 BE at pos+4..+6) includes the 2 length bytes:
+    // minimum valid length is 2 (empty comment).
+    if need(data, pos, 6) {
+        return true;
+    }
+    let com_len = u16::from_be_bytes([data[pos + 4], data[pos + 5]]) as usize;
+    if com_len < 2 {
+        return false;
+    }
+    !jpeg_is_embedded(data, pos)
+}
+
+fn validate_java_class(data: &[u8], pos: usize) -> bool {
+    // CA FE BA BE [minor_hi] [minor_lo] [major_hi] [major_lo]
+    // Major version: Java 1 = 45, Java 24 = 68; allow up to 80 for future versions.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let major = u16::from_be_bytes([data[pos + 6], data[pos + 7]]);
+    (45..=80).contains(&major)
+}
+
+fn validate_cab(data: &[u8], pos: usize) -> bool {
+    // MSCF + reserved1 (u32 LE @4, must be 0) + cabinet_size (u32 LE @8, must be > 0)
+    if need(data, pos, 12) {
+        return true;
+    }
+    let reserved1 =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if reserved1 != 0 {
+        return false;
+    }
+    let cab_size =
+        u32::from_le_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    cab_size > 0
+}
+
+fn validate_otf(data: &[u8], pos: usize) -> bool {
+    // OTTO + numTables (u16 BE @4) in [1, 50]
+    if need(data, pos, 6) {
+        return true;
+    }
+    let num_tables = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+    (1..=50).contains(&num_tables)
+}
+
+fn validate_woff2(data: &[u8], pos: usize) -> bool {
+    // wOF2 + flavor (u32 BE @4) in {0x00010000, 0x4F54544F} + numTables (u16 BE @12) in [1, 50]
+    if need(data, pos, 14) {
+        return true;
+    }
+    let flavor = u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    if flavor != 0x0001_0000 && flavor != 0x4F54_544F {
+        return false;
+    }
+    let num_tables = u16::from_be_bytes([data[pos + 12], data[pos + 13]]);
+    (1..=50).contains(&num_tables)
+}
+
+fn validate_dex(data: &[u8], pos: usize) -> bool {
+    // dex\n + version (3 ASCII digits) + null
+    // e.g. "035\0", "036\0", "037\0", "038\0", "039\0", "040\0"
+    if need(data, pos, 8) {
+        return true;
+    }
+    let v = &data[pos + 4..pos + 8];
+    v[0].is_ascii_digit() && v[1].is_ascii_digit() && v[2].is_ascii_digit() && v[3] == 0x00
+}
+
+fn validate_vdi(data: &[u8], pos: usize) -> bool {
+    // pos points to the VDI magic `7F 10 DA BE` at file offset 64 (header_offset=64).
+    // The VDI pre-header is: 64-byte description + 4-byte magic + 4-byte version.
+    // The main header starts immediately after (file offset 72 = pos+8).
+    // uImageType is the first field of the main header (u32 LE at pos+8).
+    if need(data, pos, 12) {
+        return true;
+    }
+    let image_type =
+        u32::from_le_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    // 1=normal/dynamic, 2=fixed, 3=undo, 4=diff — all are valid VDI images
+    matches!(image_type, 1..=4)
+}
+
+fn validate_lnk(data: &[u8], pos: usize) -> bool {
+    // pos points to the 20-byte LNK magic (HeaderSize + full Shell Link CLSID).
+    // FileAttributes (u32 LE) is at bytes 24–27.
+    if need(data, pos, 28) {
+        return true;
+    }
+    let attrs = u32::from_le_bytes([
+        data[pos + 24],
+        data[pos + 25],
+        data[pos + 26],
+        data[pos + 27],
+    ]);
+    // FileAttributes must be non-zero (every file has at least one attribute set)
+    // and must not use reserved high bits (bits 16–31).
+    attrs != 0 && attrs & 0xFFFF_0000 == 0
+}
+
+fn validate_prefetch(data: &[u8], pos: usize) -> bool {
+    // Windows Prefetch header: Version (u32 LE @0) + Signature "SCCA" @4–7.
+    // pos already points to the version field; we just verify the SCCA signature.
+    if need(data, pos, 8) {
+        return true;
+    }
+    &data[pos + 4..pos + 8] == b"SCCA"
+}
+
+fn validate_evt(data: &[u8], pos: usize) -> bool {
+    // Legacy Windows Event Log (EVT) header:
+    //   @0–3:  HeaderSize = 48  (already matched by magic)
+    //   @4–7:  Signature "LfLe" (already matched by magic)
+    //   @8–11: MajorVersion (u32 LE) — must be 1
+    //   @12–15: MinorVersion (u32 LE) — must be 1
+    if need(data, pos, 16) {
+        return true;
+    }
+    let major = u32::from_le_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
+    let minor = u32::from_le_bytes([
+        data[pos + 12],
+        data[pos + 13],
+        data[pos + 14],
+        data[pos + 15],
+    ]);
+    major == 1 && minor == 1
+}
+
+fn validate_pem(data: &[u8], pos: usize) -> bool {
+    // PEM format: "-----BEGIN TYPE-----\n..."
+    // After the 10-byte magic "-----BEGIN":
+    //   @10: must be a space (separator before the type label)
+    //   @11: must be an ASCII uppercase letter (start of label, e.g. 'C' for CERTIFICATE)
+    if need(data, pos, 12) {
+        return true;
+    }
+    data[pos + 10] == b' ' && data[pos + 11].is_ascii_uppercase()
+}
+
+fn validate_par2(data: &[u8], pos: usize) -> bool {
+    // PAR2 packet structure (offsets relative to pos):
+    //   0–7   magic   "PAR2\0PKT" (8 bytes, already matched by header)
+    //   8–15  packet_length (u64 LE) — total length of this packet including header
+    // Minimum valid packet: 8-byte magic + 8-byte length + at least one byte = 17 B,
+    // but the spec states header alone is 64 bytes, so require length ≥ 64.
+    if need(data, pos, 16) {
+        return true;
+    }
+    let pkt_len = u64::from_le_bytes([
+        data[pos + 8],
+        data[pos + 9],
+        data[pos + 10],
+        data[pos + 11],
+        data[pos + 12],
+        data[pos + 13],
+        data[pos + 14],
+        data[pos + 15],
+    ]);
+    pkt_len >= 64
+}
+
+fn validate_wav(data: &[u8], pos: usize) -> bool {
+    // RIFF-WAV layout (offsets relative to pos):
+    //   0–3   "RIFF" (already matched)
+    //   4–7   chunk size (u32 LE) = file size - 8
+    //   8–11  "WAVE" (already matched by 12-byte header pattern)
+    // Minimum valid WAV: RIFF header + fmt chunk (24 bytes) + data chunk header (8 bytes)
+    //   → chunk_size ≥ 36.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let chunk_size =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    chunk_size >= 36
+}
+
+fn validate_avi(data: &[u8], pos: usize) -> bool {
+    // RIFF-AVI layout (offsets relative to pos):
+    //   0–3   "RIFF" (already matched)
+    //   4–7   chunk size (u32 LE) = file size - 8
+    //   8–11  "AVI " (already matched by 12-byte header pattern)
+    // Minimum valid AVI: RIFF header + at least one LIST chunk header (12 bytes)
+    //   → chunk_size ≥ 12.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let chunk_size =
+        u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    chunk_size >= 12
+}
+
+fn validate_pyc(data: &[u8], pos: usize) -> bool {
+    // Python bytecode layout (offsets relative to pos):
+    //   0–3   version magic (already matched, e.g. 0x330D0D0A for 3.6)
+    //   4–7   flags (u32 LE): only bits 0–1 are defined (use-hash and checked-hash);
+    //          all other bits must be zero.
+    if need(data, pos, 8) {
+        return true;
+    }
+    let flags = u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+    flags <= 3
+}
+
+fn validate_dpx(data: &[u8], pos: usize) -> bool {
+    // DPX layout (SMPTE 268M, offsets relative to pos):
+    //   0–3   magic "SDPX" or "XPDS" (already matched)
+    //   4–7   image_offset (u32) — not validated here
+    //   8–15  version ID string (8-byte null-padded ASCII): "V1.0\0…" or "V2.0\0…"
+    // Only DPX versions 1.0 and 2.0 are in common use.
+    if need(data, pos, 12) {
+        return true;
+    }
+    let v = &data[pos + 8..pos + 12];
+    v[0] == b'V' && v[1].is_ascii_digit() && v[2] == b'.' && v[3] == b'0'
+}
+
+fn validate_exr(data: &[u8], pos: usize) -> bool {
+    // OpenEXR layout (offsets relative to pos):
+    //   0–3   magic 0x762F3101 (already matched)
+    //   4–7   version (u32 LE): bits 0–7 = version number (must be 2);
+    //          bits 8–11 = flags (tile/longnames/multipart/deepdata);
+    //          bits 12–31 = reserved (must be 0).
+    // → byte @4 == 2, upper nibble of byte @5 == 0, bytes @6 and @7 == 0.
+    if need(data, pos, 8) {
+        return true;
+    }
+    data[pos + 4] == 2 && (data[pos + 5] & 0xF0) == 0 && data[pos + 6] == 0 && data[pos + 7] == 0
+}
+
+fn validate_jar(data: &[u8], pos: usize) -> bool {
+    // ZIP LFH layout (offsets relative to pos):
+    //   26–27  filename length (u16 LE)
+    //   30+    filename bytes
+    // JAR files must have their first local file entry filename start with "META-INF".
+    if need(data, pos, 30) {
+        return true;
+    }
+    let fname_len = u16::from_le_bytes([data[pos + 26], data[pos + 27]]) as usize;
+    if fname_len == 0 || fname_len > 256 {
+        return false;
+    }
+    if need(data, pos, 30 + fname_len) {
+        return true;
+    }
+    data[pos + 30..pos + 30 + fname_len].starts_with(b"META-INF")
+}
+
+fn validate_lzh(data: &[u8], pos: usize) -> bool {
+    // pos points to the "-lh?-" magic (header_offset = 2, so actual file starts
+    // at pos - 2 in the byte stream).  The method character at pos+3 must be a
+    // recognised LZH compression method.
+    if need(data, pos, 5) {
+        return true;
+    }
+    let method = data[pos + 3];
+    matches!(method, b'0'..=b'7' | b'd' | b's')
+}
+
+fn validate_hdf5(data: &[u8], pos: usize) -> bool {
+    // HDF5 superblock version byte immediately follows the 8-byte signature.
+    // Only versions 0–3 are defined; anything higher is invalid or future.
+    if need(data, pos, 9) {
+        return true;
+    }
+    data[pos + 8] <= 3
+}
+
+fn validate_fits(data: &[u8], pos: usize) -> bool {
+    // FITS keyword card: "SIMPLE  =" (bytes 0–8) + value indicator (byte 9 = space)
+    // + value field right-justified in bytes 10–29, where 'T' (logical True)
+    // must appear at the last value position (byte 29).
+    if need(data, pos, 30) {
+        return true;
+    }
+    // Byte @9 must be a space (FITS value indicator separator)
+    if data[pos + 9] != b' ' {
+        return false;
+    }
+    // The logical value 'T' must be at column 30 (byte index 29)
+    data[pos + 29] == b'T'
+}
+
+fn validate_aac(data: &[u8], pos: usize) -> bool {
+    // ADTS frame header layout (bytes relative to pos):
+    //   0:   0xFF (sync high — already matched by magic)
+    //   1:   sync[3:0] + ID + layer[1:0] + protection
+    //        layer bits (1–2) MUST be 00 for AAC ADTS (not MPEG audio layers)
+    //   2:   profile[1:0] + sampling_freq_idx[3:0] + private + channel_cfg[2]
+    //        sampling_freq_idx in [0, 12]; 13–15 are reserved/invalid
+    if need(data, pos, 3) {
+        return true;
+    }
+    let b1 = data[pos + 1];
+    let b2 = data[pos + 2];
+    // Layer must be 00 (bits 1–2 of byte 1)
+    if b1 & 0x06 != 0x00 {
+        return false;
+    }
+    // sampling_freq_index (bits 5–2 of byte 2) must be in [0, 12]
+    let sfi = (b2 >> 2) & 0x0F;
+    sfi <= 12
+}
+
+fn validate_djvu(data: &[u8], pos: usize) -> bool {
+    // "AT&TFORM" (8 bytes) + u32 BE size (4 bytes) + form type (4 bytes) = 16 bytes
+    // Form type at bytes 12–15 must be one of the known DjVu types.
+    if need(data, pos, 16) {
+        return true;
+    }
+    let form_type = &data[pos + 12..pos + 16];
+    matches!(form_type, b"DJVU" | b"DJVM" | b"DJVI" | b"THUM")
+}
+
+fn validate_xcf(data: &[u8], pos: usize) -> bool {
+    // "gimp xcf v" (10 bytes) + version string.
+    // Version is either "file\0" (legacy) or exactly 3 ASCII decimal digits + "\0"
+    // (e.g. "001\0" through "019\0").
+    if need(data, pos, 15) {
+        return true;
+    }
+    let ver = &data[pos + 10..pos + 15];
+    // Legacy format: "file\0"
+    if ver == b"file\0" {
+        return true;
+    }
+    // Modern format: 3 decimal digits + null
+    ver[0].is_ascii_digit() && ver[1].is_ascii_digit() && ver[2].is_ascii_digit() && ver[3] == 0x00
+}
+
+fn validate_pcx(data: &[u8], pos: usize) -> bool {
+    // PCX 128-byte fixed header; need at least 68 bytes for the full validation.
+    if need(data, pos, 68) {
+        return true;
+    }
+    // @1: version — only {0, 2, 3, 4, 5} are defined (1 = obsolete, 6+ invalid)
+    let version = data[pos + 1];
+    if !matches!(version, 0 | 2 | 3 | 4 | 5) {
+        return false;
+    }
+    // @2: encoding — 0 = uncompressed (rare), 1 = RLE (standard)
+    let encoding = data[pos + 2];
+    if encoding > 1 {
+        return false;
+    }
+    // @3: bits per plane — must be a power of two in {1, 2, 4, 8}
+    let bpp = data[pos + 3];
+    if !matches!(bpp, 1 | 2 | 4 | 8) {
+        return false;
+    }
+    // @4–5: xMin (LE), @8–9: xMax (LE) — xMax must be >= xMin
+    let x_min = u16::from_le_bytes([data[pos + 4], data[pos + 5]]);
+    let x_max = u16::from_le_bytes([data[pos + 8], data[pos + 9]]);
+    if x_max < x_min {
+        return false;
+    }
+    // @6–7: yMin (LE), @10–11: yMax (LE) — yMax must be >= yMin
+    let y_min = u16::from_le_bytes([data[pos + 6], data[pos + 7]]);
+    let y_max = u16::from_le_bytes([data[pos + 10], data[pos + 11]]);
+    if y_max < y_min {
+        return false;
+    }
+    // @64: reserved — must be 0 per ZSoft specification
+    if data[pos + 64] != 0x00 {
+        return false;
+    }
+    // @65: color planes — {1, 3, 4} are valid; 2 is theoretically valid but extremely rare
+    let planes = data[pos + 65];
+    if !matches!(planes, 1 | 3 | 4) {
+        return false;
+    }
+    // @66–67: bytes per line (LE) — must be > 0
+    let bpl = u16::from_le_bytes([data[pos + 66], data[pos + 67]]);
+    bpl > 0
 }
 
 /// Returns `true` when `pos` appears to be an embedded JPEG (thumbnail) inside
@@ -2024,14 +2574,44 @@ fn validate_dcr(data: &[u8], pos: usize) -> bool {
 
 fn validate_iso(data: &[u8], pos: usize) -> bool {
     // ISO 9660: `CD001` magic at offset 32769 within the file (pos points here).
-    // Byte at pos+5 is the Volume Descriptor version — must be 1.
-    // Byte immediately before pos (at pos-1, if present) is the Descriptor Type
-    // — must be 0x01 (Primary Volume Descriptor) or 0xFF (Volume Descriptor Set
-    // Terminator); we accept any type to avoid false negatives on supplementary VDs.
+    // The PVD starts one byte before pos (Descriptor Type at pos-1).
+    //
+    // Check 1: Version byte at pos+5 must be 0x01.
     if need(data, pos, 6) {
         return true;
     }
-    data[pos + 5] == 0x01
+    if data[pos + 5] != 0x01 {
+        return false;
+    }
+    // Check 2: Descriptor Type byte at pos-1 must be 0x01 (Primary Volume
+    // Descriptor).  We only carve PVD hits, not Supplementary VDs.
+    if pos >= 1 && data[pos - 1] != 0x01 {
+        return false;
+    }
+    // Check 3: Volume Space Size is stored as a Both-Byte-Order (BBO) field —
+    // 4-byte LE at PVD+80 followed by 4-byte BE at PVD+84 (both encoding the
+    // same value).  For random/garbage data the probability of these matching is
+    // ~1 in 4 billion, making this an extremely strong false-positive filter.
+    //
+    // PVD+80 = (pos-1)+80 = pos+79 in the buffer.
+    if !need(data, pos, 87) {
+        let vss_le = u32::from_le_bytes([
+            data[pos + 79],
+            data[pos + 80],
+            data[pos + 81],
+            data[pos + 82],
+        ]);
+        let vss_be = u32::from_be_bytes([
+            data[pos + 83],
+            data[pos + 84],
+            data[pos + 85],
+            data[pos + 86],
+        ]);
+        if vss_le != vss_be || vss_le == 0 {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_dicom(data: &[u8], pos: usize) -> bool {
@@ -2674,6 +3254,236 @@ mod tests {
         buf[205] = 0x20;
         buf[206..210].copy_from_slice(b"Exif");
         assert!(!validate_jpeg_exif(&buf, 200));
+    }
+
+    // ── JPEG DQT ──────────────────────────────────────────────────────────────
+
+    fn make_jpeg_dqt(dqt_len: u16) -> Vec<u8> {
+        // FF D8 FF DB [len_hi] [len_lo] + padding
+        let mut data = vec![0u8; 8];
+        data[0] = 0xFF;
+        data[1] = 0xD8;
+        data[2] = 0xFF;
+        data[3] = 0xDB;
+        let [hi, lo] = dqt_len.to_be_bytes();
+        data[4] = hi;
+        data[5] = lo;
+        data
+    }
+
+    #[test]
+    fn jpeg_dqt_valid_one_table_accepted() {
+        // DQT length 67 = minimum (1 eight-bit table: 2 len + 1 precision + 64 values).
+        let data = make_jpeg_dqt(67);
+        assert!(validate_jpeg_dqt(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_dqt_valid_two_tables_accepted() {
+        // DQT length 132 = 2+2*65, two 8-bit tables packed in one segment.
+        let data = make_jpeg_dqt(132);
+        assert!(validate_jpeg_dqt(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_dqt_too_short_rejected() {
+        // Length below minimum (67) → rejected.
+        let data = make_jpeg_dqt(20);
+        assert!(!validate_jpeg_dqt(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_dqt_too_long_rejected() {
+        // Length above maximum (518) → likely not a DQT → rejected.
+        let data = make_jpeg_dqt(600);
+        assert!(!validate_jpeg_dqt(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_dqt_truncated_accepted() {
+        // Fewer than 6 bytes available — give benefit of doubt.
+        let data = vec![0xFF, 0xD8, 0xFF, 0xDB];
+        assert!(validate_jpeg_dqt(&data, 0));
+    }
+
+    // ── JPEG COM ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn jpeg_com_valid_accepted() {
+        // FF D8 FF FE with COM length = 20 (valid comment segment).
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(&[0xFF, 0xD8, 0xFF, 0xFE]);
+        data[4..6].copy_from_slice(&20u16.to_be_bytes());
+        assert!(validate_jpeg_com(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_com_zero_length_rejected() {
+        // COM length = 0 → invalid (must be ≥ 2).
+        let mut data = vec![0u8; 6];
+        data[0..4].copy_from_slice(&[0xFF, 0xD8, 0xFF, 0xFE]);
+        data[4..6].copy_from_slice(&0u16.to_be_bytes());
+        assert!(!validate_jpeg_com(&data, 0));
+    }
+
+    #[test]
+    fn jpeg_com_truncated_accepted() {
+        // Fewer than 6 bytes — benefit of doubt.
+        let data = vec![0xFF, 0xD8, 0xFF, 0xFE];
+        assert!(validate_jpeg_com(&data, 0));
+    }
+
+    // ── Java CLASS ────────────────────────────────────────────────────────────
+
+    fn make_class(major: u16) -> Vec<u8> {
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(&[0xCA, 0xFE, 0xBA, 0xBE]);
+        data[4..6].copy_from_slice(&0u16.to_be_bytes()); // minor
+        data[6..8].copy_from_slice(&major.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn java_class_java8_accepted() {
+        // Java 8 = major version 52.
+        assert!(validate_java_class(&make_class(52), 0));
+    }
+
+    #[test]
+    fn java_class_java21_accepted() {
+        // Java 21 (LTS) = major version 65.
+        assert!(validate_java_class(&make_class(65), 0));
+    }
+
+    #[test]
+    fn java_class_too_old_rejected() {
+        // Version 44 is before Java 1 (45) — likely not a class file.
+        assert!(!validate_java_class(&make_class(44), 0));
+    }
+
+    #[test]
+    fn java_class_too_new_rejected() {
+        // Version 200 is far beyond current Java — likely false positive.
+        assert!(!validate_java_class(&make_class(200), 0));
+    }
+
+    // ── CAB ───────────────────────────────────────────────────────────────────
+
+    fn make_cab(reserved1: u32, cab_size: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 12];
+        data[0..4].copy_from_slice(b"MSCF");
+        data[4..8].copy_from_slice(&reserved1.to_le_bytes());
+        data[8..12].copy_from_slice(&cab_size.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn cab_valid_accepted() {
+        assert!(validate_cab(&make_cab(0, 4096), 0));
+    }
+
+    #[test]
+    fn cab_nonzero_reserved_rejected() {
+        assert!(!validate_cab(&make_cab(1, 4096), 0));
+    }
+
+    #[test]
+    fn cab_zero_size_rejected() {
+        assert!(!validate_cab(&make_cab(0, 0), 0));
+    }
+
+    // ── OTF ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn otf_valid_accepted() {
+        // OTTO + numTables = 14 (typical font).
+        let mut data = vec![0u8; 6];
+        data[0..4].copy_from_slice(b"OTTO");
+        data[4..6].copy_from_slice(&14u16.to_be_bytes());
+        assert!(validate_otf(&data, 0));
+    }
+
+    #[test]
+    fn otf_zero_tables_rejected() {
+        let mut data = vec![0u8; 6];
+        data[0..4].copy_from_slice(b"OTTO");
+        data[4..6].copy_from_slice(&0u16.to_be_bytes());
+        assert!(!validate_otf(&data, 0));
+    }
+
+    #[test]
+    fn otf_too_many_tables_rejected() {
+        let mut data = vec![0u8; 6];
+        data[0..4].copy_from_slice(b"OTTO");
+        data[4..6].copy_from_slice(&200u16.to_be_bytes());
+        assert!(!validate_otf(&data, 0));
+    }
+
+    // ── WOFF2 ─────────────────────────────────────────────────────────────────
+
+    fn make_woff2(flavor: u32, num_tables: u16) -> Vec<u8> {
+        let mut data = vec![0u8; 14];
+        data[0..4].copy_from_slice(b"wOF2");
+        data[4..8].copy_from_slice(&flavor.to_be_bytes());
+        // length @8 (skip), numTables @12
+        data[12..14].copy_from_slice(&num_tables.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn woff2_truetype_flavor_accepted() {
+        assert!(validate_woff2(&make_woff2(0x0001_0000, 14), 0));
+    }
+
+    #[test]
+    fn woff2_cff_flavor_accepted() {
+        assert!(validate_woff2(&make_woff2(0x4F54_544F, 10), 0));
+    }
+
+    #[test]
+    fn woff2_bad_flavor_rejected() {
+        assert!(!validate_woff2(&make_woff2(0xDEAD_BEEF, 14), 0));
+    }
+
+    #[test]
+    fn woff2_zero_tables_rejected() {
+        assert!(!validate_woff2(&make_woff2(0x0001_0000, 0), 0));
+    }
+
+    // ── DEX ───────────────────────────────────────────────────────────────────
+
+    fn make_dex(version: &[u8; 3]) -> Vec<u8> {
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(b"dex\n");
+        data[4..7].copy_from_slice(version);
+        data[7] = 0x00;
+        data
+    }
+
+    #[test]
+    fn dex_v035_accepted() {
+        assert!(validate_dex(&make_dex(b"035"), 0));
+    }
+
+    #[test]
+    fn dex_v039_accepted() {
+        assert!(validate_dex(&make_dex(b"039"), 0));
+    }
+
+    #[test]
+    fn dex_non_digit_version_rejected() {
+        // Version "abc" is not digits — rejected.
+        let mut data = make_dex(b"035");
+        data[4] = b'a';
+        assert!(!validate_dex(&data, 0));
+    }
+
+    #[test]
+    fn dex_missing_null_terminator_rejected() {
+        // Non-null terminator — rejected.
+        let mut data = make_dex(b"035");
+        data[7] = 0xFF;
+        assert!(!validate_dex(&data, 0));
     }
 
     // ── BMP ───────────────────────────────────────────────────────────────────
@@ -4825,8 +5635,27 @@ mod tests {
 
     // ── ISO ───────────────────────────────────────────────────────────────────
 
-    fn make_iso_pvd() -> Vec<u8> {
-        // Magic "CD001" + version byte 0x01 (6 bytes total).
+    /// Build a full PVD buffer with descriptor type, magic, version, and
+    /// Volume Space Size BBO fields so all three validation checks can fire.
+    ///
+    /// `pos` is the position of the `CD001` magic within the returned buffer.
+    /// We set pos=1 so that buf[0] holds the descriptor type byte (0x01).
+    /// The VSS BBO fields live at buf[pos+79] (LE) and buf[pos+83] (BE).
+    fn make_iso_pvd_full(vss: u32) -> (Vec<u8>, usize) {
+        // Need at least pos + 87 bytes; pos = 1, so 88 bytes total.
+        let pos = 1usize;
+        let mut buf = vec![0u8; pos + 88];
+        buf[pos - 1] = 0x01; // Descriptor Type: Primary Volume Descriptor
+        buf[pos..pos + 5].copy_from_slice(b"CD001");
+        buf[pos + 5] = 0x01; // Version
+                             // Volume Space Size (Both Byte Order) at PVD+80 = buf[pos+79].
+        buf[pos + 79..pos + 83].copy_from_slice(&vss.to_le_bytes());
+        buf[pos + 83..pos + 87].copy_from_slice(&vss.to_be_bytes());
+        (buf, pos)
+    }
+
+    /// Minimal buffer — only has magic + version, not enough for BBO check.
+    fn make_iso_pvd_short() -> Vec<u8> {
         let mut buf = vec![0u8; 8];
         buf[0..5].copy_from_slice(b"CD001");
         buf[5] = 0x01; // version
@@ -4834,15 +5663,44 @@ mod tests {
     }
 
     #[test]
-    fn iso_pvd_accepted() {
-        assert!(validate_iso(&make_iso_pvd(), 0));
+    fn iso_pvd_short_accepted() {
+        // Insufficient data for BBO check → accepted (can't reject without data).
+        assert!(validate_iso(&make_iso_pvd_short(), 0));
+    }
+
+    #[test]
+    fn iso_pvd_full_accepted() {
+        let (buf, pos) = make_iso_pvd_full(700_000);
+        assert!(validate_iso(&buf, pos));
     }
 
     #[test]
     fn iso_bad_version_rejected() {
-        let mut buf = make_iso_pvd();
-        buf[5] = 0x02;
-        assert!(!validate_iso(&buf, 0));
+        let (mut buf, pos) = make_iso_pvd_full(700_000);
+        buf[pos + 5] = 0x02; // corrupt version
+        assert!(!validate_iso(&buf, pos));
+    }
+
+    #[test]
+    fn iso_bad_descriptor_type_rejected() {
+        let (mut buf, pos) = make_iso_pvd_full(700_000);
+        buf[pos - 1] = 0x02; // Supplementary VD, not Primary
+        assert!(!validate_iso(&buf, pos));
+    }
+
+    #[test]
+    fn iso_bbo_mismatch_rejected() {
+        let (mut buf, pos) = make_iso_pvd_full(700_000);
+        // Corrupt the BE copy so LE != BE.
+        buf[pos + 83] ^= 0xFF;
+        assert!(!validate_iso(&buf, pos));
+    }
+
+    #[test]
+    fn iso_zero_vss_rejected() {
+        // VSS = 0 is invalid for a real ISO.
+        let (buf, pos) = make_iso_pvd_full(0);
+        assert!(!validate_iso(&buf, pos));
     }
 
     // ── DICOM ─────────────────────────────────────────────────────────────────
@@ -5191,5 +6049,789 @@ mod tests {
     fn shebang_too_short_passes() {
         // Only 2 bytes — benefit of doubt.
         assert!(validate_shebang(b"#!", 0));
+    }
+
+    // ── AAC ───────────────────────────────────────────────────────────────────
+
+    fn make_aac(id: u8, sfi: u8) -> Vec<u8> {
+        // Construct a minimal ADTS frame header.
+        // Byte 1: sync(4) + ID(1) + layer(00) + protection(1)
+        let b1 = 0xF0 | (id << 3) | 0x01;
+        // Byte 2: profile(00) + sampling_freq_idx(4 bits) + private(0) + channel_hi(0)
+        let b2 = (sfi & 0x0F) << 2;
+        vec![0xFF, b1, b2, 0x00, 0x00, 0x00, 0x00]
+    }
+
+    #[test]
+    fn aac_mpeg4_valid() {
+        assert!(validate_aac(&make_aac(0, 3), 0)); // MPEG-4, 48000 Hz (sfi=3)
+    }
+
+    #[test]
+    fn aac_mpeg2_valid() {
+        assert!(validate_aac(&make_aac(1, 4), 0)); // MPEG-2, 44100 Hz (sfi=4)
+    }
+
+    #[test]
+    fn aac_invalid_layer_rejected() {
+        // layer bits set to 01 (Layer I) — invalid for ADTS
+        let mut buf = make_aac(0, 4);
+        buf[1] |= 0x02;
+        assert!(!validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_reserved_sfi_rejected() {
+        // sfi = 13 (reserved) — invalid
+        assert!(!validate_aac(&make_aac(0, 13), 0));
+    }
+
+    #[test]
+    fn aac_too_short_passes() {
+        assert!(validate_aac(b"\xFF\xF1", 0));
+    }
+
+    // ── DjVu ──────────────────────────────────────────────────────────────────
+
+    fn make_djvu(form_type: &[u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[..8].copy_from_slice(b"AT&TFORM");
+        // u32 BE size at bytes 8–11
+        buf[8..12].copy_from_slice(&8u32.to_be_bytes());
+        buf[12..16].copy_from_slice(form_type);
+        buf
+    }
+
+    #[test]
+    fn djvu_single_page_accepted() {
+        assert!(validate_djvu(&make_djvu(b"DJVU"), 0));
+    }
+
+    #[test]
+    fn djvu_multi_page_accepted() {
+        assert!(validate_djvu(&make_djvu(b"DJVM"), 0));
+    }
+
+    #[test]
+    fn djvu_include_accepted() {
+        assert!(validate_djvu(&make_djvu(b"DJVI"), 0));
+    }
+
+    #[test]
+    fn djvu_thumbnail_accepted() {
+        assert!(validate_djvu(&make_djvu(b"THUM"), 0));
+    }
+
+    #[test]
+    fn djvu_unknown_form_type_rejected() {
+        assert!(!validate_djvu(&make_djvu(b"WAVE"), 0));
+    }
+
+    #[test]
+    fn djvu_too_short_passes() {
+        assert!(validate_djvu(b"AT&TFORM", 0));
+    }
+
+    // ── XCF ───────────────────────────────────────────────────────────────────
+
+    fn make_xcf(version: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(15);
+        buf.extend_from_slice(b"gimp xcf v");
+        buf.extend_from_slice(version);
+        while buf.len() < 15 {
+            buf.push(0);
+        }
+        buf
+    }
+
+    #[test]
+    fn xcf_legacy_version_accepted() {
+        assert!(validate_xcf(&make_xcf(b"file\0"), 0));
+    }
+
+    #[test]
+    fn xcf_modern_version_accepted() {
+        assert!(validate_xcf(&make_xcf(b"003\0!"), 0));
+    }
+
+    #[test]
+    fn xcf_invalid_version_rejected() {
+        assert!(!validate_xcf(&make_xcf(b"xyz\0!"), 0));
+    }
+
+    #[test]
+    fn xcf_too_short_passes() {
+        assert!(validate_xcf(b"gimp xcf v", 0));
+    }
+
+    // ── PCX ───────────────────────────────────────────────────────────────────
+
+    struct PcxParams {
+        version: u8,
+        encoding: u8,
+        bpp: u8,
+        x_min: u16,
+        y_min: u16,
+        x_max: u16,
+        y_max: u16,
+        reserved: u8,
+        planes: u8,
+        bpl: u16,
+    }
+
+    impl Default for PcxParams {
+        fn default() -> Self {
+            Self {
+                version: 5,
+                encoding: 1,
+                bpp: 8,
+                x_min: 0,
+                y_min: 0,
+                x_max: 639,
+                y_max: 479,
+                reserved: 0,
+                planes: 3,
+                bpl: 640,
+            }
+        }
+    }
+
+    fn make_pcx(p: PcxParams) -> Vec<u8> {
+        let mut buf = vec![0u8; 128];
+        buf[0] = 0x0A;
+        buf[1] = p.version;
+        buf[2] = p.encoding;
+        buf[3] = p.bpp;
+        buf[4..6].copy_from_slice(&p.x_min.to_le_bytes());
+        buf[6..8].copy_from_slice(&p.y_min.to_le_bytes());
+        buf[8..10].copy_from_slice(&p.x_max.to_le_bytes());
+        buf[10..12].copy_from_slice(&p.y_max.to_le_bytes());
+        buf[64] = p.reserved;
+        buf[65] = p.planes;
+        buf[66..68].copy_from_slice(&p.bpl.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn pcx_valid_v5_accepted() {
+        assert!(validate_pcx(&make_pcx(PcxParams::default()), 0));
+    }
+
+    #[test]
+    fn pcx_valid_v3_mono_accepted() {
+        assert!(validate_pcx(
+            &make_pcx(PcxParams {
+                version: 3,
+                bpp: 1,
+                x_max: 319,
+                y_max: 199,
+                planes: 1,
+                bpl: 40,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_invalid_version_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                version: 1,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_invalid_encoding_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                encoding: 2,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_invalid_bpp_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                bpp: 16,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_xmax_less_than_xmin_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                x_min: 100,
+                x_max: 50,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_ymax_less_than_ymin_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                y_min: 100,
+                y_max: 50,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_nonzero_reserved_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                reserved: 1,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_invalid_planes_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                planes: 5,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_zero_bpl_rejected() {
+        assert!(!validate_pcx(
+            &make_pcx(PcxParams {
+                bpl: 0,
+                ..PcxParams::default()
+            }),
+            0
+        ));
+    }
+
+    #[test]
+    fn pcx_too_short_passes() {
+        assert!(validate_pcx(b"\x0a\x05\x01\x08", 0));
+    }
+
+    // ── JAR ───────────────────────────────────────────────────────────────────
+
+    fn make_jar_lfh(fname: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 30 + fname.len()];
+        buf[0..4].copy_from_slice(b"PK\x03\x04");
+        let fn_len = fname.len() as u16;
+        buf[26..28].copy_from_slice(&fn_len.to_le_bytes());
+        buf[30..30 + fname.len()].copy_from_slice(fname);
+        buf
+    }
+
+    #[test]
+    fn jar_meta_inf_accepted() {
+        assert!(validate_jar(&make_jar_lfh(b"META-INF/"), 0));
+    }
+
+    #[test]
+    fn jar_manifest_accepted() {
+        assert!(validate_jar(&make_jar_lfh(b"META-INF/MANIFEST.MF"), 0));
+    }
+
+    #[test]
+    fn jar_non_meta_inf_rejected() {
+        assert!(!validate_jar(&make_jar_lfh(b"com/example/Main.class"), 0));
+    }
+
+    #[test]
+    fn jar_empty_fname_rejected() {
+        let mut buf = make_jar_lfh(b"");
+        buf[26] = 0;
+        buf[27] = 0;
+        assert!(!validate_jar(&buf, 0));
+    }
+
+    #[test]
+    fn jar_too_short_passes() {
+        assert!(validate_jar(b"PK\x03\x04", 0));
+    }
+
+    // ── LZH ───────────────────────────────────────────────────────────────────
+
+    fn make_lzh(method: u8) -> Vec<u8> {
+        // "-lh?-" at positions 0-4 (pre_validate receives pos pointing here)
+        vec![b'-', b'l', b'h', method, b'-', 0, 0, 0, 0, 0]
+    }
+
+    #[test]
+    fn lzh_method_0_accepted() {
+        assert!(validate_lzh(&make_lzh(b'0'), 0));
+    }
+
+    #[test]
+    fn lzh_method_5_accepted() {
+        assert!(validate_lzh(&make_lzh(b'5'), 0));
+    }
+
+    #[test]
+    fn lzh_method_d_accepted() {
+        assert!(validate_lzh(&make_lzh(b'd'), 0));
+    }
+
+    #[test]
+    fn lzh_method_s_accepted() {
+        assert!(validate_lzh(&make_lzh(b's'), 0));
+    }
+
+    #[test]
+    fn lzh_invalid_method_rejected() {
+        assert!(!validate_lzh(&make_lzh(b'z'), 0));
+    }
+
+    #[test]
+    fn lzh_too_short_passes() {
+        assert!(validate_lzh(b"-lh", 0));
+    }
+
+    // ── HDF5 ──────────────────────────────────────────────────────────────────
+
+    fn make_hdf5(version: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[..8].copy_from_slice(b"\x89HDF\r\n\x1a\n");
+        buf[8] = version;
+        buf
+    }
+
+    #[test]
+    fn hdf5_version_0_accepted() {
+        assert!(validate_hdf5(&make_hdf5(0), 0));
+    }
+
+    #[test]
+    fn hdf5_version_3_accepted() {
+        assert!(validate_hdf5(&make_hdf5(3), 0));
+    }
+
+    #[test]
+    fn hdf5_version_4_rejected() {
+        assert!(!validate_hdf5(&make_hdf5(4), 0));
+    }
+
+    #[test]
+    fn hdf5_too_short_passes() {
+        assert!(validate_hdf5(b"\x89HDF\r\n\x1a\n", 0));
+    }
+
+    // ── FITS ──────────────────────────────────────────────────────────────────
+
+    fn make_fits(space_at_9: bool, t_at_29: bool) -> Vec<u8> {
+        let mut buf = vec![b' '; 36];
+        buf[..9].copy_from_slice(b"SIMPLE  =");
+        buf[9] = if space_at_9 { b' ' } else { b'X' };
+        buf[29] = if t_at_29 { b'T' } else { b'F' };
+        buf
+    }
+
+    #[test]
+    fn fits_valid_accepted() {
+        assert!(validate_fits(&make_fits(true, true), 0));
+    }
+
+    #[test]
+    fn fits_missing_space_rejected() {
+        assert!(!validate_fits(&make_fits(false, true), 0));
+    }
+
+    #[test]
+    fn fits_false_flag_rejected() {
+        assert!(!validate_fits(&make_fits(true, false), 0));
+    }
+
+    #[test]
+    fn fits_too_short_passes() {
+        assert!(validate_fits(b"SIMPLE  = ", 0));
+    }
+
+    // ── VDI ───────────────────────────────────────────────────────────────────
+
+    fn make_vdi(image_type: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[..4].copy_from_slice(&[0x7F, 0x10, 0xDA, 0xBE]);
+        // version at pos+4..pos+7 (leave as zeros = ok)
+        buf[8..12].copy_from_slice(&image_type.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn vdi_type_1_normal_accepted() {
+        assert!(validate_vdi(&make_vdi(1), 0));
+    }
+
+    #[test]
+    fn vdi_type_2_fixed_accepted() {
+        assert!(validate_vdi(&make_vdi(2), 0));
+    }
+
+    #[test]
+    fn vdi_type_4_diff_accepted() {
+        assert!(validate_vdi(&make_vdi(4), 0));
+    }
+
+    #[test]
+    fn vdi_type_0_rejected() {
+        assert!(!validate_vdi(&make_vdi(0), 0));
+    }
+
+    #[test]
+    fn vdi_type_5_rejected() {
+        assert!(!validate_vdi(&make_vdi(5), 0));
+    }
+
+    #[test]
+    fn vdi_too_short_passes() {
+        assert!(validate_vdi(&[0x7F, 0x10, 0xDA, 0xBE], 0));
+    }
+
+    // ── LNK ───────────────────────────────────────────────────────────────────
+
+    fn make_lnk(attrs: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 32];
+        // HeaderSize at pos+0..pos+3
+        buf[0..4].copy_from_slice(&0x4Cu32.to_le_bytes());
+        // CLSID at pos+4..pos+19 (skip — already checked by magic)
+        // FileAttributes at pos+24..pos+27
+        buf[24..28].copy_from_slice(&attrs.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn lnk_normal_file_accepted() {
+        assert!(validate_lnk(&make_lnk(0x0020), 0)); // FILE_ATTRIBUTE_ARCHIVE
+    }
+
+    #[test]
+    fn lnk_zero_attrs_rejected() {
+        assert!(!validate_lnk(&make_lnk(0), 0));
+    }
+
+    #[test]
+    fn lnk_reserved_high_bits_rejected() {
+        assert!(!validate_lnk(&make_lnk(0x0001_0020), 0));
+    }
+
+    #[test]
+    fn lnk_too_short_passes() {
+        assert!(validate_lnk(&[0x4C, 0x00, 0x00, 0x00], 0));
+    }
+
+    // ── Prefetch ──────────────────────────────────────────────────────────────
+
+    fn make_prefetch(version: u32, sig: &[u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[0..4].copy_from_slice(&version.to_le_bytes());
+        buf[4..8].copy_from_slice(sig);
+        buf
+    }
+
+    #[test]
+    fn prefetch_xp_accepted() {
+        assert!(validate_prefetch(&make_prefetch(17, b"SCCA"), 0));
+    }
+
+    #[test]
+    fn prefetch_win10_accepted() {
+        assert!(validate_prefetch(&make_prefetch(30, b"SCCA"), 0));
+    }
+
+    #[test]
+    fn prefetch_wrong_sig_rejected() {
+        assert!(!validate_prefetch(&make_prefetch(17, b"XXXX"), 0));
+    }
+
+    #[test]
+    fn prefetch_too_short_passes() {
+        assert!(validate_prefetch(&[0x11, 0x00, 0x00, 0x00], 0));
+    }
+
+    // ── EVT ───────────────────────────────────────────────────────────────────
+
+    fn make_evt(major: u32, minor: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 20];
+        buf[0..4].copy_from_slice(&48u32.to_le_bytes()); // HeaderSize
+        buf[4..8].copy_from_slice(b"LfLe"); // Signature
+        buf[8..12].copy_from_slice(&major.to_le_bytes());
+        buf[12..16].copy_from_slice(&minor.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn evt_version_1_1_accepted() {
+        assert!(validate_evt(&make_evt(1, 1), 0));
+    }
+
+    #[test]
+    fn evt_wrong_major_rejected() {
+        assert!(!validate_evt(&make_evt(2, 1), 0));
+    }
+
+    #[test]
+    fn evt_wrong_minor_rejected() {
+        assert!(!validate_evt(&make_evt(1, 2), 0));
+    }
+
+    #[test]
+    fn evt_too_short_passes() {
+        assert!(validate_evt(b"0\x00\x00\x00LfLe", 0));
+    }
+
+    // ── PEM ───────────────────────────────────────────────────────────────────
+
+    fn make_pem(sep: u8, label_start: u8) -> Vec<u8> {
+        let mut buf = b"-----BEGIN  CERTIFICATE-----\n".to_vec();
+        buf[10] = sep;
+        buf[11] = label_start;
+        buf
+    }
+
+    #[test]
+    fn pem_certificate_accepted() {
+        assert!(validate_pem(&make_pem(b' ', b'C'), 0));
+    }
+
+    #[test]
+    fn pem_private_key_accepted() {
+        assert!(validate_pem(&make_pem(b' ', b'P'), 0));
+    }
+
+    #[test]
+    fn pem_no_space_rejected() {
+        assert!(!validate_pem(&make_pem(b'-', b'C'), 0));
+    }
+
+    #[test]
+    fn pem_lowercase_label_rejected() {
+        assert!(!validate_pem(&make_pem(b' ', b'c'), 0));
+    }
+
+    #[test]
+    fn pem_too_short_passes() {
+        assert!(validate_pem(b"-----BEGIN", 0));
+    }
+
+    // ── PAR2 ─────────────────────────────────────────────────────────────────
+
+    fn make_par2(pkt_len: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; 64];
+        buf[0..8].copy_from_slice(b"PAR2\0PKT");
+        buf[8..16].copy_from_slice(&pkt_len.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn par2_valid_packet_length() {
+        assert!(validate_par2(&make_par2(128), 0));
+    }
+
+    #[test]
+    fn par2_minimum_valid_length() {
+        assert!(validate_par2(&make_par2(64), 0));
+    }
+
+    #[test]
+    fn par2_packet_length_too_small_rejected() {
+        assert!(!validate_par2(&make_par2(16), 0));
+    }
+
+    #[test]
+    fn par2_zero_length_rejected() {
+        assert!(!validate_par2(&make_par2(0), 0));
+    }
+
+    #[test]
+    fn par2_too_short_passes() {
+        assert!(validate_par2(b"PAR2\0PKT", 0));
+    }
+
+    // ── WAV ───────────────────────────────────────────────────────────────────
+
+    fn make_wav(chunk_size: u32) -> Vec<u8> {
+        let mut buf = b"RIFF\x00\x00\x00\x00WAVE".to_vec();
+        buf[4..8].copy_from_slice(&chunk_size.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn wav_valid_chunk_size_accepted() {
+        assert!(validate_wav(&make_wav(36), 0));
+    }
+
+    #[test]
+    fn wav_large_chunk_size_accepted() {
+        assert!(validate_wav(&make_wav(0x0400_0000), 0));
+    }
+
+    #[test]
+    fn wav_chunk_size_too_small_rejected() {
+        assert!(!validate_wav(&make_wav(8), 0));
+    }
+
+    #[test]
+    fn wav_zero_chunk_size_rejected() {
+        assert!(!validate_wav(&make_wav(0), 0));
+    }
+
+    #[test]
+    fn wav_too_short_passes() {
+        assert!(validate_wav(b"RIFF\x00", 0));
+    }
+
+    // ── AVI ───────────────────────────────────────────────────────────────────
+
+    fn make_avi(chunk_size: u32) -> Vec<u8> {
+        let mut buf = b"RIFF\x00\x00\x00\x00AVI ".to_vec();
+        buf[4..8].copy_from_slice(&chunk_size.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn avi_valid_chunk_size_accepted() {
+        assert!(validate_avi(&make_avi(512), 0));
+    }
+
+    #[test]
+    fn avi_minimum_chunk_size_accepted() {
+        assert!(validate_avi(&make_avi(12), 0));
+    }
+
+    #[test]
+    fn avi_chunk_size_too_small_rejected() {
+        assert!(!validate_avi(&make_avi(4), 0));
+    }
+
+    #[test]
+    fn avi_too_short_passes() {
+        assert!(validate_avi(b"RIFF\x00", 0));
+    }
+
+    // ── PYC ───────────────────────────────────────────────────────────────────
+
+    fn make_pyc(flags: u32) -> Vec<u8> {
+        let mut buf = b"\x33\x0d\x0d\x0a\x00\x00\x00\x00".to_vec();
+        buf[4..8].copy_from_slice(&flags.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn pyc_flags_zero_accepted() {
+        assert!(validate_pyc(&make_pyc(0), 0));
+    }
+
+    #[test]
+    fn pyc_flags_one_accepted() {
+        assert!(validate_pyc(&make_pyc(1), 0));
+    }
+
+    #[test]
+    fn pyc_flags_three_accepted() {
+        assert!(validate_pyc(&make_pyc(3), 0));
+    }
+
+    #[test]
+    fn pyc_flags_four_rejected() {
+        assert!(!validate_pyc(&make_pyc(4), 0));
+    }
+
+    #[test]
+    fn pyc_flags_high_rejected() {
+        assert!(!validate_pyc(&make_pyc(0xDEAD_BEEF), 0));
+    }
+
+    #[test]
+    fn pyc_too_short_passes() {
+        assert!(validate_pyc(b"\x33\x0d\x0d\x0a", 0));
+    }
+
+    // ── DPX ───────────────────────────────────────────────────────────────────
+
+    fn make_dpx_be(ver: &[u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; 16];
+        buf[0..4].copy_from_slice(b"SDPX");
+        buf[8..12].copy_from_slice(ver);
+        buf
+    }
+
+    #[test]
+    fn dpx_v1_accepted() {
+        assert!(validate_dpx(&make_dpx_be(b"V1.0"), 0));
+    }
+
+    #[test]
+    fn dpx_v2_accepted() {
+        assert!(validate_dpx(&make_dpx_be(b"V2.0"), 0));
+    }
+
+    #[test]
+    fn dpx_garbage_version_rejected() {
+        assert!(!validate_dpx(&make_dpx_be(b"XYZ!"), 0));
+    }
+
+    #[test]
+    fn dpx_lowercase_v_rejected() {
+        assert!(!validate_dpx(&make_dpx_be(b"v1.0"), 0));
+    }
+
+    #[test]
+    fn dpx_too_short_passes() {
+        assert!(validate_dpx(b"SDPX\x00\x00\x00\x00", 0));
+    }
+
+    // ── EXR ───────────────────────────────────────────────────────────────────
+
+    fn make_exr(ver: u8, flags: u8) -> Vec<u8> {
+        vec![0x76, 0x2F, 0x31, 0x01, ver, flags, 0x00, 0x00]
+    }
+
+    #[test]
+    fn exr_version2_no_flags_accepted() {
+        assert!(validate_exr(&make_exr(2, 0x00), 0));
+    }
+
+    #[test]
+    fn exr_version2_tile_flag_accepted() {
+        // bit 8 of the version u32 = byte @5 bit 0 = 0x01
+        assert!(validate_exr(&make_exr(2, 0x01), 0));
+    }
+
+    #[test]
+    fn exr_version2_all_known_flags_accepted() {
+        // bits 8–11 set: byte @5 = 0x0F
+        assert!(validate_exr(&make_exr(2, 0x0F), 0));
+    }
+
+    #[test]
+    fn exr_wrong_version_rejected() {
+        assert!(!validate_exr(&make_exr(1, 0x00), 0));
+    }
+
+    #[test]
+    fn exr_reserved_flag_bits_rejected() {
+        // upper nibble of byte @5 is reserved
+        assert!(!validate_exr(&make_exr(2, 0xF0), 0));
+    }
+
+    #[test]
+    fn exr_too_short_passes() {
+        assert!(validate_exr(&[0x76, 0x2F, 0x31, 0x01], 0));
     }
 }

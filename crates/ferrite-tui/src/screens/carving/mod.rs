@@ -1,9 +1,11 @@
 //! Screen 6 — File Carving: select signature types and run the carving engine
 //! with live progress, then extract hits to disk.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+
+use ferrite_core::{ThermalEvent, ThermalGuard};
 
 use std::time::Instant;
 
@@ -31,12 +33,6 @@ pub(crate) use preview::ColorCap;
 /// Maximum number of hits stored in the TUI list.  Hits beyond this cap are
 /// counted in `total_hits_found` but not stored in memory.
 pub(crate) const DISPLAY_CAP: usize = 100_000;
-
-/// Auto-extract queue length at which the scan is automatically paused to let
-/// extraction catch up.  A single 4 MiB scan chunk can produce hundreds of
-/// hits in one batch message, so the threshold must be large enough that a
-/// normal density scan never triggers back-pressure prematurely.
-const AUTO_EXTRACT_HIGH_WATER: usize = 500;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -99,6 +95,8 @@ enum CarveMsg {
         elapsed_secs: f64,
     },
     Error(String),
+    /// Thermal guard event (temperature reading, pause, resume).
+    Thermal(ThermalEvent),
 }
 
 /// Tracks state of a running bulk extraction.
@@ -304,10 +302,11 @@ pub struct CarvingState {
     pub(crate) total_hits_found: usize,
     /// Auto-extract mode: extract each hit as it arrives from the scanner.
     pub(crate) auto_extract: bool,
-    /// Queue of hits pending automatic extraction: (hit_idx, hit, output_path).
-    /// `hit_idx` is the index in `self.hits`, or `usize::MAX` for hits beyond
-    /// `DISPLAY_CAP` that are not shown in the list.
-    pub(crate) auto_extract_queue: std::collections::VecDeque<(usize, CarveHit, String)>,
+    /// Index into `self.hits` of the next hit to be submitted to the
+    /// auto-extraction pipeline.  `pump_auto_extract` advances this forward,
+    /// extracting up to 500 hits per batch.  Scanning is back-pressure-paused
+    /// while a batch is in flight and more hits remain beyond this index.
+    pub(crate) next_auto_extract_idx: usize,
     /// Available disk space at (or near) the output directory (bytes).
     /// Updated periodically in `tick()`.
     pub(crate) disk_avail_bytes: Option<u64>,
@@ -365,6 +364,13 @@ pub struct CarvingState {
     /// (visual top) as hits arrive.  Disabled the moment the user navigates
     /// away; re-enabled by pressing `Home`.
     pub(crate) auto_follow: bool,
+    /// Monotonic counter of bytes read by the scan thread; shared with the
+    /// thermal guard for speed-based inference.
+    pub(crate) bytes_read: Arc<AtomicU64>,
+    /// Active thermal guard (held for the duration of the scan).
+    pub(crate) thermal_guard: Option<ThermalGuard>,
+    /// Most recent thermal event received from the guard.
+    pub(crate) thermal_event: Option<ThermalEvent>,
 }
 
 impl Default for CarvingState {
@@ -417,7 +423,7 @@ impl CarvingState {
             color_cap: ColorCap::detect(),
             total_hits_found: 0,
             auto_extract: false,
-            auto_extract_queue: std::collections::VecDeque::new(),
+            next_auto_extract_idx: 0,
             disk_avail_bytes: None,
             disk_space_tick: 0,
             backpressure_paused: false,
@@ -440,6 +446,9 @@ impl CarvingState {
             user_confirm_delete: false,
             user_import_path: String::new(),
             editing_import: false,
+            bytes_read: Arc::new(AtomicU64::new(0)),
+            thermal_guard: None,
+            thermal_event: None,
         };
         // Load user sigs and append as "Custom" group if any are present.
         s.user_sigs = user_sigs::load_user_sigs(&s.user_sig_path);
@@ -678,7 +687,7 @@ impl CarvingState {
         self.preview_loading = false;
         self.total_hits_found = 0;
         self.auto_extract = false;
-        self.auto_extract_queue.clear();
+        self.next_auto_extract_idx = 0;
         self.disk_avail_bytes = None;
         self.disk_space_tick = 0;
         self.backpressure_paused = false;
@@ -687,6 +696,9 @@ impl CarvingState {
         // skip_truncated / skip_corrupt are intentionally NOT reset on device change — user preferences.
         self.skipped_trunc_count = 0;
         self.skipped_corrupt_count = 0;
+        self.bytes_read.store(0, Ordering::Relaxed);
+        self.thermal_guard = None;
+        self.thermal_event = None;
     }
 }
 
@@ -809,8 +821,8 @@ mod tests {
         // Total entries across all groups must equal the built-in signature count.
         let total: usize = s.groups.iter().map(|g| g.entries.len()).sum();
         assert_eq!(
-            total, 99,
-            "expected 99 built-in signatures across all groups"
+            total, 140,
+            "expected 140 built-in signatures across all groups"
         );
     }
 

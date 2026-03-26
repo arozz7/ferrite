@@ -74,7 +74,7 @@ Ferrite recovers data from failing drives through ten operational screens:
 
 | Crate | Responsibility |
 |---|---|
-| `ferrite-core` | Core types, errors, configuration |
+| `ferrite-core` | Core types, errors, config; shared **ThermalGuard** (SMART + speed-based inference) |
 | `ferrite-blockdev` | Platform-abstracted block device I/O; Windows volume quiesce guard |
 | `ferrite-imaging` | Multi-pass imaging engine (SHA-256 sidecar, ThermalGuard, write-blocker) |
 | `ferrite-smart` | S.M.A.R.T. diagnostics via smartctl |

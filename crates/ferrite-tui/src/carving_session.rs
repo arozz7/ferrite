@@ -25,8 +25,11 @@ pub struct CarvingSession {
     pub output_dir: String,
     /// Path to the JSONL checkpoint file that stores carve hits.
     pub hits_file: String,
-    /// Number of hits recorded at save time.
+    /// Number of displayable hits recorded at save time (≤ DISPLAY_CAP).
     pub hits_count: usize,
+    /// Total hits found during the scan, including those beyond DISPLAY_CAP.
+    #[serde(default)]
+    pub total_hits_found: usize,
     /// Unix timestamp (seconds since epoch) when this session was saved.
     pub saved_at: u64,
     /// Whether auto-extract was enabled when the session was saved.

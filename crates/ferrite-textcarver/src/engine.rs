@@ -7,7 +7,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,13 +23,20 @@ use crate::scanner::{TextBlock, TextScanConfig, TextScanMsg, TextScanProgress};
 ///
 /// Spawn a thread around this call site for non-blocking behaviour:
 /// ```ignore
-/// std::thread::spawn(move || ferrite_textcarver::run_scan(device, config, tx, cancel));
+/// std::thread::spawn(move || ferrite_textcarver::run_scan(device, config, tx, cancel, pause, bytes_read));
 /// ```
+///
+/// `pause` is set by a [`ferrite_core::ThermalGuard`] when the drive is
+/// thermally stressed; the scan spin-waits between chunks until cleared.
+/// `bytes_read` is incremented by the number of bytes read each chunk and
+/// fed to the thermal guard for speed-based inference.
 pub fn run_scan(
     device: Arc<dyn BlockDevice>,
     config: TextScanConfig,
     tx: Sender<TextScanMsg>,
     cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
+    bytes_read: Arc<AtomicU64>,
 ) {
     let total_size = device.size();
     if total_size == 0 {
@@ -65,6 +72,17 @@ pub fn run_scan(
             break;
         }
 
+        // Spin-wait while the thermal guard has the pause flag set.
+        while pause.load(Ordering::Relaxed) {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+
         let chunk_end = (chunk_offset + chunk_size as u64).min(total_size);
         let chunk_len = (chunk_end - chunk_offset) as usize;
 
@@ -72,6 +90,7 @@ pub fn run_scan(
         if raw.is_empty() {
             break;
         }
+        bytes_read.fetch_add(chunk_len as u64, Ordering::Relaxed);
 
         // Prepend overlap tail from the previous chunk.
         let window: Vec<u8> = if overlap_tail.is_empty() {

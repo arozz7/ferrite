@@ -5,6 +5,8 @@
 //! size, or `None` when the header is malformed or a read fails (the caller
 //! falls back to `max_size`).
 
+mod asf;
+mod au;
 mod ebml;
 mod elf;
 mod gif;
@@ -12,6 +14,8 @@ pub(crate) mod helpers;
 mod iso9660;
 mod isobmff;
 mod linear;
+mod midi;
+mod mpeg_ps;
 mod mpeg_ts;
 mod ogg;
 mod ole2;
@@ -21,6 +25,7 @@ mod png;
 mod rar;
 mod seven_zip;
 mod sqlite;
+mod tar;
 mod text_bound;
 mod tiff;
 mod ttf;
@@ -102,6 +107,16 @@ pub(crate) fn read_size_hint(
         SizeHint::Png => png::png_hint(device, file_offset),
 
         SizeHint::Iso9660 => iso9660::iso9660_hint(device, file_offset),
+
+        SizeHint::Asf => asf::asf_hint(device, file_offset),
+
+        SizeHint::Tar => tar::tar_hint(device, file_offset, max_size),
+
+        SizeHint::MpegPs => mpeg_ps::mpeg_ps_hint(device, file_offset, max_size),
+
+        SizeHint::Au => au::au_hint(device, file_offset),
+
+        SizeHint::Midi => midi::midi_hint(device, file_offset),
     }
 }
 

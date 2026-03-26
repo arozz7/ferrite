@@ -636,17 +636,19 @@ impl ImagingState {
                         .ok()
                         .and_then(|d| d.temperature_celsius)
                 },
+                None, // imaging engine has its own rate throttle; no speed inference needed
                 ThermalGuardConfig::default(),
                 move |event| match event {
                     ThermalEvent::Temperature(t) => {
                         let _ = thermal_tx.try_send(ImagingMsg::Temperature(t));
                     }
-                    ThermalEvent::Paused => {
+                    ThermalEvent::Paused | ThermalEvent::SpeedThrottle => {
                         let _ = thermal_tx.try_send(ImagingMsg::ThermalPause);
                     }
-                    ThermalEvent::Resumed => {
+                    ThermalEvent::Resumed | ThermalEvent::SpeedResumed => {
                         let _ = thermal_tx.try_send(ImagingMsg::ThermalResume);
                     }
+                    ThermalEvent::SpeedBaseline(_) => {}
                 },
             );
 
