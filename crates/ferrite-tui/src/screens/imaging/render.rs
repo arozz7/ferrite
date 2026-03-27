@@ -281,12 +281,15 @@ impl ImagingState {
         }
 
         // ── Progress bar ─────────────────────────────────────────────────────
-        let ratio = self
+        // Use fraction_pass so the bar advances through Trim/Scrape passes even
+        // when few sectors are successfully recovered.  Recovery ratio is shown
+        // separately in the label when it diverges from pass progress.
+        let (ratio, recovery_pct) = self
             .latest
             .as_ref()
-            .map(|u| u.fraction_done())
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0);
+            .map(|u| (u.fraction_pass(), u.fraction_done() * 100.0))
+            .unwrap_or((0.0, 0.0));
+        let ratio = ratio.clamp(0.0, 1.0);
 
         let phase_label = self.latest.as_ref().map(|u| {
             use ferrite_imaging::ImagingPhase;
@@ -307,7 +310,14 @@ impl ImagingState {
             ImagingStatus::Idle => "Not started — press s to start".into(),
             ImagingStatus::Running => {
                 let phase = phase_label.unwrap_or("Copy");
-                format!("{phase} — {:.1}%", ratio * 100.0)
+                let pass_pct = ratio * 100.0;
+                // Show recovery ratio alongside pass progress for Trim/Scrape
+                // where the two numbers diverge significantly.
+                if (pass_pct - recovery_pct).abs() > 0.5 {
+                    format!("{phase} — {pass_pct:.1}%  (recovered {recovery_pct:.1}%)")
+                } else {
+                    format!("{phase} — {pass_pct:.1}%")
+                }
             }
             ImagingStatus::Complete => "Complete ✓".into(),
             ImagingStatus::Cancelled => "Cancelled".into(),
@@ -518,12 +528,38 @@ impl ImagingState {
     }
 
     fn render_sector_map(&self, frame: &mut Frame, area: Rect) {
-        let legend = if area.width >= 90 {
-            " Sector Map  \u{2588}\u{2588} Finished  \u{2591}\u{2591} Non-tried  \u{2592}\u{2592} Non-trim/scrape  \u{2588}\u{2588} Bad  \u{25b6} Current "
+        // Build a colored legend so Finished (green) and Bad (red) are visually
+        // distinct — a plain string title cannot carry per-span color.
+        let legend: Line = if area.width >= 90 {
+            Line::from(vec![
+                Span::raw(" Sector Map  "),
+                Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Green)),
+                Span::raw(" Finished  "),
+                Span::styled("\u{2591}\u{2591}", Style::default().fg(Color::DarkGray)),
+                Span::raw(" Non-tried  "),
+                Span::styled("\u{2592}\u{2592}", Style::default().fg(Color::Yellow)),
+                Span::raw(" Non-trim/scrape  "),
+                Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Red)),
+                Span::raw(" Bad  "),
+                Span::styled("\u{25b6}", Style::default().fg(Color::Cyan)),
+                Span::raw(" Current "),
+            ])
         } else if area.width >= 60 {
-            " Sector Map  \u{2588}\u{2588} OK  \u{2591}\u{2591} Pending  \u{2592}\u{2592} Warn  \u{2588}\u{2588} Bad  \u{25b6} Pos "
+            Line::from(vec![
+                Span::raw(" Sector Map  "),
+                Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Green)),
+                Span::raw(" OK  "),
+                Span::styled("\u{2591}\u{2591}", Style::default().fg(Color::DarkGray)),
+                Span::raw(" Pending  "),
+                Span::styled("\u{2592}\u{2592}", Style::default().fg(Color::Yellow)),
+                Span::raw(" Warn  "),
+                Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Red)),
+                Span::raw(" Bad  "),
+                Span::styled("\u{25b6}", Style::default().fg(Color::Cyan)),
+                Span::raw(" Pos "),
+            ])
         } else {
-            " Sector Map "
+            Line::from(" Sector Map ")
         };
         let block = Block::default().borders(Borders::ALL).title(legend);
         let inner = block.inner(area);

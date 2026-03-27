@@ -51,12 +51,43 @@ pub struct ProgressUpdate {
 
 impl ProgressUpdate {
     /// Fraction of device bytes that are `Finished` in [0.0, 1.0].
+    /// Use this to display the recovery ratio (how much data has been saved).
     pub fn fraction_done(&self) -> f64 {
         if self.device_size == 0 {
             1.0
         } else {
             self.bytes_finished as f64 / self.device_size as f64
         }
+    }
+
+    /// Fraction of the *current pass* that has been processed, in [0.0, 1.0].
+    ///
+    /// Unlike [`fraction_done`], this advances even when reads fail, giving a
+    /// meaningful progress indicator during Trim and Scrape passes where most
+    /// sectors are bad and `fraction_done` barely moves.
+    ///
+    /// - **Copy**   — `(device - non_tried) / device`  (sectors visited so far)
+    /// - **Trim**   — `(device - non_tried - non_trimmed) / device`
+    /// - **Scrape** — `(device - non_tried - non_trimmed - non_scraped) / device`
+    /// - **other**  — falls back to `fraction_done`
+    pub fn fraction_pass(&self) -> f64 {
+        if self.device_size == 0 {
+            return 1.0;
+        }
+        let d = self.device_size as f64;
+        let settled = match self.phase {
+            ImagingPhase::Copy => d - self.bytes_non_tried as f64,
+            ImagingPhase::Trim | ImagingPhase::Sweep => {
+                d - self.bytes_non_tried as f64 - self.bytes_non_trimmed as f64
+            }
+            ImagingPhase::Scrape | ImagingPhase::Retry { .. } => {
+                d - self.bytes_non_tried as f64
+                    - self.bytes_non_trimmed as f64
+                    - self.bytes_non_scraped as f64
+            }
+            ImagingPhase::Complete => d,
+        };
+        (settled / d).clamp(0.0, 1.0)
     }
 }
 
