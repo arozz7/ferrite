@@ -369,6 +369,20 @@ pub fn detect_filesystem(device: &dyn BlockDevice) -> FilesystemType {
     probe_filesystem(device).0
 }
 
+/// Detect the filesystem type at a specific LBA on `device`, bypassing any
+/// partition table.
+///
+/// Converts `lba` to a byte offset using the device sector size and delegates
+/// to the internal boot-sector / superblock probe.  Returns
+/// [`FilesystemType::Unknown`] when no known signature is found.
+///
+/// Useful when the partition table is absent or corrupt: pair with
+/// `ferrite_partition::scan()` to find candidate LBAs, then call this
+/// function to confirm each hit before opening a parser.
+pub fn detect_filesystem_at(device: &dyn BlockDevice, lba: u64) -> FilesystemType {
+    detect_at(device, lba * device.sector_size() as u64)
+}
+
 /// Open a parser for the filesystem detected on `device`.
 ///
 /// Handles whole-disk devices by probing MBR/GPT partition tables and
@@ -541,5 +555,31 @@ mod tests {
             idx.is_empty(),
             "expected empty index for unformatted device"
         );
+    }
+
+    #[test]
+    fn detect_filesystem_at_lba_zero_ntfs() {
+        let mut data = vec![0u8; 512];
+        data[3..11].copy_from_slice(b"NTFS    ");
+        let dev = MockBlockDevice::new(data, 512);
+        assert_eq!(detect_filesystem_at(&dev, 0), FilesystemType::Ntfs);
+    }
+
+    #[test]
+    fn detect_filesystem_at_nonzero_lba() {
+        // Place NTFS magic at LBA 2 (byte offset 1024 for 512-byte sectors).
+        let sector_size = 512usize;
+        let mut data = vec![0u8; 4 * sector_size];
+        let ntfs_start = 2 * sector_size;
+        data[ntfs_start + 3..ntfs_start + 11].copy_from_slice(b"NTFS    ");
+        let dev = MockBlockDevice::new(data, sector_size as u32);
+        assert_eq!(detect_filesystem_at(&dev, 0), FilesystemType::Unknown);
+        assert_eq!(detect_filesystem_at(&dev, 2), FilesystemType::Ntfs);
+    }
+
+    #[test]
+    fn detect_filesystem_at_unknown_on_zero_device() {
+        let dev = MockBlockDevice::zeroed(2048, 512);
+        assert_eq!(detect_filesystem_at(&dev, 0), FilesystemType::Unknown);
     }
 }
