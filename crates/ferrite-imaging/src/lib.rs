@@ -5,6 +5,7 @@ pub mod hash;
 pub mod mapfile;
 pub mod mapfile_io;
 pub mod progress;
+pub mod sparse;
 pub mod thermal;
 pub mod write_blocker;
 

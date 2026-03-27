@@ -1,5 +1,3 @@
-use std::io::{Seek, SeekFrom, Write};
-
 use ferrite_blockdev::AlignedBuffer;
 use tracing::{debug, warn};
 
@@ -58,14 +56,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
                     Ok(n) => {
                         let to_write = n.min(chunk_size as usize);
 
-                        engine
-                            .output
-                            .seek(SeekFrom::Start(pos))
-                            .and_then(|_| engine.output.write_all(&buf.as_slice()[..to_write]))
-                            .map_err(|e| ImagingError::ImageWrite {
-                                offset: pos,
-                                source: e,
-                            })?;
+                        engine.write_block(pos, &buf.as_slice()[..to_write])?;
 
                         engine
                             .mapfile
@@ -112,14 +103,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
                         // the region end if chunk_size < block_size).
                         let to_write = n.min(chunk_size as usize);
 
-                        engine
-                            .output
-                            .seek(SeekFrom::Start(pos))
-                            .and_then(|_| engine.output.write_all(&buf.as_slice()[..to_write]))
-                            .map_err(|e| ImagingError::ImageWrite {
-                                offset: pos,
-                                source: e,
-                            })?;
+                        engine.write_block(pos, &buf.as_slice()[..to_write])?;
 
                         engine
                             .mapfile

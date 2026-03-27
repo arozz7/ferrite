@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -12,6 +12,7 @@ use crate::mapfile::{BlockStatus, Mapfile};
 use crate::mapfile_io;
 use crate::passes;
 use crate::progress::{ImagingPhase, ProgressReporter, ProgressUpdate};
+use crate::sparse;
 
 /// How many `make_progress` ticks between mapfile block-list snapshots sent to the TUI.
 const SNAPSHOT_INTERVAL: u32 = 50;
@@ -123,7 +124,7 @@ impl ImagingEngine {
         }
 
         // Open output file (create if absent, preserve existing content for resume).
-        let output = OpenOptions::new()
+        let mut output = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
@@ -133,6 +134,29 @@ impl ImagingEngine {
                 offset: 0,
                 source: e,
             })?;
+
+        // Sparse mode: enable OS-level hole support and pre-set file size so
+        // tools see the correct length immediately.  Only done on a fresh file
+        // (len == 0) to avoid truncating a resumed session.
+        if config.sparse_output && output.metadata().map(|m| m.len()).unwrap_or(1) == 0 {
+            sparse::enable_sparse(&output).map_err(|e| ImagingError::ImageWrite {
+                offset: 0,
+                source: e,
+            })?;
+            output
+                .seek(SeekFrom::Start(device_size - 1))
+                .and_then(|_| output.write_all(&[0]))
+                .map_err(|e| ImagingError::ImageWrite {
+                    offset: 0,
+                    source: e,
+                })?;
+            output
+                .seek(SeekFrom::Start(0))
+                .map_err(|e| ImagingError::ImageWrite {
+                    offset: 0,
+                    source: e,
+                })?;
+        }
 
         let now = Instant::now();
         Ok(Self {
@@ -238,6 +262,30 @@ impl ImagingEngine {
         Ok(())
     }
 
+    /// Write `buf` to the output file at byte `pos`.
+    ///
+    /// When `config.sparse_output` is enabled and `buf` is entirely zero, the
+    /// write is skipped and the file position is advanced past the region —
+    /// creating a sparse hole.  Otherwise a normal seek+write is performed.
+    pub(crate) fn write_block(&mut self, pos: u64, buf: &[u8]) -> Result<()> {
+        if self.config.sparse_output {
+            sparse::write_or_skip(&mut self.output, pos, buf).map_err(|e| {
+                ImagingError::ImageWrite {
+                    offset: pos,
+                    source: e,
+                }
+            })
+        } else {
+            self.output
+                .seek(SeekFrom::Start(pos))
+                .and_then(|_| self.output.write_all(buf))
+                .map_err(|e| ImagingError::ImageWrite {
+                    offset: pos,
+                    source: e,
+                })
+        }
+    }
+
     /// Build a progress snapshot for the reporter.
     ///
     /// Updates the rolling read-rate every ~1 second.
@@ -308,6 +356,7 @@ mod tests {
             start_lba: None,
             end_lba: None,
             reverse: false,
+            sparse_output: false,
         };
         let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         (engine, tmp)
@@ -441,6 +490,7 @@ mod tests {
             start_lba: Some(2), // skip first 2 sectors
             end_lba: None,
             reverse: false,
+            sparse_output: false,
         };
         let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         assert_eq!(
@@ -466,6 +516,7 @@ mod tests {
             start_lba: None,
             end_lba: Some(14), // image only sectors 0..13
             reverse: false,
+            sparse_output: false,
         };
         let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         assert_eq!(
@@ -530,6 +581,7 @@ mod tests {
             start_lba: None,
             end_lba: None,
             reverse: false,
+            sparse_output: false,
         };
         // Inject a fresh fully-finished mapfile.
         let mut engine2 = ImagingEngine::new(StdArc::new(mock2), config2).unwrap();
@@ -582,6 +634,7 @@ mod tests {
             start_lba: None,
             end_lba: None,
             reverse: true,
+            sparse_output: false,
         };
         let mut engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         engine.run(&mut NullReporter).unwrap();
@@ -619,6 +672,7 @@ mod tests {
             start_lba: None,
             end_lba: None,
             reverse: false,
+            sparse_output: false,
         };
 
         // First engine takes the lock.
@@ -646,6 +700,7 @@ mod tests {
             start_lba: None,
             end_lba: None,
             reverse: false,
+            sparse_output: false,
         };
 
         // First engine takes the lock, then is dropped.

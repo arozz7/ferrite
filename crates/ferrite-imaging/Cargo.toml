@@ -15,5 +15,12 @@ serde            = { workspace = true }
 tracing          = { workspace = true }
 sha2             = { workspace = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
+
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -198,6 +198,9 @@ pub struct ImagingState {
     wb_rx: Option<Receiver<bool>>,
     /// When `true`, the copy pass reads from end to start.
     pub reverse: bool,
+    /// When `true`, all-zero blocks are skipped rather than written (sparse
+    /// holes).  Default `true`; the user can toggle with `S`.
+    pub sparse: bool,
     /// Latest mapfile block snapshot for sector-map rendering.
     pub(crate) sector_map: Vec<ferrite_imaging::mapfile::Block>,
     /// User-initiated pause flag (shared with the ChannelReporter).
@@ -249,6 +252,7 @@ impl ImagingState {
             write_blocked: None,
             wb_rx: None,
             reverse: false,
+            sparse: true,
             sector_map: Vec::new(),
             user_pause: Arc::new(AtomicBool::new(false)),
             user_paused: false,
@@ -416,6 +420,7 @@ impl ImagingState {
             KeyCode::Char('e') => self.edit_field = Some(EditField::EndLba),
             KeyCode::Char('b') => self.edit_field = Some(EditField::BlockSize),
             KeyCode::Char('r') => self.reverse = !self.reverse,
+            KeyCode::Char('S') => self.sparse = !self.sparse,
             KeyCode::Char('p') => {
                 if self.status == ImagingStatus::Running || self.user_paused {
                     if self.user_paused {
@@ -587,6 +592,7 @@ impl ImagingState {
             start_lba: self.start_lba_str.trim().parse::<u64>().ok(),
             end_lba: self.end_lba_str.trim().parse::<u64>().ok(),
             reverse: self.reverse,
+            sparse_output: self.sparse,
             ..ImagingConfig::default()
         };
 

@@ -24,7 +24,7 @@ impl ImagingState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(12), // config fields + hint + resume line
+                Constraint::Length(13), // config fields + hint + resume line + sparse
                 Constraint::Length(3),  // progress bar
                 Constraint::Length(6),  // sector map
                 Constraint::Min(0),     // stats / messages
@@ -180,6 +180,20 @@ impl ImagingState {
                     },
                 ),
                 Span::raw("  (r to toggle)"),
+            ]),
+            Line::from(vec![
+                Span::raw(" Sparse  : "),
+                Span::styled(
+                    if self.sparse { "ON" } else { "OFF" }.to_string(),
+                    if self.sparse {
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
+                Span::raw("  (S to toggle — skips zero blocks, saves space on NTFS/ext4)"),
             ]),
             Line::from(Span::styled(
                 " Dest: full file path, e.g. D:\\recovery\\disk.img  \
