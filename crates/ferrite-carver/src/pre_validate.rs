@@ -1155,7 +1155,7 @@ fn validate_aac(data: &[u8], pos: usize) -> bool {
         let frame_len = ((data[pos + 3] & 0x03) as u32) << 11
             | (data[pos + 4] as u32) << 3
             | (data[pos + 5] as u32) >> 5;
-        if frame_len < 7 || frame_len > 8191 {
+        if !(7..=8191).contains(&frame_len) {
             return false;
         }
     }

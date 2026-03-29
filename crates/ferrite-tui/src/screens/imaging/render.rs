@@ -24,7 +24,7 @@ impl ImagingState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(13), // config fields + hint + resume line + sparse
+                Constraint::Length(14), // config fields + hint + resume line + sparse + space
                 Constraint::Length(3),  // progress bar
                 Constraint::Length(6),  // sector map
                 Constraint::Min(0),     // stats / messages
@@ -195,10 +195,17 @@ impl ImagingState {
                 ),
                 Span::raw("  (S to toggle — skips zero blocks, saves space on NTFS/ext4)"),
             ]),
+            // ── Destination space row ────────────────────────────────────────
+            space_row(self.space_info),
+            // ── Footer hint — space tip when tight, otherwise standard hint ──
             Line::from(Span::styled(
-                " Dest: full file path, e.g. D:\\recovery\\disk.img  \
-                 — or leave empty / set to a folder to auto-name from drive serial.  \
-                 Mapfile saves progress for resume.",
+                if matches!(self.space_info, Some(si) if !si.sufficient()) {
+                    " Tip: use LBA range (l/e) to image only the target partition, \
+                     or enable sparse output (S) to skip zero sectors."
+                } else {
+                    " Dest: full file path, e.g. D:\\recovery\\disk.img  \
+                     — or leave empty / set to a folder to auto-name from drive serial."
+                },
                 Style::default().fg(Color::DarkGray),
             )),
         ];
@@ -210,6 +217,61 @@ impl ImagingState {
             ),
             chunks[0],
         );
+
+        // ── Low-space confirmation prompt ────────────────────────────────────
+        if let ImagingStatus::ConfirmLowSpace {
+            available,
+            required,
+        } = &self.status
+        {
+            let text = vec![
+                Line::from(Span::styled(
+                    " ⚠  Low disk space — imaging may fail before completion.",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(" Available : ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(fmt_space(*available), Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(vec![
+                    Span::styled(" Required  : ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(fmt_space(*required)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    " Tip: use LBA range (l/e) or enable sparse output (S) to reduce space usage.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        " Enter / y",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" — proceed anyway     "),
+                    Span::styled(
+                        " Esc / n",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" — cancel"),
+                ]),
+            ];
+            frame.render_widget(
+                Paragraph::new(text).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" ⚠ Low Disk Space ")
+                        .style(Style::default().fg(Color::Yellow)),
+                ),
+                chunks[1],
+            );
+            return;
+        }
 
         // ── Drive mismatch confirmation prompt ───────────────────────────────
         if let ImagingStatus::ConfirmDriveMismatch {
@@ -336,6 +398,7 @@ impl ImagingState {
             ImagingStatus::Complete => "Complete ✓".into(),
             ImagingStatus::Cancelled => "Cancelled".into(),
             ImagingStatus::Error(e) => format!("Error: {e}"),
+            ImagingStatus::ConfirmLowSpace { .. } => String::new(), // handled above
             ImagingStatus::ConfirmDriveMismatch { .. } => String::new(), // handled above
         };
 
@@ -675,5 +738,71 @@ fn fmt_bytes(n: u64) -> String {
         format!("{:.1}MiB", n as f64 / MIB as f64)
     } else {
         format!("{n}B")
+    }
+}
+
+/// Format a byte count as a human-readable size (TiB / GiB / MiB / B).
+fn fmt_space(n: u64) -> String {
+    const TIB: u64 = 1024 * 1024 * 1024 * 1024;
+    const GIB: u64 = 1024 * 1024 * 1024;
+    const MIB: u64 = 1024 * 1024;
+    if n >= TIB {
+        format!("{:.2} TiB", n as f64 / TIB as f64)
+    } else if n >= GIB {
+        format!("{:.1} GiB", n as f64 / GIB as f64)
+    } else if n >= MIB {
+        format!("{:.1} MiB", n as f64 / MIB as f64)
+    } else {
+        format!("{n} B")
+    }
+}
+
+/// Build the "Dest space" config row with colour-coded status.
+///
+/// - Green  `✓ N free / N required` — sufficient
+/// - Amber  `⚠ N free / N required` — within 10 % shortfall
+/// - Red    `✗ N free / N required — insufficient` — clear shortfall
+/// - Gray   `—` — no info
+fn space_row(info: Option<ferrite_imaging::SpaceInfo>) -> ratatui::text::Line<'static> {
+    match info {
+        None => Line::from(vec![
+            Span::raw(" Space   : "),
+            Span::styled("—", Style::default().fg(Color::DarkGray)),
+        ]),
+        Some(si) if si.sufficient() => Line::from(vec![
+            Span::raw(" Space   : "),
+            Span::styled(
+                format!(
+                    "✓ {} free / {} required",
+                    fmt_space(si.available),
+                    fmt_space(si.required)
+                ),
+                Style::default().fg(Color::Green),
+            ),
+        ]),
+        Some(si) if si.ratio() >= 0.9 => Line::from(vec![
+            Span::raw(" Space   : "),
+            Span::styled(
+                format!(
+                    "⚠ {} free / {} required",
+                    fmt_space(si.available),
+                    fmt_space(si.required)
+                ),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Some(si) => Line::from(vec![
+            Span::raw(" Space   : "),
+            Span::styled(
+                format!(
+                    "✗ {} free / {} required — insufficient",
+                    fmt_space(si.available),
+                    fmt_space(si.required)
+                ),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]),
     }
 }

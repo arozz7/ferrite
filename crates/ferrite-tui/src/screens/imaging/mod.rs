@@ -12,8 +12,9 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_blockdev::BlockDevice;
 use ferrite_imaging::write_blocker;
 use ferrite_imaging::{
+    space_check,
     thermal::{ThermalEvent, ThermalGuard, ThermalGuardConfig},
-    ImagingConfig, ImagingEngine, ProgressReporter, ProgressUpdate, Signal,
+    ImagingConfig, ImagingEngine, ProgressReporter, ProgressUpdate, Signal, SpaceInfo,
 };
 
 mod render;
@@ -84,6 +85,12 @@ pub(crate) enum ImagingStatus {
     Complete,
     Cancelled,
     Error(String),
+    /// Destination has insufficient free space — ask the user to confirm before
+    /// proceeding.
+    ConfirmLowSpace {
+        available: u64,
+        required: u64,
+    },
     /// The destination image exists and was created from a different drive.
     /// Holds the identity stored in the sidecar vs. the currently connected drive.
     ConfirmDriveMismatch {
@@ -201,6 +208,9 @@ pub struct ImagingState {
     /// When `true`, all-zero blocks are skipped rather than written (sparse
     /// holes).  Default `true`; the user can toggle with `S`.
     pub sparse: bool,
+    /// Most recently computed destination free-space info.  `None` while no
+    /// device is selected or the path query failed.
+    pub space_info: Option<SpaceInfo>,
     /// Latest mapfile block snapshot for sector-map rendering.
     pub(crate) sector_map: Vec<ferrite_imaging::mapfile::Block>,
     /// User-initiated pause flag (shared with the ChannelReporter).
@@ -253,6 +263,7 @@ impl ImagingState {
             wb_rx: None,
             reverse: false,
             sparse: true,
+            space_info: None,
             sector_map: Vec::new(),
             user_pause: Arc::new(AtomicBool::new(false)),
             user_paused: false,
@@ -262,6 +273,35 @@ impl ImagingState {
             last_bytes_finished: 0,
             watchdog_secs: 0,
         }
+    }
+
+    /// Recompute `space_info` from the current `dest_path` and device size.
+    /// No-op when no device is selected.
+    fn refresh_space_info(&mut self) {
+        let Some(dev) = &self.device else {
+            self.space_info = None;
+            return;
+        };
+        let sector_size = dev.sector_size() as u64;
+        let device_size = dev.size();
+
+        let start_lba = self.start_lba_str.trim().parse::<u64>().ok().unwrap_or(0);
+        let end_lba = self
+            .end_lba_str
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .unwrap_or_else(|| device_size / sector_size.max(1));
+        let required = end_lba.saturating_sub(start_lba) * sector_size.max(1);
+
+        let dest_str = normalize_path(&self.dest_path);
+        let dest_path = if dest_str.is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            std::path::PathBuf::from(&dest_str)
+        };
+
+        self.space_info = space_check::check(&dest_path, required);
     }
 
     pub fn set_device(&mut self, device: Arc<dyn BlockDevice>) {
@@ -293,6 +333,8 @@ impl ImagingState {
         std::thread::spawn(move || {
             let _ = wb_tx.send(write_blocker::check(&device_path));
         });
+
+        self.refresh_space_info();
     }
 
     /// Returns `true` while the user is typing into a path field.
@@ -383,6 +425,21 @@ impl ImagingState {
     }
 
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // Low-space confirmation prompt intercepts all keys.
+        if matches!(self.status, ImagingStatus::ConfirmLowSpace { .. }) {
+            match code {
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.status = ImagingStatus::Idle;
+                    self.start_imaging_after_space_ok();
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.status = ImagingStatus::Idle;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Drive-mismatch confirmation prompt intercepts all keys.
         if matches!(self.status, ImagingStatus::ConfirmDriveMismatch { .. }) {
             match code {
@@ -399,6 +456,13 @@ impl ImagingState {
             match code {
                 KeyCode::Esc | KeyCode::Enter => {
                     self.edit_field = None;
+                    // Re-check space whenever the dest path or LBA range is updated.
+                    if matches!(
+                        field,
+                        EditField::Dest | EditField::StartLba | EditField::EndLba
+                    ) {
+                        self.refresh_space_info();
+                    }
                 }
                 KeyCode::Backspace => {
                     let s = self.field_mut(field);
@@ -500,6 +564,30 @@ impl ImagingState {
             self.status = ImagingStatus::Error("Set a destination path first (press d).".into());
             return;
         }
+
+        // Pre-flight space check: re-evaluate now that dest_path is finalised.
+        self.refresh_space_info();
+        if let Some(si) = self.space_info {
+            if !si.sufficient() {
+                self.status = ImagingStatus::ConfirmLowSpace {
+                    available: si.available,
+                    required: si.required,
+                };
+                return;
+            }
+        }
+
+        self.start_imaging_after_space_ok();
+    }
+
+    /// Continue imaging setup after the space check has been passed (or
+    /// overridden by the user).  Performs the drive-identity check and then
+    /// hands off to [`Self::start_imaging_forced`].
+    fn start_imaging_after_space_ok(&mut self) {
+        let device = match &self.device {
+            Some(d) => Arc::clone(d),
+            None => return,
+        };
 
         // Drive identity check: if the destination already exists and carries a
         // sidecar, confirm the connected drive matches before overwriting/appending.

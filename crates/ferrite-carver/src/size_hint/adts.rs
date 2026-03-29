@@ -60,11 +60,10 @@ pub(super) fn adts_hint(device: &dyn BlockDevice, file_offset: u64) -> Option<u6
 
         // 13-bit frame-length field at header bits [30:18]:
         //   byte3[1:0] << 11  |  byte4[7:0] << 3  |  byte5[7:5]
-        let frame_len = ((hdr[3] & 0x03) as usize) << 11
-            | (hdr[4] as usize) << 3
-            | (hdr[5] as usize) >> 5;
+        let frame_len =
+            ((hdr[3] & 0x03) as usize) << 11 | (hdr[4] as usize) << 3 | (hdr[5] as usize) >> 5;
 
-        if frame_len < MIN_FRAME_LEN || frame_len > MAX_FRAME_LEN {
+        if !(MIN_FRAME_LEN..=MAX_FRAME_LEN).contains(&frame_len) {
             break;
         }
 
@@ -93,12 +92,12 @@ mod tests {
     ///   bytes 3-5: encode `frame_len` in the 13-bit field
     ///   byte 6: buffer_fullness (0x1F = VBR)
     fn make_adts_frame(frame_len: usize) -> Vec<u8> {
-        assert!(frame_len >= 7 && frame_len <= 8191);
+        assert!((7..=8191).contains(&frame_len));
         let mut f = vec![0u8; frame_len];
         f[0] = 0xFF;
         f[1] = 0xF1; // MPEG-4, no CRC
         f[2] = 0x50; // profile=1, SFI=4 (44100Hz), channel=2
-        // Encode frame_len into bits [30:18] of bytes 3-5.
+                     // Encode frame_len into bits [30:18] of bytes 3-5.
         f[3] = ((frame_len >> 11) & 0x03) as u8;
         f[4] = ((frame_len >> 3) & 0xFF) as u8;
         f[5] = (((frame_len & 0x07) << 5) | 0x1F) as u8; // low 3 bits + fullness=VBR
@@ -135,7 +134,10 @@ mod tests {
         let frame_len = 512;
         let dev = make_device_with_frames(3, frame_len); // MIN_FRAMES = 4
         let result = adts_hint(&dev, 0);
-        assert!(result.is_none(), "3 frames should return None (below MIN_FRAMES)");
+        assert!(
+            result.is_none(),
+            "3 frames should return None (below MIN_FRAMES)"
+        );
     }
 
     #[test]
