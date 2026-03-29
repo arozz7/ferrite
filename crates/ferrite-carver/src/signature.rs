@@ -285,6 +285,14 @@ pub enum SizeHint {
     /// `8 + track_data_len`, where `track_data_len` is the u32 BE length
     /// field at MTrk+4.
     Midi,
+
+    /// ADTS (Audio Data Transport Stream) — raw AAC audio frame walker.
+    ///
+    /// Reads the 13-bit frame-length field from bytes 3–5 of each ADTS frame
+    /// header and walks frames sequentially until the sync word is absent, the
+    /// frame length is implausible (< 7 or > 8192 bytes), or fewer than four
+    /// valid frames are found (returns `None` then, falling back to `max_size`).
+    Adts,
 }
 
 impl SizeHint {
@@ -316,6 +324,7 @@ impl SizeHint {
             SizeHint::MpegPs => "mpeg_ps",
             SizeHint::Au => "au",
             SizeHint::Midi => "midi",
+            SizeHint::Adts => "adts",
         }
     }
 }
@@ -520,6 +529,7 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ps") => Some(SizeHint::MpegPs),
                     Some(k) if k.eq_ignore_ascii_case("au") => Some(SizeHint::Au),
                     Some(k) if k.eq_ignore_ascii_case("midi") => Some(SizeHint::Midi),
+                    Some(k) if k.eq_ignore_ascii_case("adts") => Some(SizeHint::Adts),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
                         match (r.size_hint_ts_offset, r.size_hint_stride) {
                             (Some(ts_offset), Some(stride)) => {

@@ -5,6 +5,7 @@
 //! size, or `None` when the header is malformed or a read fails (the caller
 //! falls back to `max_size`).
 
+mod adts;
 mod asf;
 mod au;
 mod ebml;
@@ -117,6 +118,8 @@ pub(crate) fn read_size_hint(
         SizeHint::Au => au::au_hint(device, file_offset),
 
         SizeHint::Midi => midi::midi_hint(device, file_offset),
+
+        SizeHint::Adts => adts::adts_hint(device, file_offset),
     }
 }
 
