@@ -1404,7 +1404,14 @@ header       = "FF F1"
 footer       = ""
 min_size     = 128           # At least a few complete frames
 max_size     = 52_428_800    # 50 MiB — typical AAC audio file
-# Validates: layer bits must be 00; sampling_freq_index @byte2 in [0, 12].
+# ADTS frame walker: reads the 13-bit frame-length field and advances frame by
+# frame, stopping at the first invalid sync or implausible length.
+size_hint    = "adts"
+# Suppress per-frame re-hits inside an already-started stream.  ADTS frames
+# are at minimum 7 bytes; 4096 covers typical frame sizes (128–4096 bytes).
+min_hit_gap  = 4096
+# Validates: layer bits must be 00; sampling_freq_index @byte2 in [0, 12];
+# 13-bit frame_length field must be >= 7 and <= 8191 (max 13-bit value).
 pre_validate = "aac"
 
 [[signature]]
@@ -1417,7 +1424,10 @@ header       = "FF F9"
 footer       = ""
 min_size     = 128           # At least a few complete frames
 max_size     = 52_428_800    # 50 MiB
-# Validates: layer bits must be 00; sampling_freq_index @byte2 in [0, 12].
+size_hint    = "adts"
+min_hit_gap  = 4096
+# Validates: layer bits must be 00; sampling_freq_index @byte2 in [0, 12];
+# 13-bit frame_length field must be >= 7 and <= 8191 (max 13-bit value).
 pre_validate = "aac"
 
 [[signature]]

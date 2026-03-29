@@ -1127,10 +1127,13 @@ fn validate_fits(data: &[u8], pos: usize) -> bool {
 fn validate_aac(data: &[u8], pos: usize) -> bool {
     // ADTS frame header layout (bytes relative to pos):
     //   0:   0xFF (sync high — already matched by magic)
-    //   1:   sync[3:0] + ID + layer[1:0] + protection
+    //   1:   sync[3:0] + ID + layer[1:0] + protection_absent
     //        layer bits (1–2) MUST be 00 for AAC ADTS (not MPEG audio layers)
     //   2:   profile[1:0] + sampling_freq_idx[3:0] + private + channel_cfg[2]
     //        sampling_freq_idx in [0, 12]; 13–15 are reserved/invalid
+    //   3–5: channel_cfg + copyright fields + aac_frame_length[12:0] (13 bits)
+    //        Minimum valid frame length = 7 (header only, protection_absent=1).
+    //        Maximum plausible = 8191 (max 13-bit value per spec).
     if need(data, pos, 3) {
         return true;
     }
@@ -1142,7 +1145,21 @@ fn validate_aac(data: &[u8], pos: usize) -> bool {
     }
     // sampling_freq_index (bits 5–2 of byte 2) must be in [0, 12]
     let sfi = (b2 >> 2) & 0x0F;
-    sfi <= 12
+    if sfi > 12 {
+        return false;
+    }
+    // If we have enough bytes, also validate the 13-bit frame-length field.
+    // This eliminates hits where bytes 0–2 happen to look like an ADTS header
+    // but are part of unrelated binary data.
+    if !need(data, pos, 6) {
+        let frame_len = ((data[pos + 3] & 0x03) as u32) << 11
+            | (data[pos + 4] as u32) << 3
+            | (data[pos + 5] as u32) >> 5;
+        if !(7..=8191).contains(&frame_len) {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_djvu(data: &[u8], pos: usize) -> bool {
@@ -6054,12 +6071,21 @@ mod tests {
     // ── AAC ───────────────────────────────────────────────────────────────────
 
     fn make_aac(id: u8, sfi: u8) -> Vec<u8> {
-        // Construct a minimal ADTS frame header.
-        // Byte 1: sync(4) + ID(1) + layer(00) + protection(1)
+        make_aac_with_len(id, sfi, 256)
+    }
+
+    /// Build a 7-byte ADTS header with an explicit frame length encoded in
+    /// the 13-bit field at bytes 3–5.
+    fn make_aac_with_len(id: u8, sfi: u8, frame_len: usize) -> Vec<u8> {
+        // Byte 1: sync_lo(4) + ID(1) + layer(00) + protection_absent(1)
         let b1 = 0xF0 | (id << 3) | 0x01;
         // Byte 2: profile(00) + sampling_freq_idx(4 bits) + private(0) + channel_hi(0)
         let b2 = (sfi & 0x0F) << 2;
-        vec![0xFF, b1, b2, 0x00, 0x00, 0x00, 0x00]
+        // 13-bit frame_length field: byte3[1:0] << 11 | byte4 << 3 | byte5[7:5]
+        let b3_lo = ((frame_len >> 11) & 0x03) as u8;
+        let b4 = ((frame_len >> 3) & 0xFF) as u8;
+        let b5_hi = (((frame_len & 0x07) as u8) << 5) | 0x1F; // VBR fullness
+        vec![0xFF, b1, b2, b3_lo, b4, b5_hi, 0xFC]
     }
 
     #[test]
@@ -6088,7 +6114,47 @@ mod tests {
 
     #[test]
     fn aac_too_short_passes() {
+        // Only 2 bytes — benefit of doubt (frame-length field not yet visible).
         assert!(validate_aac(b"\xFF\xF1", 0));
+    }
+
+    #[test]
+    fn aac_frame_length_zero_rejected() {
+        // frame_len = 0 in bytes 3-5 — impossible for any real ADTS frame.
+        let mut buf = make_aac(0, 4);
+        // Zero out bytes 3-5 so frame_len encodes as 0.
+        buf[3] &= !0x03;
+        buf[4] = 0x00;
+        buf[5] = 0x00;
+        assert!(!validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_frame_length_too_small_rejected() {
+        // frame_len = 6 (< 7 minimum header size) — impossible ADTS frame.
+        let buf = make_aac_with_len(0, 4, 6);
+        assert!(!validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_frame_length_minimum_valid() {
+        // frame_len = 7 (smallest allowed: header-only frame).
+        let buf = make_aac_with_len(0, 4, 7);
+        assert!(validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_frame_length_typical_accepted() {
+        // frame_len = 512 — a common real-world value.
+        let buf = make_aac_with_len(0, 4, 512);
+        assert!(validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_frame_length_max_boundary_accepted() {
+        // frame_len = 8191 — maximum 13-bit value per ADTS spec.
+        let buf = make_aac_with_len(0, 4, 8191);
+        assert!(validate_aac(&buf, 0));
     }
 
     // ── DjVu ──────────────────────────────────────────────────────────────────

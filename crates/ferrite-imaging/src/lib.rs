@@ -5,6 +5,8 @@ pub mod hash;
 pub mod mapfile;
 pub mod mapfile_io;
 pub mod progress;
+pub mod space_check;
+pub mod sparse;
 pub mod thermal;
 pub mod write_blocker;
 
@@ -15,3 +17,4 @@ pub use engine::ImagingEngine;
 pub use error::{ImagingError, Result};
 pub use mapfile::{Block, BlockStatus, Mapfile};
 pub use progress::{ImagingPhase, NullReporter, ProgressReporter, ProgressUpdate, Signal};
+pub use space_check::SpaceInfo;

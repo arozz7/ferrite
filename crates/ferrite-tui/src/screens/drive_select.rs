@@ -228,9 +228,10 @@ impl DriveSelectState {
                     input.pop();
                     self.image_error = None;
                 }
-                // Only push printable characters; modifier combos (Ctrl+V etc.)
-                // are handled at the App level before reaching here.
-                KeyCode::Char(c) if modifiers.is_empty() => {
+                // Accept printable characters typed with or without Shift (e.g.
+                // ':' on a US keyboard arrives as Char(':') + SHIFT).  Reject
+                // other modifier combos such as Ctrl+V (handled at App level).
+                KeyCode::Char(c) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
                     input.push(c);
                     self.image_error = None;
                 }
@@ -755,10 +756,32 @@ mod tests {
     fn image_overlay_char_accumulates() {
         let mut s = DriveSelectState::new();
         s.image_input = Some(String::new());
-        s.handle_key(KeyCode::Char('C'), KeyModifiers::NONE);
-        s.handle_key(KeyCode::Char(':'), KeyModifiers::NONE);
+        // 'C' — uppercase letter, Shift held on a real keyboard.
+        s.handle_key(KeyCode::Char('C'), KeyModifiers::SHIFT);
+        // ':' — Shift+; on a US keyboard; crossterm delivers SHIFT modifier.
+        s.handle_key(KeyCode::Char(':'), KeyModifiers::SHIFT);
+        // '\' — no modifier on most keyboards.
         s.handle_key(KeyCode::Char('\\'), KeyModifiers::NONE);
         assert_eq!(s.image_input.as_deref(), Some("C:\\"));
+    }
+
+    #[test]
+    fn image_overlay_colon_without_shift_also_accepted() {
+        // Some terminals / remappers deliver ':' without a SHIFT flag.
+        // The overlay should still accept it.
+        let mut s = DriveSelectState::new();
+        s.image_input = Some(String::new());
+        s.handle_key(KeyCode::Char(':'), KeyModifiers::NONE);
+        assert_eq!(s.image_input.as_deref(), Some(":"));
+    }
+
+    #[test]
+    fn image_overlay_ctrl_combo_is_ignored() {
+        // Ctrl+C must not be appended to the path.
+        let mut s = DriveSelectState::new();
+        s.image_input = Some(String::new());
+        s.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(s.image_input.as_deref(), Some(""));
     }
 
     #[test]

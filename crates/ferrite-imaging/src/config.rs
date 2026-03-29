@@ -30,6 +30,15 @@ pub struct ImagingConfig {
     /// disk (e.g., a corrupted partition table area) and data is at the end.
     /// Default: `false`.
     pub reverse: bool,
+
+    /// When `true`, the output file is opened as a sparse file: all-zero blocks
+    /// are skipped rather than written, and the OS leaves those ranges as
+    /// unallocated holes.  The file reads back as zeros for those regions.
+    ///
+    /// Requires a sparse-capable destination filesystem (NTFS, ext4, XFS, APFS,
+    /// …).  On FAT32 / exFAT destinations the OS silently falls back to dense
+    /// allocation.  Default: `true`.
+    pub sparse_output: bool,
 }
 
 impl ImagingConfig {
@@ -74,6 +83,7 @@ impl Default for ImagingConfig {
             start_lba: None,
             end_lba: None,
             reverse: false,
+            sparse_output: true,
         }
     }
 }

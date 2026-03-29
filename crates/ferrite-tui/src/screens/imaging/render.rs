@@ -24,7 +24,7 @@ impl ImagingState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(12), // config fields + hint + resume line
+                Constraint::Length(14), // config fields + hint + resume line + sparse + space
                 Constraint::Length(3),  // progress bar
                 Constraint::Length(6),  // sector map
                 Constraint::Min(0),     // stats / messages
@@ -181,10 +181,31 @@ impl ImagingState {
                 ),
                 Span::raw("  (r to toggle)"),
             ]),
+            Line::from(vec![
+                Span::raw(" Sparse  : "),
+                Span::styled(
+                    if self.sparse { "ON" } else { "OFF" }.to_string(),
+                    if self.sparse {
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
+                Span::raw("  (S to toggle — skips zero blocks, saves space on NTFS/ext4)"),
+            ]),
+            // ── Destination space row ────────────────────────────────────────
+            space_row(self.space_info),
+            // ── Footer hint — space tip when tight, otherwise standard hint ──
             Line::from(Span::styled(
-                " Dest: full file path, e.g. D:\\recovery\\disk.img  \
-                 — or leave empty / set to a folder to auto-name from drive serial.  \
-                 Mapfile saves progress for resume.",
+                if matches!(self.space_info, Some(si) if !si.sufficient()) {
+                    " Tip: use LBA range (l/e) to image only the target partition, \
+                     or enable sparse output (S) to skip zero sectors."
+                } else {
+                    " Dest: full file path, e.g. D:\\recovery\\disk.img  \
+                     — or leave empty / set to a folder to auto-name from drive serial."
+                },
                 Style::default().fg(Color::DarkGray),
             )),
         ];
@@ -196,6 +217,61 @@ impl ImagingState {
             ),
             chunks[0],
         );
+
+        // ── Low-space confirmation prompt ────────────────────────────────────
+        if let ImagingStatus::ConfirmLowSpace {
+            available,
+            required,
+        } = &self.status
+        {
+            let text = vec![
+                Line::from(Span::styled(
+                    " ⚠  Low disk space — imaging may fail before completion.",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(" Available : ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(fmt_space(*available), Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(vec![
+                    Span::styled(" Required  : ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(fmt_space(*required)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    " Tip: use LBA range (l/e) or enable sparse output (S) to reduce space usage.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        " Enter / y",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" — proceed anyway     "),
+                    Span::styled(
+                        " Esc / n",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" — cancel"),
+                ]),
+            ];
+            frame.render_widget(
+                Paragraph::new(text).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" ⚠ Low Disk Space ")
+                        .style(Style::default().fg(Color::Yellow)),
+                ),
+                chunks[1],
+            );
+            return;
+        }
 
         // ── Drive mismatch confirmation prompt ───────────────────────────────
         if let ImagingStatus::ConfirmDriveMismatch {
@@ -281,12 +357,15 @@ impl ImagingState {
         }
 
         // ── Progress bar ─────────────────────────────────────────────────────
-        let ratio = self
+        // Use fraction_pass so the bar advances through Trim/Scrape passes even
+        // when few sectors are successfully recovered.  Recovery ratio is shown
+        // separately in the label when it diverges from pass progress.
+        let (ratio, recovery_pct) = self
             .latest
             .as_ref()
-            .map(|u| u.fraction_done())
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0);
+            .map(|u| (u.fraction_pass(), u.fraction_done() * 100.0))
+            .unwrap_or((0.0, 0.0));
+        let ratio = ratio.clamp(0.0, 1.0);
 
         let phase_label = self.latest.as_ref().map(|u| {
             use ferrite_imaging::ImagingPhase;
@@ -307,11 +386,19 @@ impl ImagingState {
             ImagingStatus::Idle => "Not started — press s to start".into(),
             ImagingStatus::Running => {
                 let phase = phase_label.unwrap_or("Copy");
-                format!("{phase} — {:.1}%", ratio * 100.0)
+                let pass_pct = ratio * 100.0;
+                // Show recovery ratio alongside pass progress for Trim/Scrape
+                // where the two numbers diverge significantly.
+                if (pass_pct - recovery_pct).abs() > 0.5 {
+                    format!("{phase} — {pass_pct:.1}%  (recovered {recovery_pct:.1}%)")
+                } else {
+                    format!("{phase} — {pass_pct:.1}%")
+                }
             }
             ImagingStatus::Complete => "Complete ✓".into(),
             ImagingStatus::Cancelled => "Cancelled".into(),
             ImagingStatus::Error(e) => format!("Error: {e}"),
+            ImagingStatus::ConfirmLowSpace { .. } => String::new(), // handled above
             ImagingStatus::ConfirmDriveMismatch { .. } => String::new(), // handled above
         };
 
@@ -518,12 +605,38 @@ impl ImagingState {
     }
 
     fn render_sector_map(&self, frame: &mut Frame, area: Rect) {
-        let legend = if area.width >= 90 {
-            " Sector Map  \u{2588}\u{2588} Finished  \u{2591}\u{2591} Non-tried  \u{2592}\u{2592} Non-trim/scrape  \u{2588}\u{2588} Bad  \u{25b6} Current "
+        // Build a colored legend so Finished (green) and Bad (red) are visually
+        // distinct — a plain string title cannot carry per-span color.
+        let legend: Line = if area.width >= 90 {
+            Line::from(vec![
+                Span::raw(" Sector Map  "),
+                Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Green)),
+                Span::raw(" Finished  "),
+                Span::styled("\u{2591}\u{2591}", Style::default().fg(Color::DarkGray)),
+                Span::raw(" Non-tried  "),
+                Span::styled("\u{2592}\u{2592}", Style::default().fg(Color::Yellow)),
+                Span::raw(" Non-trim/scrape  "),
+                Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Red)),
+                Span::raw(" Bad  "),
+                Span::styled("\u{25b6}", Style::default().fg(Color::Cyan)),
+                Span::raw(" Current "),
+            ])
         } else if area.width >= 60 {
-            " Sector Map  \u{2588}\u{2588} OK  \u{2591}\u{2591} Pending  \u{2592}\u{2592} Warn  \u{2588}\u{2588} Bad  \u{25b6} Pos "
+            Line::from(vec![
+                Span::raw(" Sector Map  "),
+                Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Green)),
+                Span::raw(" OK  "),
+                Span::styled("\u{2591}\u{2591}", Style::default().fg(Color::DarkGray)),
+                Span::raw(" Pending  "),
+                Span::styled("\u{2592}\u{2592}", Style::default().fg(Color::Yellow)),
+                Span::raw(" Warn  "),
+                Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Red)),
+                Span::raw(" Bad  "),
+                Span::styled("\u{25b6}", Style::default().fg(Color::Cyan)),
+                Span::raw(" Pos "),
+            ])
         } else {
-            " Sector Map "
+            Line::from(" Sector Map ")
         };
         let block = Block::default().borders(Borders::ALL).title(legend);
         let inner = block.inner(area);
@@ -625,5 +738,71 @@ fn fmt_bytes(n: u64) -> String {
         format!("{:.1}MiB", n as f64 / MIB as f64)
     } else {
         format!("{n}B")
+    }
+}
+
+/// Format a byte count as a human-readable size (TiB / GiB / MiB / B).
+fn fmt_space(n: u64) -> String {
+    const TIB: u64 = 1024 * 1024 * 1024 * 1024;
+    const GIB: u64 = 1024 * 1024 * 1024;
+    const MIB: u64 = 1024 * 1024;
+    if n >= TIB {
+        format!("{:.2} TiB", n as f64 / TIB as f64)
+    } else if n >= GIB {
+        format!("{:.1} GiB", n as f64 / GIB as f64)
+    } else if n >= MIB {
+        format!("{:.1} MiB", n as f64 / MIB as f64)
+    } else {
+        format!("{n} B")
+    }
+}
+
+/// Build the "Dest space" config row with colour-coded status.
+///
+/// - Green  `✓ N free / N required` — sufficient
+/// - Amber  `⚠ N free / N required` — within 10 % shortfall
+/// - Red    `✗ N free / N required — insufficient` — clear shortfall
+/// - Gray   `—` — no info
+fn space_row(info: Option<ferrite_imaging::SpaceInfo>) -> ratatui::text::Line<'static> {
+    match info {
+        None => Line::from(vec![
+            Span::raw(" Space   : "),
+            Span::styled("—", Style::default().fg(Color::DarkGray)),
+        ]),
+        Some(si) if si.sufficient() => Line::from(vec![
+            Span::raw(" Space   : "),
+            Span::styled(
+                format!(
+                    "✓ {} free / {} required",
+                    fmt_space(si.available),
+                    fmt_space(si.required)
+                ),
+                Style::default().fg(Color::Green),
+            ),
+        ]),
+        Some(si) if si.ratio() >= 0.9 => Line::from(vec![
+            Span::raw(" Space   : "),
+            Span::styled(
+                format!(
+                    "⚠ {} free / {} required",
+                    fmt_space(si.available),
+                    fmt_space(si.required)
+                ),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Some(si) => Line::from(vec![
+            Span::raw(" Space   : "),
+            Span::styled(
+                format!(
+                    "✗ {} free / {} required — insufficient",
+                    fmt_space(si.available),
+                    fmt_space(si.required)
+                ),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]),
     }
 }

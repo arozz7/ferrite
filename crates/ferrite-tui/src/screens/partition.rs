@@ -26,6 +26,8 @@ enum PartitionMsg {
 enum PartitionStatus {
     Idle,
     Reading,
+    /// Partition table was parsed but yielded no entries; auto-triggered scan.
+    AutoScanning,
     Scanning,
     Done,
     Error(String),
@@ -78,10 +80,18 @@ impl PartitionState {
         };
         match rx.try_recv() {
             Ok(PartitionMsg::Table(tbl)) => {
+                let is_read_result = matches!(self.status, PartitionStatus::Reading);
+                let is_empty = tbl.entries.is_empty();
                 self.table = Some(tbl);
                 self.selected = 0;
-                self.status = PartitionStatus::Done;
                 self.rx = None;
+                // Auto-scan when the MBR/GPT parse returned no partitions.
+                if is_read_result && is_empty {
+                    self.status = PartitionStatus::AutoScanning;
+                    self.start_scan();
+                } else {
+                    self.status = PartitionStatus::Done;
+                }
             }
             Ok(PartitionMsg::Error(e)) => {
                 self.status = PartitionStatus::Error(e);
@@ -228,6 +238,7 @@ impl PartitionState {
 
         let title = match &self.status {
             PartitionStatus::Reading => " Partition Analysis — reading… ",
+            PartitionStatus::AutoScanning => " Partition Analysis — no table found, scanning… ",
             PartitionStatus::Scanning => " Partition Analysis — scanning… ",
             PartitionStatus::Done => " Partition Analysis — r: read  s: scan  w: export ",
             _ => " Partition Analysis — r: read  s: scan ",
@@ -238,7 +249,9 @@ impl PartitionState {
             PartitionStatus::Idle => {
                 frame.render_widget(Paragraph::new(" No device selected.").block(outer), area);
             }
-            PartitionStatus::Reading | PartitionStatus::Scanning => {
+            PartitionStatus::Reading
+            | PartitionStatus::AutoScanning
+            | PartitionStatus::Scanning => {
                 frame.render_widget(Paragraph::new(" Working…").block(outer), area);
             }
             PartitionStatus::Error(e) => {
@@ -420,5 +433,77 @@ mod tests {
         s.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
         // No table → early return, no panic, no export status.
         assert!(s.export_status.is_none());
+    }
+
+    #[test]
+    fn auto_scan_triggered_when_read_returns_empty_table() {
+        use ferrite_blockdev::MockBlockDevice;
+        use ferrite_partition::{PartitionTable, PartitionTableKind};
+        use std::sync::mpsc;
+        use std::sync::Arc;
+
+        let dev: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::zeroed(4096, 512));
+        let mut s = PartitionState::new();
+        s.device = Some(dev);
+
+        // Simulate the background thread sending an empty table as the read result.
+        let (tx, rx) = mpsc::channel::<PartitionMsg>();
+        s.rx = Some(rx);
+        s.status = PartitionStatus::Reading;
+
+        let empty_table = PartitionTable {
+            kind: PartitionTableKind::Mbr,
+            sector_size: 512,
+            disk_size_lba: 8,
+            entries: vec![],
+        };
+        tx.send(PartitionMsg::Table(empty_table)).unwrap();
+
+        // First tick processes the empty table and starts auto-scan.
+        s.tick();
+        // Status should now be AutoScanning (scan thread was spawned internally).
+        assert!(matches!(
+            s.status,
+            PartitionStatus::AutoScanning | PartitionStatus::Scanning
+        ));
+    }
+
+    #[test]
+    fn no_auto_scan_when_read_returns_non_empty_table() {
+        use ferrite_blockdev::MockBlockDevice;
+        use ferrite_partition::{
+            PartitionEntry, PartitionKind, PartitionTable, PartitionTableKind,
+        };
+        use std::sync::mpsc;
+        use std::sync::Arc;
+
+        let dev: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::zeroed(4096, 512));
+        let mut s = PartitionState::new();
+        s.device = Some(dev);
+
+        let (tx, rx) = mpsc::channel::<PartitionMsg>();
+        s.rx = Some(rx);
+        s.status = PartitionStatus::Reading;
+
+        let non_empty_table = PartitionTable {
+            kind: PartitionTableKind::Mbr,
+            sector_size: 512,
+            disk_size_lba: 8,
+            entries: vec![PartitionEntry {
+                index: 0,
+                start_lba: 2,
+                end_lba: 7,
+                size_lba: 6,
+                name: None,
+                kind: PartitionKind::Mbr {
+                    partition_type: 0x07,
+                },
+                bootable: false,
+            }],
+        };
+        tx.send(PartitionMsg::Table(non_empty_table)).unwrap();
+        s.tick();
+        // Should go straight to Done, not AutoScanning.
+        assert!(matches!(s.status, PartitionStatus::Done));
     }
 }
