@@ -28,6 +28,7 @@
 20. [Filesystem Coverage & Known Limitations](#20-filesystem-coverage--known-limitations)
 21. [Troubleshooting](#21-troubleshooting)
 22. [Glossary](#22-glossary)
+23. [Post-Recovery Verification Scripts](#23-post-recovery-verification-scripts)
 
 ---
 
@@ -1674,3 +1675,128 @@ reset
 | **TextKind** | A content classification assigned to extracted text blocks: Prose, Code, CSV, Log, Config, Html, Json, Path, or Other |
 | **ThermalGuard** | Ferrite's background imaging safety system that auto-pauses imaging when drive temperature exceeds a configurable threshold |
 | **Write-blocker** | A hardware or software mechanism that prevents writes to a source device; Ferrite performs a software pre-flight check on device selection |
+
+---
+
+## 23. Post-Recovery Verification Scripts
+
+The `scripts/` directory contains two PowerShell scripts for verifying carve
+output against known-good source drives after a recovery session.
+
+### 23.1 `compare_carve.ps1` — Filename + Size Comparison
+
+A fast first pass that matches every file in the carve output against source
+drives by **filename (case-insensitive) and size**.  Completes in under a
+minute for 30,000+ carved files.
+
+**Usage**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\compare_carve.ps1 `
+    -CarveDir   'O:\Carved\my-session' `
+    -SourceDrives 'E:\','F:\' `
+    -OutDir     'O:\Carved\my-session'
+```
+
+All parameters are optional; the defaults shown above are the defaults in the
+script.
+
+**Output files**
+
+| File | Contents |
+|---|---|
+| `matched.csv` | Carved file whose name + size exactly match a source file |
+| `size_mismatch.csv` | Carved file whose name matches but size differs |
+| `unrecognised.csv` | Carved file with no name match (fallback-named or third-source) |
+| `not_recovered.csv` | Source file whose name never appears in the carve output |
+
+**Interpreting results**
+
+- **matched** — cleanly recovered; no further action needed.
+- **size_mismatch** — the filesystem index correctly identified the file but
+  the carved copy has a different size.  Common causes: (a) bad sectors
+  truncated the read, (b) the file was a different version on the source drive
+  than on the reference drive, (c) name collision between two unrelated files.
+  Use `hash_compare_carve.ps1` to distinguish these cases.
+- **unrecognised** — most of these will be fallback-named files
+  (`ferrite_png_XXXXXX.png`) carved without filesystem metadata, or embedded
+  resources (toolbar icons, UI bitmaps) that do not exist as standalone files
+  on the source drives.  Run the hash script to find content matches.
+- **not_recovered** — source files whose names never appeared.  Many are
+  actually present under fallback names; the hash script will resolve them.
+
+---
+
+### 23.2 `hash_compare_carve.ps1` — SHA-256 Content Comparison
+
+A thorough second pass that hashes every source file and every
+fallback-named carved file, then matches by content.  Also re-checks the
+`size_mismatch.csv` group to distinguish true corruption from version
+differences.
+
+**First run** (builds source hash cache — typically 15–25 minutes for 40,000
+source files):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\hash_compare_carve.ps1 `
+    -CarveDir     'O:\Carved\my-session' `
+    -SourceDrives 'E:\','F:\'
+```
+
+A `hash_cache.json` file is written next to the carved output.
+
+**Subsequent runs** (reuses cache — completes in under 2 minutes):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\hash_compare_carve.ps1 `
+    -CarveDir       'O:\Carved\my-session' `
+    -SourceDrives   'E:\','F:\' `
+    -SkipCacheBuild
+```
+
+**Output files**
+
+| File | Contents |
+|---|---|
+| `hash_matched.csv` | Fallback-named carved file whose SHA-256 matches a source file |
+| `hash_unmatched.csv` | No source hash match found |
+| `hash_mismatch_check.csv` | Re-evaluation of the `size_mismatch` group with verdicts |
+
+**Verdicts in `hash_mismatch_check.csv`**
+
+| Verdict | Meaning |
+|---|---|
+| `identical` | Hashes match despite size difference — false alarm from the name comparison |
+| `hash_match_alt_source` | Content matches a *different* source file — a different file happened to have the same name |
+| `damaged` | Hash does not match any source file — either genuinely corrupted or a different software version |
+| `carved_unreadable` | The carved file could not be opened |
+| `source_missing` | The source file path no longer exists on the reference drive |
+
+**Note on "damaged" verdicts for system files:** Windows Update and Office
+patching re-sign PE binaries by appending an Authenticode signature (~4–8 KB).
+Files recovered from an older system state will consistently show a size delta
+of roughly −5,000 to −8,000 bytes compared to current patched versions.  These
+are reported as `damaged` but are in fact correctly recovered originals.  If
+the delta for DLL/EXE files is consistent across many files, this is almost
+certainly the cause rather than actual sector-level corruption.
+
+---
+
+### 23.3 Workflow Summary
+
+```
+1. Run Ferrite carving session
+        |
+        v
+2. compare_carve.ps1  (fast, filename-based)
+        |-- matched.csv          -> done
+        |-- size_mismatch.csv    -> pass to hash script
+        |-- unrecognised.csv     -> pass to hash script
+        `-- not_recovered.csv    -> review, may appear under fallback names
+        |
+        v
+3. hash_compare_carve.ps1  (thorough, content-based)
+        |-- hash_matched.csv         -> fallback files resolved to source
+        |-- hash_mismatch_check.csv  -> damaged / version-diff / false-alarm
+        `-- hash_unmatched.csv       -> embedded resources or genuine loss
+```
