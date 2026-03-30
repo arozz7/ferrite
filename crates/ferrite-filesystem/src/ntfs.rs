@@ -19,7 +19,7 @@ use crate::ntfs_helpers::{
 };
 use crate::{FileEntry, FilesystemParser, FilesystemType, RecoveryChance};
 
-// â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Constants â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 const NTFS_OEM_ID: &[u8] = b"NTFS    ";
 
@@ -29,7 +29,7 @@ const ROOT_MFT_RECORD: u64 = 5;
 // Maximum MFT records to scan (safety cap for very large volumes)
 const MAX_SCAN_RECORDS: u64 = 65_536;
 
-// â”€â”€ Public struct â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Public struct â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 /// Read-only NTFS filesystem parser.
 pub struct NtfsParser {
@@ -107,7 +107,7 @@ impl NtfsParser {
         })
     }
 
-    // â”€â”€ MFT helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ MFT helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     fn read_mft_record(&self, record_number: u64) -> Result<Vec<u8>> {
         let offset = self.mft_start_byte + record_number * self.mft_record_size;
@@ -170,7 +170,7 @@ impl NtfsParser {
     }
 }
 
-// â”€â”€ FilesystemParser impl â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ FilesystemParser impl â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 impl FilesystemParser for NtfsParser {
     fn filesystem_type(&self) -> FilesystemType {
@@ -317,8 +317,84 @@ impl FilesystemParser for NtfsParser {
     }
 
     fn enumerate_files(&self) -> Result<Vec<FileEntry>> {
-        // Return every non-directory MFT record (in-use or deleted), across all directories.
-        self.scan(|_, _, is_dir| !is_dir)
+        use std::collections::HashMap;
+
+        // Phase 1 — single MFT pass: collect a directory map and accumulate file
+        // entries (path left empty for now).
+        //
+        // dir_map: mft_record_num → (dir_name, parent_ref)
+        let mut dir_map: HashMap<u64, (String, u64)> = HashMap::new();
+        // pending: (parent_ref, FileEntry with empty path)
+        let mut pending: Vec<(u64, FileEntry)> = Vec::new();
+
+        for i in 0..self.mft_record_count {
+            let raw = match self.read_mft_record(i) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if raw.len() < 48 || &raw[0..4] != FILE_SIG {
+                continue;
+            }
+            let flags = u16::from_le_bytes([raw[22], raw[23]]);
+            let in_use = flags & 1 != 0;
+            let is_dir = flags & 2 != 0;
+
+            let Some((name, parent_ref, data_size, first_lcn)) = parse_file_info(&raw) else {
+                continue;
+            };
+
+            if is_dir {
+                dir_map.insert(i, (name, parent_ref));
+            } else {
+                let data_byte_offset = first_lcn.map(|lcn| lcn * self.cluster_size);
+                let (created, modified) = parse_standard_info(&raw).unwrap_or((None, None));
+                pending.push((
+                    parent_ref,
+                    FileEntry {
+                        name,
+                        path: String::new(),
+                        size: data_size,
+                        is_dir: false,
+                        is_deleted: !in_use,
+                        created,
+                        modified,
+                        first_cluster: None,
+                        mft_record: Some(i),
+                        inode_number: None,
+                        data_byte_offset,
+                        recovery_chance: RecoveryChance::Unknown,
+                    },
+                ));
+            }
+        }
+
+        // Phase 2 — resolve each file's full path by walking parent_ref chain up
+        // to ROOT_MFT_RECORD (5).  Depth-limited to 32 to guard against cycles.
+        const MAX_DEPTH: usize = 32;
+        let entries = pending
+            .into_iter()
+            .map(|(parent_ref, mut entry)| {
+                let mut parts = vec![entry.name.clone()];
+                let mut cur = parent_ref;
+                for _ in 0..MAX_DEPTH {
+                    if cur == ROOT_MFT_RECORD {
+                        break;
+                    }
+                    match dir_map.get(&cur) {
+                        Some((dir_name, grandparent)) => {
+                            parts.push(dir_name.clone());
+                            cur = *grandparent;
+                        }
+                        None => break,
+                    }
+                }
+                parts.reverse();
+                entry.path = format!("/{}", parts.join("/"));
+                entry
+            })
+            .collect();
+
+        Ok(entries)
     }
 }
 
@@ -331,7 +407,7 @@ mod tests {
     use super::*;
     use crate::ntfs_helpers::{first_lcn_from_run_list, ATTR_FILE_NAME};
 
-    // â”€â”€ Image builder helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Image builder helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     /// Build a minimal NTFS boot sector.
     ///
@@ -363,7 +439,7 @@ mod tests {
     ) -> Vec<u8> {
         let mut rec = vec![0u8; 1024];
 
-        // â”€â”€ Fixed header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // â"€â"€ Fixed header â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
         rec[0..4].copy_from_slice(b"FILE");
         // usa_offset = 0x30, usa_count = 1 (no fixup replacements)
         rec[4..6].copy_from_slice(&0x30u16.to_le_bytes());
@@ -380,7 +456,7 @@ mod tests {
         // Allocated size
         rec[28..32].copy_from_slice(&1024u32.to_le_bytes());
 
-        // â”€â”€ Attributes start at 0x38 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // â"€â"€ Attributes start at 0x38 â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
         let mut pos = 0x38usize;
 
         // $FILE_NAME (type 0x30, resident)
@@ -406,7 +482,7 @@ mod tests {
 
         pos += fn_attr_len;
 
-        // $DATA (type 0x80, resident) â€” only if non-empty
+        // $DATA (type 0x80, resident) â€" only if non-empty
         if !file_data.is_empty() {
             let data_val_len = file_data.len();
             let data_attr_len = ((0x18 + data_val_len) + 7) & !7;
@@ -436,7 +512,7 @@ mod tests {
     ///
     /// MFT starts at cluster 8 (sector 8, byte 4096).
     /// Record size = 1024 bytes (two 512-byte sectors each).
-    /// Records 0â€“5 are system placeholders; record 5 = root; record 6 = test file.
+    /// Records 0â€"5 are system placeholders; record 5 = root; record 6 = test file.
     fn build_image() -> MockBlockDevice {
         const SECTOR: usize = 512;
         const MFT_START: usize = 4096; // cluster 8 * 512
@@ -448,7 +524,7 @@ mod tests {
         let boot = boot_sector();
         dev.write_sector(0, &boot);
 
-        // Write a dummy FILE record for MFT records 0â€“4 (system files)
+        // Write a dummy FILE record for MFT records 0â€"4 (system files)
         for i in 0u64..5 {
             let offset_bytes = MFT_START + i as usize * REC_SIZE;
             let rec = build_mft_record(true, true, 5, &format!("$sys{i}"), &[]);
@@ -478,7 +554,7 @@ mod tests {
         dev
     }
 
-    // â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Tests â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     #[test]
     fn detects_ntfs() {
@@ -522,7 +598,7 @@ mod tests {
 
     #[test]
     fn fixup_passthrough_when_usa_count_one() {
-        // usa_count = 1 means no sectors need fixing â€” record should be returned unchanged.
+        // usa_count = 1 means no sectors need fixing â€" record should be returned unchanged.
         let raw = vec![0u8; 1024];
         let result = apply_fixup(raw.clone());
         assert_eq!(result, raw);
@@ -552,7 +628,7 @@ mod tests {
 
     #[test]
     fn resident_file_data_byte_offset_is_none() {
-        // Resident files live inside the MFT record â€” no physical cluster offset.
+        // Resident files live inside the MFT record â€" no physical cluster offset.
         let dev = Arc::new(build_image());
         let parser = NtfsParser::new(dev).unwrap();
         let entries = parser.root_directory().unwrap();
@@ -595,9 +671,98 @@ mod tests {
     /// must return Err(InvalidStructure), not panic.
     #[test]
     fn invalid_oem_id_returns_err() {
-        let data = vec![0u8; 512]; // all zeros â€” OEM ID will not match "NTFS    "
+        let data = vec![0u8; 512]; // all zeros â€" OEM ID will not match "NTFS    "
         let dev = Arc::new(MockBlockDevice::new(data, 512));
         let result = NtfsParser::new(dev);
         assert!(result.is_err(), "expected Err for invalid NTFS OEM ID");
+    }
+
+    /// Build a larger image with one subdirectory to test enumerate_files path
+    /// resolution:
+    ///
+    ///   record 5 : root "."
+    ///   record 6 : subdir "Photos"  (parent = 5)
+    ///   record 7 : file   "vacation.jpg" (parent = 6)
+    ///   record 8 : file   "notes.txt"    (parent = 5, flat in root)
+    fn build_nested_image() -> MockBlockDevice {
+        const SECTOR: usize = 512;
+        const MFT_START: usize = 4096;
+        const REC_SIZE: usize = 1024;
+        let mut dev = MockBlockDevice::zeroed(32768, SECTOR as u32);
+
+        let boot = boot_sector();
+        dev.write_sector(0, &boot);
+
+        for i in 0u64..5 {
+            let offset_bytes = MFT_START + i as usize * REC_SIZE;
+            let rec = build_mft_record(true, true, 5, &format!("$sys{i}"), &[]);
+            let sector = (offset_bytes / SECTOR) as u64;
+            dev.write_sector(sector, &rec[..SECTOR]);
+            dev.write_sector(sector + 1, &rec[SECTOR..]);
+        }
+        {
+            let rec = build_mft_record(true, true, 5, ".", &[]);
+            let sector = ((MFT_START + 5 * REC_SIZE) / SECTOR) as u64;
+            dev.write_sector(sector, &rec[..SECTOR]);
+            dev.write_sector(sector + 1, &rec[SECTOR..]);
+        }
+        {
+            let rec = build_mft_record(true, true, 5, "Photos", &[]);
+            let sector = ((MFT_START + 6 * REC_SIZE) / SECTOR) as u64;
+            dev.write_sector(sector, &rec[..SECTOR]);
+            dev.write_sector(sector + 1, &rec[SECTOR..]);
+        }
+        {
+            let rec = build_mft_record(true, false, 6, "vacation.jpg", b"JFIF");
+            let sector = ((MFT_START + 7 * REC_SIZE) / SECTOR) as u64;
+            dev.write_sector(sector, &rec[..SECTOR]);
+            dev.write_sector(sector + 1, &rec[SECTOR..]);
+        }
+        {
+            let rec = build_mft_record(true, false, 5, "notes.txt", b"text");
+            let sector = ((MFT_START + 8 * REC_SIZE) / SECTOR) as u64;
+            dev.write_sector(sector, &rec[..SECTOR]);
+            dev.write_sector(sector + 1, &rec[SECTOR..]);
+        }
+        dev
+    }
+
+    #[test]
+    fn enumerate_files_resolves_nested_path() {
+        let dev = Arc::new(build_nested_image());
+        let parser = NtfsParser::new(dev).unwrap();
+        let entries = parser.enumerate_files().unwrap();
+
+        let vacation = entries
+            .iter()
+            .find(|e| e.name == "vacation.jpg")
+            .expect("vacation.jpg not found");
+        assert_eq!(
+            vacation.path, "/Photos/vacation.jpg",
+            "expected nested path, got: {}",
+            vacation.path
+        );
+
+        let notes = entries
+            .iter()
+            .find(|e| e.name == "notes.txt")
+            .expect("notes.txt not found");
+        assert_eq!(
+            notes.path, "/notes.txt",
+            "expected flat root path, got: {}",
+            notes.path
+        );
+    }
+
+    #[test]
+    fn enumerate_files_flat_path_for_root_file() {
+        let dev = Arc::new(build_image());
+        let parser = NtfsParser::new(dev).unwrap();
+        let entries = parser.enumerate_files().unwrap();
+        let file = entries
+            .iter()
+            .find(|e| e.name == "hello.txt")
+            .expect("hello.txt not found");
+        assert_eq!(file.path, "/hello.txt");
     }
 }

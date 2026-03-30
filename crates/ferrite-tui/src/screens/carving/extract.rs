@@ -142,6 +142,7 @@ impl CarvingState {
                     .trim_start_matches('\\')
                     .split(['/', '\\'])
                     .filter(|s| !s.is_empty() && *s != "..")
+                    .map(|s| s.replace([':', '*', '?', '<', '>', '|', '"'], "_"))
                     .collect();
                 if rel.components().count() > 0 {
                     return std::path::Path::new(dir)

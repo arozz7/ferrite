@@ -80,6 +80,7 @@ pub fn parse(data: &[u8], disk_size_lba: u64, sector_size: u32) -> Result<Partit
         sector_size,
         disk_size_lba,
         entries,
+        note: None,
     })
 }
 

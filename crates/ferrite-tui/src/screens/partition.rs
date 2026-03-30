@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use ferrite_blockdev::BlockDevice;
+use ferrite_blockdev::{BlockDevice, FileBlockDevice};
 use ferrite_partition::{
     read_partition_table, scan, PartitionTable, PartitionTableKind, ScanOptions,
 };
@@ -44,6 +44,15 @@ pub struct PartitionState {
     rx: Option<Receiver<PartitionMsg>>,
     /// Most recent export result message (success path or error).
     pub export_status: Option<String>,
+    /// `true` while the Imaging tab is actively running on the same device.
+    imaging_active: bool,
+    /// Path to the partial image file when imaging is in progress and the file
+    /// has already been written to.  `None` when imaging is not running or the
+    /// file does not yet exist.
+    fallback_image_path: Option<String>,
+    /// `true` when the last `start_read()` used the partial image fallback
+    /// instead of reading the physical device.
+    used_image_fallback: bool,
 }
 
 impl Default for PartitionState {
@@ -61,7 +70,19 @@ impl PartitionState {
             status: PartitionStatus::Idle,
             rx: None,
             export_status: None,
+            imaging_active: false,
+            fallback_image_path: None,
+            used_image_fallback: false,
         }
+    }
+
+    /// Called by the app each tick to propagate the current imaging state.
+    ///
+    /// `active` — whether imaging is actively running.
+    /// `path`   — path to the partial image file when it already has data.
+    pub fn set_imaging_context(&mut self, active: bool, path: Option<String>) {
+        self.imaging_active = active;
+        self.fallback_image_path = path;
     }
 
     pub fn set_device(&mut self, device: Arc<dyn BlockDevice>) {
@@ -189,10 +210,30 @@ impl PartitionState {
     }
 
     fn start_read(&mut self) {
-        let device = match &self.device {
-            Some(d) => Arc::clone(d),
-            None => return,
+        // Prefer reading from the partial image file when imaging is active and
+        // the file already exists — avoids I/O contention with the imager.
+        let device: Arc<dyn BlockDevice> = if let Some(ref path) = self.fallback_image_path {
+            match FileBlockDevice::open(path) {
+                Ok(fbd) if fbd.size() > 0 => {
+                    self.used_image_fallback = true;
+                    Arc::new(fbd)
+                }
+                _ => {
+                    self.used_image_fallback = false;
+                    match &self.device {
+                        Some(d) => Arc::clone(d),
+                        None => return,
+                    }
+                }
+            }
+        } else {
+            self.used_image_fallback = false;
+            match &self.device {
+                Some(d) => Arc::clone(d),
+                None => return,
+            }
         };
+
         self.status = PartitionStatus::Reading;
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
@@ -236,12 +277,21 @@ impl PartitionState {
             self.start_read();
         }
 
-        let title = match &self.status {
-            PartitionStatus::Reading => " Partition Analysis — reading… ",
-            PartitionStatus::AutoScanning => " Partition Analysis — no table found, scanning… ",
-            PartitionStatus::Scanning => " Partition Analysis — scanning… ",
-            PartitionStatus::Done => " Partition Analysis — r: read  s: scan  w: export ",
-            _ => " Partition Analysis — r: read  s: scan ",
+        let title: String = match &self.status {
+            PartitionStatus::Reading => " Partition Analysis \u{2014} reading\u{2026} ".to_string(),
+            PartitionStatus::AutoScanning => {
+                " Partition Analysis \u{2014} no table found, scanning\u{2026} ".to_string()
+            }
+            PartitionStatus::Scanning => {
+                " Partition Analysis \u{2014} scanning\u{2026} ".to_string()
+            }
+            PartitionStatus::Done if self.used_image_fallback => {
+                " Partition Analysis (reading from partial image file) \u{2014} r: read  s: scan  w: export ".to_string()
+            }
+            PartitionStatus::Done => {
+                " Partition Analysis \u{2014} r: read  s: scan  w: export ".to_string()
+            }
+            _ => " Partition Analysis \u{2014} r: read  s: scan ".to_string(),
         };
         let outer = Block::default().borders(Borders::ALL).title(title);
 
@@ -252,17 +302,19 @@ impl PartitionState {
             PartitionStatus::Reading
             | PartitionStatus::AutoScanning
             | PartitionStatus::Scanning => {
-                frame.render_widget(Paragraph::new(" Working…").block(outer), area);
+                frame.render_widget(Paragraph::new(" Working\u{2026}").block(outer), area);
             }
             PartitionStatus::Error(e) => {
+                let msg = format!(" Error: {e}\n Press r to retry.");
                 frame.render_widget(
-                    Paragraph::new(format!(" Error: {e}\n Press r to retry."))
+                    Paragraph::new(msg)
                         .style(Style::default().fg(Color::Red))
                         .block(outer),
                     area,
                 );
             }
             PartitionStatus::Done => {
+                let show_contention = self.imaging_active && !self.used_image_fallback;
                 let table_ref = self.table.as_ref().unwrap();
                 render_partition_table(
                     frame,
@@ -271,6 +323,7 @@ impl PartitionState {
                     table_ref,
                     self.selected,
                     self.export_status.as_deref(),
+                    show_contention,
                 );
             }
         }
@@ -286,6 +339,7 @@ fn render_partition_table(
     tbl: &PartitionTable,
     selected: usize,
     export_status: Option<&str>,
+    show_contention_warning: bool,
 ) {
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -301,31 +355,52 @@ fn render_partition_table(
         tbl.entries.len()
     );
 
-    // Split: summary row + table + optional export status line.
+    // Split: summary row + optional advisory rows + table + optional export status line.
     use ratatui::layout::{Constraint, Direction, Layout};
-    let status_height = if export_status.is_some() { 1 } else { 0 };
+    let contention_height: u16 = if show_contention_warning { 1 } else { 0 };
+    let note_height: u16 = if tbl.note.is_some() { 1 } else { 0 };
+    let status_height: u16 = if export_status.is_some() { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Min(0),
-            Constraint::Length(status_height),
+            Constraint::Length(2),                 // summary
+            Constraint::Length(contention_height), // contention advisory
+            Constraint::Length(note_height),       // table.note
+            Constraint::Min(0),                    // partition table
+            Constraint::Length(status_height),     // export status
         ])
         .split(inner);
 
     frame.render_widget(Paragraph::new(summary), chunks[0]);
 
+    if show_contention_warning {
+        frame.render_widget(
+            Paragraph::new(
+                " \u{26a0} Imaging in progress \u{2014} I/O contention possible. Using image file is recommended.",
+            )
+            .style(Style::default().fg(Color::Yellow)),
+            chunks[1],
+        );
+    }
+
+    if let Some(note) = &tbl.note {
+        frame.render_widget(
+            Paragraph::new(format!(" Note: {note}")).style(Style::default().fg(Color::Yellow)),
+            chunks[2],
+        );
+    }
+
     if let Some(msg) = export_status {
         frame.render_widget(
             Paragraph::new(format!(" {msg}")).style(Style::default().fg(Color::Green)),
-            chunks[2],
+            chunks[4],
         );
     }
 
     if tbl.entries.is_empty() {
         frame.render_widget(
             Paragraph::new(" No partitions found. Try s to scan for lost partitions."),
-            chunks[1],
+            chunks[3],
         );
         return;
     }
@@ -352,7 +427,7 @@ fn render_partition_table(
         .map(|(i, e)| {
             let type_str = part_type_label(e);
             let size_bytes = e.size_bytes(ss);
-            let name = e.name.as_deref().unwrap_or("—");
+            let name = e.name.as_deref().unwrap_or("\u{2014}");
             Row::new([
                 Cell::from(format!("{:>2}", i + 1)),
                 Cell::from(type_str),
@@ -378,7 +453,7 @@ fn render_partition_table(
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut ts = TableState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(table, chunks[1], &mut ts);
+    frame.render_stateful_widget(table, chunks[3], &mut ts);
 }
 
 fn part_type_label(e: &ferrite_partition::PartitionEntry) -> String {
@@ -456,6 +531,7 @@ mod tests {
             sector_size: 512,
             disk_size_lba: 8,
             entries: vec![],
+            note: None,
         };
         tx.send(PartitionMsg::Table(empty_table)).unwrap();
 
@@ -500,10 +576,41 @@ mod tests {
                 },
                 bootable: false,
             }],
+            note: None,
         };
         tx.send(PartitionMsg::Table(non_empty_table)).unwrap();
         s.tick();
         // Should go straight to Done, not AutoScanning.
         assert!(matches!(s.status, PartitionStatus::Done));
+    }
+
+    #[test]
+    fn set_imaging_context_updates_fields() {
+        let mut s = PartitionState::new();
+        assert!(!s.imaging_active);
+        assert!(s.fallback_image_path.is_none());
+
+        s.set_imaging_context(true, Some("/tmp/test.img".to_string()));
+        assert!(s.imaging_active);
+        assert_eq!(s.fallback_image_path.as_deref(), Some("/tmp/test.img"));
+
+        s.set_imaging_context(false, None);
+        assert!(!s.imaging_active);
+        assert!(s.fallback_image_path.is_none());
+    }
+
+    #[test]
+    fn fallback_not_used_when_path_is_none() {
+        use ferrite_blockdev::MockBlockDevice;
+        use std::sync::Arc;
+        let dev: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::zeroed(4096, 512));
+        let mut s = PartitionState::new();
+        s.device = Some(dev);
+        // imaging_active but no path set
+        s.set_imaging_context(true, None);
+        assert!(!s.used_image_fallback);
+        // After start_read with no fallback path, used_image_fallback must remain false.
+        s.start_read();
+        assert!(!s.used_image_fallback);
     }
 }

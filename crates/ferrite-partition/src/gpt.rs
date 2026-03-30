@@ -157,6 +157,7 @@ pub fn parse(
         sector_size,
         disk_size_lba,
         entries,
+        note: None,
     })
 }
 
