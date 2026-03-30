@@ -67,8 +67,9 @@ pub fn read_partition_table_with_fallback(device: &dyn BlockDevice) -> Result<Pa
 /// [`PartitionTableKind::Mbr`] when the device is too small to hold a
 /// partition table.
 ///
-/// For GPT, only the primary header is used. If you suspect the primary is
-/// corrupt, scan the device with [`scan`] and reconstruct via [`from_scan_hits`].
+/// For GPT, the primary header (LBA 1) is tried first.  If it is unreadable
+/// or fails CRC checks, the backup header at the last LBA is tried
+/// automatically and a [`PartitionTable::note`] is set to inform the caller.
 pub fn read_partition_table(device: &dyn BlockDevice) -> Result<PartitionTable> {
     let sector_size = device.sector_size() as usize;
     let disk_size_lba = device.size() / device.sector_size() as u64;
@@ -86,18 +87,18 @@ pub fn read_partition_table(device: &dyn BlockDevice) -> Result<PartitionTable> 
     }
 }
 
-fn read_gpt(
+/// Try reading a GPT header from the given `header_lba` and its associated
+/// partition entry array.  Returns the parsed table on success.
+fn try_gpt_at(
     device: &dyn BlockDevice,
+    header_lba: u64,
     disk_size_lba: u64,
     sector_size: usize,
 ) -> Result<PartitionTable> {
-    // ── Read GPT header (LBA 1) ───────────────────────────────────────────────
     let mut buf = AlignedBuffer::new(sector_size, sector_size);
-    device.read_at(device.sector_size() as u64, &mut buf)?;
+    device.read_at(header_lba * device.sector_size() as u64, &mut buf)?;
     let header = buf.as_slice()[..sector_size].to_vec();
 
-    // Extract entry metadata before validation so we can allocate the right buffer.
-    // These are read again (with full validation) inside gpt::parse.
     if header.len() < 92 {
         return Err(PartitionError::BufferTooSmall {
             needed: 92,
@@ -109,12 +110,10 @@ fn read_gpt(
     let entry_size = u32::from_le_bytes(header[84..88].try_into().unwrap_or([0; 4])) as usize;
     let entry_start_lba = u64::from_le_bytes(header[72..80].try_into().unwrap_or([0; 8]));
 
-    // Guard against nonsensical values before allocating.
     let array_bytes = num_entries.saturating_mul(entry_size);
     let sectors_needed = array_bytes.div_ceil(sector_size).max(1);
     let buf_size = sectors_needed * sector_size;
 
-    // ── Read partition entries ────────────────────────────────────────────────
     let mut entries_buf = AlignedBuffer::new(buf_size, sector_size);
     device.read_at(
         entry_start_lba * device.sector_size() as u64,
@@ -123,6 +122,31 @@ fn read_gpt(
     let entries_data = entries_buf.as_slice()[..buf_size].to_vec();
 
     gpt::parse(&header, &entries_data, disk_size_lba, device.sector_size())
+}
+
+fn read_gpt(
+    device: &dyn BlockDevice,
+    disk_size_lba: u64,
+    sector_size: usize,
+) -> Result<PartitionTable> {
+    // Try primary header at LBA 1.
+    if let Ok(tbl) = try_gpt_at(device, 1, disk_size_lba, sector_size) {
+        return Ok(tbl);
+    }
+
+    // Primary unreadable or corrupt — fall back to backup header at the last LBA.
+    let backup_lba = disk_size_lba.saturating_sub(1);
+    if backup_lba < 2 {
+        return Err(PartitionError::InvalidGptHeader(
+            "device too small to contain a GPT backup header".to_string(),
+        ));
+    }
+    let mut tbl = try_gpt_at(device, backup_lba, disk_size_lba, sector_size)?;
+    tbl.note = Some(
+        "GPT primary header unreadable — partition table read from backup header at last LBA"
+            .to_string(),
+    );
+    Ok(tbl)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -176,6 +200,66 @@ mod tests {
             PartitionKind::Recovered {
                 fs_type: FsType::Ntfs
             }
+        );
+    }
+
+    /// Build a minimal valid GPT header at `header_lba` with no partition entries,
+    /// pointing its entry array at `entry_array_lba`.  Returns 512 bytes.
+    fn build_gpt_header(header_lba: u64, entry_array_lba: u64, disk_size_lba: u64) -> [u8; 512] {
+        use byteorder::{ByteOrder, LittleEndian};
+        let mut h = [0u8; 512];
+        h[0..8].copy_from_slice(b"EFI PART");
+        h[8..12].copy_from_slice(&[0x00, 0x00, 0x01, 0x00]); // revision 1.0
+        LittleEndian::write_u32(&mut h[12..16], 92); // header size
+        LittleEndian::write_u64(&mut h[24..32], header_lba); // MyLBA
+        LittleEndian::write_u64(
+            &mut h[32..40],
+            if header_lba == 1 {
+                disk_size_lba - 1
+            } else {
+                1
+            },
+        );
+        LittleEndian::write_u64(&mut h[40..48], 34); // FirstUsable
+        LittleEndian::write_u64(&mut h[48..56], disk_size_lba.saturating_sub(34)); // LastUsable
+        LittleEndian::write_u64(&mut h[72..80], entry_array_lba); // entry start LBA
+        LittleEndian::write_u32(&mut h[80..84], 0); // num entries
+        LittleEndian::write_u32(&mut h[84..88], 128); // entry size
+        LittleEndian::write_u32(&mut h[88..92], 0); // array CRC (empty = 0)
+        let crc = crc32fast::hash(&h[..92]);
+        LittleEndian::write_u32(&mut h[16..20], crc);
+        h
+    }
+
+    #[test]
+    fn gpt_backup_header_used_when_primary_corrupt() {
+        // Build a device where LBA 1 (primary GPT header) is zeroed/corrupt but
+        // the backup header at the last LBA is valid.
+        //
+        // Layout (32 sectors, 512 B each = 16 KiB):
+        //   LBA 0   : protective MBR
+        //   LBA 1   : corrupt primary header (all zeros)
+        //   LBA 2   : entry array for backup header (empty, 1 sector)
+        //   LBA 31  : valid backup GPT header
+        let total_sectors = 32usize;
+        let disk_size_lba = total_sectors as u64;
+        let dev = make_device(total_sectors, |d| {
+            // Protective MBR at LBA 0: type 0xEE in slot 0.
+            d[446 + 4] = 0xEE;
+            d[510] = 0x55;
+            d[511] = 0xAA;
+            // LBA 1 stays all-zeros (corrupt primary header).
+            // Backup header at LBA 31, entry array at LBA 2.
+            let backup = build_gpt_header(31, 2, disk_size_lba);
+            let backup_off = 31 * SECTOR;
+            d[backup_off..backup_off + SECTOR].copy_from_slice(&backup);
+        });
+        let tbl = read_partition_table(&dev).unwrap();
+        assert_eq!(tbl.kind, PartitionTableKind::Gpt);
+        assert!(
+            tbl.note.as_deref().unwrap_or("").contains("backup header"),
+            "expected backup-header note, got: {:?}",
+            tbl.note
         );
     }
 

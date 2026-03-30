@@ -78,6 +78,9 @@ pub struct PartitionTable {
     pub sector_size: u32,
     pub disk_size_lba: u64,
     pub entries: Vec<PartitionEntry>,
+    /// Advisory set when a fallback path was used (e.g. GPT backup header).
+    /// Displayed as an amber note in the Partitions tab.
+    pub note: Option<String>,
 }
 
 impl PartitionTable {

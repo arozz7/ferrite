@@ -395,6 +395,10 @@ impl App {
         self.drive_select.tick();
         self.health.tick();
         self.imaging.tick();
+        let imaging_active = self.imaging.is_actively_imaging();
+        let imaging_path = self.imaging.partial_image_path();
+        self.partition
+            .set_imaging_context(imaging_active, imaging_path);
         self.partition.tick();
         self.file_browser.tick();
         self.carving.tick();

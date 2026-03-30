@@ -275,6 +275,27 @@ impl ImagingState {
         }
     }
 
+    /// `true` while an imaging run is actively in progress (not paused, not done).
+    pub fn is_actively_imaging(&self) -> bool {
+        self.status == ImagingStatus::Running
+    }
+
+    /// Return `Some(dest_path)` when imaging is active AND the destination file
+    /// already exists with at least one byte written.  Used by the Partition tab
+    /// to prefer reading from the partial image rather than the physical drive.
+    pub fn partial_image_path(&self) -> Option<String> {
+        if !self.is_actively_imaging() {
+            return None;
+        }
+        if self.dest_path.is_empty() {
+            return None;
+        }
+        match std::fs::metadata(&self.dest_path) {
+            Ok(m) if m.len() > 0 => Some(self.dest_path.clone()),
+            _ => None,
+        }
+    }
+
     /// Recompute `space_info` from the current `dest_path` and device size.
     /// No-op when no device is selected.
     fn refresh_space_info(&mut self) {

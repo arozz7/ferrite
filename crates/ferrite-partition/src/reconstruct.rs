@@ -58,6 +58,7 @@ pub fn from_scan_hits(
         sector_size,
         disk_size_lba,
         entries,
+        note: None,
     }
 }
 
