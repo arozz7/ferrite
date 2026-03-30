@@ -9,17 +9,15 @@ use crate::ProgressReporter;
 
 /// Pass 1 — forward sequential copy.
 ///
-/// Reads the device in large blocks (`config.copy_block_size`). On success,
-/// writes to the output image and marks the range `Finished`. On read error,
-/// marks the range `NonTrimmed` and advances (the trim pass isolates exact bad
-/// sectors later).
+/// Reads the device in large blocks (`config.pass_block_sizes[0]`). On
+/// success, writes to the output image and marks the range `Finished`. On read
+/// error, marks the range `NonTrimmed` and advances (the trim pass isolates
+/// exact bad sectors later).
 pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporter) -> Result<()> {
     let sector_size = engine.device.sector_size() as u64;
     let device_size = engine.device.size();
     // Clamp so the buffer is never larger than the device and always >= 1 sector.
-    let block_size = engine
-        .config
-        .copy_block_size
+    let block_size = engine.config.pass_block_sizes[0]
         .min(device_size)
         .max(sector_size);
 

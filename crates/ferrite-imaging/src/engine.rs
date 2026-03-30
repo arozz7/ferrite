@@ -348,7 +348,7 @@ mod tests {
     fn make_engine(mock: MockBlockDevice) -> (ImagingEngine, NamedTempFile) {
         let tmp = NamedTempFile::new().unwrap();
         let config = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 3,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -482,7 +482,7 @@ mod tests {
         let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
         let tmp = NamedTempFile::new().unwrap();
         let config = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 0,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -508,7 +508,7 @@ mod tests {
         let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
         let tmp = NamedTempFile::new().unwrap();
         let config = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 0,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -573,7 +573,7 @@ mod tests {
         // NonTried blocks — nothing to do.
         let mock2 = MockBlockDevice::zeroed(SIZE, SECTOR);
         let config2 = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 3,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -626,7 +626,7 @@ mod tests {
         }
         let tmp = NamedTempFile::new().unwrap();
         let config = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 3,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -664,7 +664,7 @@ mod tests {
         let mock2 = MockBlockDevice::zeroed(SIZE, SECTOR);
         let tmp = NamedTempFile::new().unwrap();
         let make_config = || ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 0,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -692,7 +692,7 @@ mod tests {
         let mock2 = MockBlockDevice::zeroed(SIZE, SECTOR);
         let tmp = NamedTempFile::new().unwrap();
         let make_config = || ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 0,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),

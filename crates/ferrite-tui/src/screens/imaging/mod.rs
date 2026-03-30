@@ -132,13 +132,16 @@ impl DriveIdentity {
 }
 
 /// Which text field is being edited.
+///
+/// `BlockSize(n)` carries the pass index (0 = Copy, 1 = Trim, 2 = Sweep,
+/// 3 = Scrape, 4 = Retry).  Press `b` to cycle forward; Enter/Esc to commit.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) enum EditField {
     Dest,
     Mapfile,
     StartLba,
     EndLba,
-    BlockSize,
+    BlockSize(usize),
 }
 
 /// `ProgressReporter` impl that forwards updates through a sync channel.
@@ -184,8 +187,11 @@ pub struct ImagingState {
     pub start_lba_str: String,
     /// End LBA (editable, empty = end of device).
     pub end_lba_str: String,
-    /// Copy block size in KiB (editable, empty = default 512 KiB).
-    pub block_size_str: String,
+    /// Per-pass block sizes in KiB (editable, empty = use default for that pass).
+    ///
+    /// Index matches `ImagingConfig::pass_block_sizes`: 0=Copy, 1=Trim,
+    /// 2=Sweep, 3=Scrape, 4=Retry.
+    pub pass_block_size_strs: [String; 5],
     pub(crate) edit_field: Option<EditField>,
     pub(crate) status: ImagingStatus,
     pub(crate) latest: Option<ProgressUpdate>,
@@ -250,7 +256,7 @@ impl ImagingState {
             mapfile_path: String::new(),
             start_lba_str: String::new(),
             end_lba_str: String::new(),
-            block_size_str: String::new(),
+            pass_block_size_strs: Default::default(),
             edit_field: None,
             status: ImagingStatus::Idle,
             latest: None,
@@ -485,6 +491,16 @@ impl ImagingState {
                         self.refresh_space_info();
                     }
                 }
+                // `b` while editing a pass block size cycles to the next pass.
+                KeyCode::Char('b') if matches!(field, EditField::BlockSize(_)) => {
+                    if let EditField::BlockSize(n) = field {
+                        self.edit_field = if n < 4 {
+                            Some(EditField::BlockSize(n + 1))
+                        } else {
+                            None
+                        };
+                    }
+                }
                 KeyCode::Backspace => {
                     let s = self.field_mut(field);
                     s.pop();
@@ -503,7 +519,7 @@ impl ImagingState {
             KeyCode::Char('m') => self.edit_field = Some(EditField::Mapfile),
             KeyCode::Char('l') => self.edit_field = Some(EditField::StartLba),
             KeyCode::Char('e') => self.edit_field = Some(EditField::EndLba),
-            KeyCode::Char('b') => self.edit_field = Some(EditField::BlockSize),
+            KeyCode::Char('b') => self.edit_field = Some(EditField::BlockSize(0)),
             KeyCode::Char('r') => self.reverse = !self.reverse,
             KeyCode::Char('S') => self.sparse = !self.sparse,
             KeyCode::Char('p') => {
@@ -529,7 +545,7 @@ impl ImagingState {
             EditField::Mapfile => &mut self.mapfile_path,
             EditField::StartLba => &mut self.start_lba_str,
             EditField::EndLba => &mut self.end_lba_str,
-            EditField::BlockSize => &mut self.block_size_str,
+            EditField::BlockSize(n) => &mut self.pass_block_size_strs[n],
         }
     }
 
@@ -682,17 +698,20 @@ impl ImagingState {
         // from set_device() carries forward into the imaging session.
 
         let output_path = PathBuf::from(&self.dest_path);
-        let copy_block_size = self
-            .block_size_str
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|&n| n > 0)
-            .map(|kb| kb * 1024) // field is in KiB
-            .unwrap_or(512 * 1024); // default 512 KiB
+        // Per-pass defaults when the field is empty: [512 KiB, 512 B, 512 B, 512 B, 512 B]
+        let pass_defaults: [u64; 5] = [512 * 1024, 512, 512, 512, 512];
+        let pass_block_sizes: [u64; 5] = std::array::from_fn(|i| {
+            self.pass_block_size_strs[i]
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|&n| n > 0)
+                .map(|kb| kb * 1024) // field is in KiB
+                .unwrap_or(pass_defaults[i])
+        });
         let config = ImagingConfig {
             output_path: output_path.clone(),
-            copy_block_size,
+            pass_block_sizes,
             mapfile_path: if self.mapfile_path.is_empty() {
                 None
             } else {

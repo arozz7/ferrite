@@ -9,13 +9,15 @@ use crate::ProgressReporter;
 
 /// Pass 2 — trim: isolate exact bad-sector locations within NonTrimmed blocks.
 ///
-/// For each `NonTrimmed` block, reads sector-by-sector from the leading edge.
-/// The first failure marks that sector `BadSector` and all remaining bytes in
-/// the block `NonScraped` (to be attempted by the scrape pass). Sectors before
-/// the failure are marked `Finished`.
+/// For each `NonTrimmed` block, reads from the leading edge in chunks of
+/// `config.pass_block_sizes[1]` (clamped to `sector_size` minimum). The first
+/// failure marks the chunk `BadSector` and all remaining bytes `NonScraped`
+/// (to be attempted by the scrape pass). Bytes before the failure are marked
+/// `Finished`.
 pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporter) -> Result<()> {
     let sector_size = engine.device.sector_size() as u64;
-    let mut buf = AlignedBuffer::new(sector_size as usize, sector_size as usize);
+    let block_size = engine.config.pass_block_sizes[1].max(sector_size);
+    let mut buf = AlignedBuffer::new(block_size as usize, sector_size as usize);
 
     let work: Vec<_> = engine
         .mapfile
@@ -26,7 +28,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
         let mut pos = region.pos;
 
         while pos < region.end() {
-            let chunk = (region.end() - pos).min(sector_size);
+            let chunk = (region.end() - pos).min(block_size);
 
             match engine.device.read_at(pos, &mut buf) {
                 Ok(0) => break,
