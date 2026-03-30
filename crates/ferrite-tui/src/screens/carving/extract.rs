@@ -15,6 +15,162 @@ use ferrite_filesystem::MetadataIndex;
 
 use super::{CarveMsg, CarveStatus, CarvingState, ExtractProgress, HitStatus};
 
+// ── Recovered-name helpers ────────────────────────────────────────────────────
+
+/// Extract the target filename from a Windows Shell Link (.lnk) binary blob.
+///
+/// Navigates the LinkInfo structure to find `LocalBasePath + CommonPathSuffix`,
+/// then returns the last path component.  Returns `None` when the data is too
+/// short, has an invalid header, or has no `HasLinkInfo` flag.
+pub(super) fn parse_lnk_target_name(data: &[u8]) -> Option<String> {
+    if data.len() < 76 {
+        return None;
+    }
+    // HeaderSize must be 0x4C000000 (LE = 76).
+    if data[0..4] != [0x4C, 0x00, 0x00, 0x00] {
+        return None;
+    }
+    let link_flags = u32::from_le_bytes(data[0x14..0x18].try_into().ok()?);
+    let has_idlist = link_flags & 0x01 != 0;
+    let has_link_info = link_flags & 0x02 != 0;
+    if !has_link_info {
+        return None;
+    }
+
+    // Offset to the LinkInfo block: skip the optional IDList.
+    let mut li = 76usize;
+    if has_idlist {
+        if li + 2 > data.len() {
+            return None;
+        }
+        let idlist_size = u16::from_le_bytes([data[li], data[li + 1]]) as usize;
+        li += 2 + idlist_size;
+    }
+
+    // LinkInfo header (28 bytes minimum).
+    if li + 28 > data.len() {
+        return None;
+    }
+    let li_flags = u32::from_le_bytes(data[li + 8..li + 12].try_into().ok()?);
+    // Bit 0: VolumeIDAndLocalBasePath — required for a local file path.
+    if li_flags & 0x01 == 0 {
+        return None;
+    }
+    let base_off =
+        u32::from_le_bytes(data[li + 16..li + 20].try_into().ok()?) as usize;
+    let suffix_off =
+        u32::from_le_bytes(data[li + 24..li + 28].try_into().ok()?) as usize;
+
+    let base_start = li + base_off;
+    let suffix_start = li + suffix_off;
+    if base_start >= data.len() {
+        return None;
+    }
+    let base = read_ansi_nul(&data[base_start..]);
+    let suffix = if suffix_start < data.len() {
+        read_ansi_nul(&data[suffix_start..])
+    } else {
+        String::new()
+    };
+    let full = format!("{}{}", base, suffix);
+    full.split(['\\', '/']).filter(|s| !s.is_empty()).last().map(str::to_string)
+}
+
+/// Extract the executable name from a Windows Prefetch (.pf) binary blob.
+///
+/// The canonical Prefetch filename is `<EXECNAME>-<HASH>.pf`.  This function
+/// returns `EXECNAME` in lower-case from the fixed UTF-16LE field at offset
+/// 0x10 (60 bytes, null-terminated).
+pub(super) fn parse_pf_exe_name(data: &[u8]) -> Option<String> {
+    // Need at least 0x4A bytes (header through end of exe-name field).
+    if data.len() < 0x4A {
+        return None;
+    }
+    // Bytes 4..8 must be the ASCII magic "SCCA".
+    if data[4..8] != [0x53, 0x43, 0x43, 0x41] {
+        return None;
+    }
+    // ExecutableName: 60 bytes at 0x10, UTF-16LE, null-terminated.
+    let words: Vec<u16> = data[0x10..0x4A]
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&w| w != 0)
+        .collect();
+    if words.is_empty() {
+        return None;
+    }
+    let name = String::from_utf16_lossy(&words);
+    let safe: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .collect();
+    if safe.is_empty() {
+        None
+    } else {
+        Some(safe.to_lowercase())
+    }
+}
+
+/// Read a file's first `n` bytes and parse a recovered name for LNK/PF formats.
+fn recovered_name_from_file(path: &str, ext: &str) -> Option<String> {
+    // Read enough bytes for the header structures (LNK needs up to ~4 KiB for
+    // LinkInfo; PF only needs 74 bytes — we read 4 KiB for both).
+    let data = read_file_head(path, 4096);
+    match ext {
+        "lnk" => parse_lnk_target_name(&data),
+        "pf" => parse_pf_exe_name(&data),
+        _ => None,
+    }
+}
+
+/// After extracting an LNK or PF file, try to rename it to a meaningful name.
+///
+/// On success the file is renamed to `<recovered_name>[r].<ext>` in the same
+/// directory; the `[r]` suffix marks it as a heuristic rename.  If parsing
+/// fails, the name is already taken, or the rename errors, the original path
+/// is returned unchanged.
+fn try_recovered_rename(path: &str, ext: &str) -> String {
+    let Some(base) = recovered_name_from_file(path, ext) else {
+        return path.to_string();
+    };
+    // Strip any trailing dot from the base name before appending the extension.
+    let safe_base: String = base
+        .trim_end_matches('.')
+        .chars()
+        .map(|c| {
+            if matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    if safe_base.is_empty() {
+        return path.to_string();
+    }
+    let new_filename = format!("{}[r].{}", safe_base, ext);
+    let new_path = match std::path::Path::new(path).parent() {
+        Some(p) if !p.as_os_str().is_empty() => {
+            p.join(&new_filename).to_string_lossy().into_owned()
+        }
+        _ => new_filename,
+    };
+    if std::path::Path::new(&new_path).exists() {
+        return path.to_string();
+    }
+    if std::fs::rename(path, &new_path).is_ok() {
+        tracing::debug!(old = %path, new = %new_path, "recovered filename from carved content");
+        new_path
+    } else {
+        path.to_string()
+    }
+}
+
+fn read_ansi_nul(data: &[u8]) -> String {
+    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+    String::from_utf8_lossy(&data[..end]).into_owned()
+}
+
 // ── CancelWriter ──────────────────────────────────────────────────────────────
 
 /// Wraps any `Write` implementor and checks the `cancel` flag on every `write()`
@@ -315,6 +471,12 @@ impl CarvingState {
                             let _ = std::fs::remove_file(&filename);
                             let _ = tx.send(CarveMsg::SkippedCorrupt { idx });
                         } else {
+                            let filename = match hit.signature.extension.as_str() {
+                                "lnk" | "pf" => {
+                                    try_recovered_rename(&filename, &hit.signature.extension)
+                                }
+                                _ => filename,
+                            };
                             tracing::info!(path = %filename, bytes, "extracted file");
                             let _ = tx.send(CarveMsg::Extracted {
                                 idx,
@@ -711,6 +873,18 @@ impl CarvingState {
                         let _ = std::fs::remove_file(&path);
                         let _ = done_tx.send(WorkerMsg::SkippedCorrupt { idx });
                     } else {
+                        // Attempt to recover a meaningful filename from the
+                        // carved file content for LNK and Prefetch files.
+                        let path = if result.is_ok() {
+                            match hit.signature.extension.as_str() {
+                                "lnk" | "pf" => {
+                                    try_recovered_rename(&path, &hit.signature.extension)
+                                }
+                                _ => path,
+                            }
+                        } else {
+                            path
+                        };
                         let _ = done_tx.send(WorkerMsg::Completed {
                             idx,
                             hit: Box::new(hit),
@@ -830,5 +1004,92 @@ impl CarvingState {
                 elapsed_secs: extract_start.elapsed().as_secs_f64(),
             });
         });
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal valid LNK blob with a single local-file LinkInfo.
+    ///
+    /// Layout (all offsets from file start):
+    ///   0x00..0x04  HeaderSize = 0x4C
+    ///   0x04..0x14  CLSID (zeroed — not validated by parser)
+    ///   0x14..0x18  LinkFlags = HasLinkInfo (bit 1 only)
+    ///   0x18..0x4C  remainder of header (zeroed)
+    ///   0x4C..      LinkInfo block
+    ///     +0  LinkInfoSize  = 28 + path_len + 2  (header + base + empty suffix)
+    ///     +4  LinkInfoHeaderSize = 28
+    ///     +8  LinkInfoFlags = VolumeIDAndLocalBasePath (1)
+    ///     +12 VolumeIDOffset = 28  (overlaps with LocalBasePath for simplicity)
+    ///     +16 LocalBasePathOffset = 28
+    ///     +20 CommonNetworkRelativeLinkOffset = 0
+    ///     +24 CommonPathSuffixOffset = 28 + path_len (points to null byte)
+    ///     +28 LocalBasePath (null-terminated ANSI)
+    ///     +28+path_len  CommonPathSuffix = 0x00
+    fn build_lnk(local_base_path: &str) -> Vec<u8> {
+        let path_bytes: Vec<u8> = local_base_path.bytes().chain(std::iter::once(0u8)).collect();
+        let li_size = 28u32 + path_bytes.len() as u32 + 1; // +1 for empty suffix null
+        let suffix_off = 28u32 + path_bytes.len() as u32;
+
+        let mut data = vec![0u8; 76 + li_size as usize + 1];
+        // HeaderSize = 0x4C
+        data[0..4].copy_from_slice(&[0x4C, 0x00, 0x00, 0x00]);
+        // LinkFlags: HasLinkInfo only
+        data[0x14..0x18].copy_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+        // LinkInfo at offset 76
+        let li = 76usize;
+        data[li..li + 4].copy_from_slice(&li_size.to_le_bytes());
+        data[li + 4..li + 8].copy_from_slice(&28u32.to_le_bytes()); // header size
+        data[li + 8..li + 12].copy_from_slice(&1u32.to_le_bytes()); // flags
+        data[li + 12..li + 16].copy_from_slice(&28u32.to_le_bytes()); // VolumeIDOffset
+        data[li + 16..li + 20].copy_from_slice(&28u32.to_le_bytes()); // LocalBasePathOffset
+        data[li + 24..li + 28].copy_from_slice(&suffix_off.to_le_bytes()); // suffix offset
+        // LocalBasePath string
+        data[li + 28..li + 28 + path_bytes.len()].copy_from_slice(&path_bytes);
+        // CommonPathSuffix: empty (null byte already zero-initialised)
+        data
+    }
+
+    /// Build a minimal valid PF blob with the given exe name.
+    fn build_pf(exe_name: &str) -> Vec<u8> {
+        let mut data = vec![0u8; 0x4A];
+        // Version 0x17 (Vista/Win7)
+        data[0..4].copy_from_slice(&[0x17, 0x00, 0x00, 0x00]);
+        // Signature "SCCA"
+        data[4..8].copy_from_slice(b"SCCA");
+        // ExecutableName: UTF-16LE at 0x10, max 29 chars + null
+        for (i, c) in exe_name.chars().take(29).enumerate() {
+            let w = c as u16;
+            data[0x10 + i * 2] = (w & 0xFF) as u8;
+            data[0x10 + i * 2 + 1] = (w >> 8) as u8;
+        }
+        data
+    }
+
+    #[test]
+    fn lnk_name_extracted_from_link_info() {
+        let data = build_lnk(r"C:\Windows\System32\notepad.exe");
+        assert_eq!(
+            parse_lnk_target_name(&data),
+            Some("notepad.exe".to_string())
+        );
+    }
+
+    #[test]
+    fn pf_name_extracted_from_header() {
+        let data = build_pf("NOTEPAD.EXE");
+        assert_eq!(parse_pf_exe_name(&data), Some("notepad.exe".to_string()));
+    }
+
+    #[test]
+    fn fallback_kept_when_parse_fails() {
+        // Garbage data — neither LNK nor PF magic present.
+        let data = vec![0xAAu8; 64];
+        assert!(parse_lnk_target_name(&data).is_none());
+        assert!(parse_pf_exe_name(&data).is_none());
     }
 }
