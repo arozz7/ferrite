@@ -77,9 +77,13 @@ impl TextScanState {
             None => "all".to_string(),
             Some(k) => k.label().to_string(),
         };
+        let lang_label = match self.filter_lang {
+            None => "all".to_string(),
+            Some(l) => l.code().to_string(),
+        };
 
         let title = format!(
-            " Text Scan [{status_label}] — filter: {filter_label}  s:scan  c:cancel  e:export  o:output  0-8:filter "
+            " Text Scan [{status_label}] — kind: {filter_label}  lang: {lang_label}  s:scan  c:cancel  e:export  o:output  0-8:kind  l:lang "
         );
 
         let outer = Block::default().borders(Borders::ALL).title(title);
@@ -195,11 +199,16 @@ impl TextScanState {
                 let row_style = if sel { focused_style } else { normal_style };
 
                 let size_str = format_size(block.length);
+                let lang_str = block
+                    .lang
+                    .map(|l| format!("{:<3}  ", l.code()))
+                    .unwrap_or_else(|| "---  ".to_string());
                 let line = Line::from(vec![
                     Span::styled(format!("{:08X}  ", block.byte_offset), row_style),
                     Span::styled(format!("{:>8}  ", size_str), row_style),
                     Span::styled(format!("{:<6}  ", block.extension), kind_style),
                     Span::styled(format!("{:>3}%  ", block.quality), qual_style),
+                    Span::styled(lang_str, Style::default().fg(Color::DarkGray)),
                     Span::styled(block.preview.clone(), row_style),
                 ]);
                 ListItem::new(line)
@@ -251,7 +260,7 @@ impl TextScanState {
             )
         } else {
             Span::styled(
-                " 0:all  1:php  2:script  3:json  4:yaml  5:markup  6:sql  7:csrc  8:md",
+                " 0:all  1:php  2:script  3:json  4:yaml  5:markup  6:sql  7:csrc  8:md  l:cycle-lang",
                 Style::default().fg(Color::DarkGray),
             )
         };

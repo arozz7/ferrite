@@ -93,6 +93,9 @@ pub struct TextBlock {
     pub quality: u8,
     /// First ≤ 80 chars of the block; newlines replaced with `↵`.
     pub preview: String,
+    /// Detected language, if whatlang identified one with sufficient confidence.
+    /// `None` when the block is too short or language is ambiguous.
+    pub lang: Option<whatlang::Lang>,
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────

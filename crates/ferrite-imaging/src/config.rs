@@ -47,6 +47,19 @@ pub struct ImagingConfig {
     /// ...).  On FAT32 / exFAT destinations the OS silently falls back to dense
     /// allocation.  Default: `true`.
     pub sparse_output: bool,
+
+    /// When `true`, each successfully-read block is re-read once and compared.
+    /// If the two reads disagree the block is marked `NonTrimmed` rather than
+    /// written, flagging it for re-processing by the trim pass.
+    ///
+    /// Useful for drives that are intermittently returning corrupted data
+    /// without raising an I/O error.  Roughly halves copy-pass throughput.
+    /// Default: `false`.
+    pub verify_reads: bool,
+
+    /// Number of additional read passes used to verify each block when
+    /// `verify_reads` is `true`.  Minimum effective value is 1.  Default: 1.
+    pub verify_passes: u8,
 }
 
 impl ImagingConfig {
@@ -84,6 +97,8 @@ impl Default for ImagingConfig {
             end_lba: None,
             reverse: false,
             sparse_output: true,
+            verify_reads: false,
+            verify_passes: 1,
         }
     }
 }

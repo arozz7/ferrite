@@ -79,6 +79,7 @@ mod tests {
             confidence: 90,
             quality: 95,
             preview: "hello world".to_string(),
+            lang: None,
         }
     }
 

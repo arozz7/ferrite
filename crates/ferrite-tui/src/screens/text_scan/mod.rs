@@ -14,6 +14,7 @@ use ferrite_blockdev::BlockDevice;
 use ferrite_core::{ThermalGuard, ThermalGuardConfig};
 use ferrite_smart;
 use ferrite_textcarver::{TextBlock, TextKind, TextScanConfig, TextScanMsg, TextScanProgress};
+use whatlang::Lang;
 
 mod input;
 mod render;
@@ -48,6 +49,8 @@ pub struct TextScanState {
     pub(crate) show_consent: bool,
     /// Optional kind filter — `None` = show all.
     pub(crate) filter_kind: Option<TextKind>,
+    /// Optional language filter — `None` = show all.
+    pub(crate) filter_lang: Option<Lang>,
     /// Directory where exported files are written.
     pub(crate) output_dir: String,
     /// Whether the output dir field is being edited.
@@ -88,6 +91,7 @@ impl TextScanState {
             consent_given: false,
             show_consent: false,
             filter_kind: None,
+            filter_lang: None,
             output_dir: String::new(),
             editing_dir: false,
             export_status: None,
@@ -113,6 +117,7 @@ impl TextScanState {
         self.rx = None;
         self.export_status = None;
         self.error_msg.clear();
+        self.filter_lang = None;
     }
 
     /// Returns `true` while a text-input field is active (so `q` won't quit).
@@ -181,11 +186,12 @@ impl TextScanState {
 
     // ── Actions ───────────────────────────────────────────────────────────────
 
-    /// Rebuild `filtered` from scratch using the current `filter_kind`.
+    /// Rebuild `filtered` from scratch using the current `filter_kind` and `filter_lang`.
     pub(crate) fn rebuild_filtered(&mut self) {
         self.filtered = (0..self.blocks.len())
             .filter(|&i| {
-                self.filter_kind.is_none() || self.filter_kind == Some(self.blocks[i].kind)
+                (self.filter_kind.is_none() || self.filter_kind == Some(self.blocks[i].kind))
+                    && (self.filter_lang.is_none() || self.filter_lang == self.blocks[i].lang)
             })
             .collect();
         let max = self.filtered.len().saturating_sub(1);
@@ -332,6 +338,7 @@ mod tests {
             confidence: 80,
             quality: 90,
             preview: "preview".to_string(),
+            lang: None,
         }
     }
 }

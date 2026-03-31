@@ -76,6 +76,9 @@ enum ImagingMsg {
     ThermalPause,
     /// Drive cooled to ≤ 50 °C — imaging resumed.
     ThermalResume,
+    /// Whether sparse-file mode is actually active on the destination filesystem.
+    /// Sent once immediately after the engine is created.
+    SparseStatus(bool),
 }
 
 #[derive(PartialEq, Clone)]
@@ -214,6 +217,10 @@ pub struct ImagingState {
     /// When `true`, all-zero blocks are skipped rather than written (sparse
     /// holes).  Default `true`; the user can toggle with `S`.
     pub sparse: bool,
+    /// Whether sparse mode is confirmed active on the current destination
+    /// filesystem.  `None` = imaging not started yet; `Some(true)` = active;
+    /// `Some(false)` = requested but unavailable (destination FS unsupported).
+    pub sparse_active: Option<bool>,
     /// Most recently computed destination free-space info.  `None` while no
     /// device is selected or the path query failed.
     pub space_info: Option<SpaceInfo>,
@@ -223,6 +230,9 @@ pub struct ImagingState {
     user_pause: Arc<AtomicBool>,
     /// `true` while the user has manually paused imaging.
     pub user_paused: bool,
+    /// When `true`, each copy-pass block is re-read and compared before being
+    /// written.  Blocks with mismatched reads are flagged for re-processing.
+    pub verify_reads: bool,
     /// `true` when the imaging session is resuming from an existing mapfile.
     pub imaging_resumed: bool,
     /// Instant when any block was last processed (success OR failure).  Resets
@@ -269,11 +279,13 @@ impl ImagingState {
             wb_rx: None,
             reverse: false,
             sparse: true,
+            sparse_active: None,
             space_info: None,
             sector_map: Vec::new(),
             user_pause: Arc::new(AtomicBool::new(false)),
             user_paused: false,
             imaging_resumed: false,
+            verify_reads: false,
             last_attempt_instant: None,
             last_attempted_bytes: 0,
             last_bytes_finished: 0,
@@ -442,6 +454,9 @@ impl ImagingState {
                 Ok(ImagingMsg::ThermalResume) => {
                     self.thermal_paused = false;
                 }
+                Ok(ImagingMsg::SparseStatus(active)) => {
+                    self.sparse_active = Some(active);
+                }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.rx = None;
@@ -522,6 +537,7 @@ impl ImagingState {
             KeyCode::Char('b') => self.edit_field = Some(EditField::BlockSize(0)),
             KeyCode::Char('r') => self.reverse = !self.reverse,
             KeyCode::Char('S') => self.sparse = !self.sparse,
+            KeyCode::Char('V') => self.verify_reads = !self.verify_reads,
             KeyCode::Char('p') => {
                 if self.status == ImagingStatus::Running || self.user_paused {
                     if self.user_paused {
@@ -694,6 +710,7 @@ impl ImagingState {
         self.latest = None;
         self.current_temp = None;
         self.thermal_paused = false;
+        self.sparse_active = None;
         // write_blocked is intentionally NOT reset here — the pre-flight result
         // from set_device() carries forward into the imaging session.
 
@@ -721,6 +738,7 @@ impl ImagingState {
             end_lba: self.end_lba_str.trim().parse::<u64>().ok(),
             reverse: self.reverse,
             sparse_output: self.sparse,
+            verify_reads: self.verify_reads,
             ..ImagingConfig::default()
         };
 
@@ -734,6 +752,9 @@ impl ImagingState {
                     return;
                 }
             };
+
+            // Report whether sparse mode is actually active on the destination FS.
+            let _ = tx.send(ImagingMsg::SparseStatus(engine.sparse_active()));
 
             // Pre-populate known-bad sectors from S.M.A.R.T. error log (best-effort).
             //

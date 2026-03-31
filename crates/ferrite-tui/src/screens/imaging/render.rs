@@ -24,7 +24,7 @@ impl ImagingState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(14), // config fields + hint + resume line + sparse + space
+                Constraint::Length(15), // config fields + hint + resume line + sparse + verify + space
                 Constraint::Length(3),  // progress bar
                 Constraint::Length(6),  // sector map
                 Constraint::Min(0),     // stats / messages
@@ -209,7 +209,31 @@ impl ImagingState {
                         Style::default().fg(Color::DarkGray)
                     },
                 ),
-                Span::raw("  (S to toggle — skips zero blocks, saves space on NTFS/ext4)"),
+                match self.sparse_active {
+                    Some(true) => Span::styled(
+                        " (active)",
+                        Style::default().fg(Color::Green),
+                    ),
+                    Some(false) => Span::styled(
+                        " (unavailable — destination FS does not support sparse files; dense output)",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    None => Span::raw("  (S to toggle — skips zero blocks, saves space on NTFS/ext4)"),
+                },
+            ]),
+            Line::from(vec![
+                Span::raw(" Verify  : "),
+                Span::styled(
+                    if self.verify_reads { "ON" } else { "OFF" }.to_string(),
+                    if self.verify_reads {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
+                Span::raw("  (V to toggle — re-reads each block to detect unstable sectors)"),
             ]),
             // ── Destination space row ────────────────────────────────────────
             space_row(self.space_info),
