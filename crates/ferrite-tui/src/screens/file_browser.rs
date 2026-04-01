@@ -248,6 +248,29 @@ impl FileBrowserState {
             None => return,
         };
         self.fs_type = ferrite_filesystem::detect_filesystem(device.as_ref());
+
+        // HFS+ is detected but has no parser yet — surface a helpful message
+        // immediately rather than letting open_filesystem return a generic error.
+        if self.fs_type == ferrite_filesystem::FilesystemType::HfsPlus {
+            self.status = BrowserStatus::Error(
+                "HFS+ detected — parser not yet implemented.\n\
+                 Use the Carving tab (Tab 5) to recover files by signature."
+                    .into(),
+            );
+            return;
+        }
+
+        // BitLocker-encrypted volumes cannot be parsed — direct the operator.
+        if self.fs_type == ferrite_filesystem::FilesystemType::Encrypted {
+            self.status = BrowserStatus::Error(
+                "BitLocker encrypted volume detected.\n\
+                 Decrypt the volume first (e.g. manage-bde or Disk Management) then re-open.\n\
+                 File carving (Tab 5) may recover unencrypted fragments from slack space."
+                    .into(),
+            );
+            return;
+        }
+
         self.status = BrowserStatus::Opening;
         let (tx, rx) = mpsc::channel();
         self.open_rx = Some(rx);

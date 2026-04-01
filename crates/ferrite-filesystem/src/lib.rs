@@ -53,6 +53,9 @@ pub enum FilesystemType {
     Apfs,
     /// HFS+ or HFSX — detected but no parser implemented (detect-only).
     HfsPlus,
+    /// BitLocker-encrypted NTFS volume — detected via `-FVE-FS-` OEM ID.
+    /// No parser is implemented; the volume must be decrypted before recovery.
+    Encrypted,
     Unknown,
 }
 
@@ -65,6 +68,7 @@ impl std::fmt::Display for FilesystemType {
             FilesystemType::ExFat => write!(f, "exFAT"),
             FilesystemType::Apfs => write!(f, "APFS"),
             FilesystemType::HfsPlus => write!(f, "HFS+"),
+            FilesystemType::Encrypted => write!(f, "BitLocker (encrypted)"),
             FilesystemType::Unknown => write!(f, "Unknown"),
         }
     }
@@ -409,7 +413,7 @@ pub fn open_filesystem(device: Arc<dyn BlockDevice>) -> Result<Box<dyn Filesyste
         FilesystemType::Ext4 => Ok(Box::new(Ext4Parser::new(vol)?)),
         FilesystemType::ExFat => Ok(Box::new(ExFatParser::new(vol)?)),
         FilesystemType::Apfs => Ok(Box::new(ApfsParser::new(vol)?)),
-        FilesystemType::HfsPlus | FilesystemType::Unknown => {
+        FilesystemType::HfsPlus | FilesystemType::Encrypted | FilesystemType::Unknown => {
             Err(FilesystemError::UnknownFilesystem)
         }
     }
@@ -446,6 +450,15 @@ mod tests {
         data[3..11].copy_from_slice(b"EXFAT   ");
         let dev = MockBlockDevice::new(data, 512);
         assert_eq!(detect_filesystem(&dev), FilesystemType::ExFat);
+    }
+
+    #[test]
+    fn detect_bitlocker_volume() {
+        let mut data = vec![0u8; 512];
+        // BitLocker replaces the NTFS OEM ID with `-FVE-FS-` at bytes [3..11].
+        data[3..11].copy_from_slice(b"-FVE-FS-");
+        let dev = MockBlockDevice::new(data, 512);
+        assert_eq!(detect_filesystem(&dev), FilesystemType::Encrypted);
     }
 
     #[test]

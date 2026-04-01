@@ -36,6 +36,11 @@ pub(crate) fn probe_filesystem(device: &dyn BlockDevice) -> (FilesystemType, u64
 pub(crate) fn detect_at(device: &dyn BlockDevice, byte_offset: u64) -> FilesystemType {
     // Boot sector (NTFS / exFAT / FAT32 / APFS container)
     if let Ok(boot) = io::read_bytes(device, byte_offset, 512) {
+        // BitLocker replaces the NTFS OEM ID with `-FVE-FS-`.  Check this
+        // before the NTFS check to avoid misidentifying an encrypted volume.
+        if boot.len() >= 11 && &boot[3..11] == b"-FVE-FS-" {
+            return FilesystemType::Encrypted;
+        }
         if boot.len() >= 11 && &boot[3..11] == b"NTFS    " {
             return FilesystemType::Ntfs;
         }

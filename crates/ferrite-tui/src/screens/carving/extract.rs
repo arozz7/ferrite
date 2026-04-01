@@ -9,6 +9,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use sha2::{Digest, Sha256};
+
 use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 use ferrite_carver::{post_validate, CarveHit, CarveQuality, Carver, CarvingConfig};
 use ferrite_filesystem::MetadataIndex;
@@ -56,10 +58,8 @@ pub(super) fn parse_lnk_target_name(data: &[u8]) -> Option<String> {
     if li_flags & 0x01 == 0 {
         return None;
     }
-    let base_off =
-        u32::from_le_bytes(data[li + 16..li + 20].try_into().ok()?) as usize;
-    let suffix_off =
-        u32::from_le_bytes(data[li + 24..li + 28].try_into().ok()?) as usize;
+    let base_off = u32::from_le_bytes(data[li + 16..li + 20].try_into().ok()?) as usize;
+    let suffix_off = u32::from_le_bytes(data[li + 24..li + 28].try_into().ok()?) as usize;
 
     let base_start = li + base_off;
     let suffix_start = li + suffix_off;
@@ -73,7 +73,9 @@ pub(super) fn parse_lnk_target_name(data: &[u8]) -> Option<String> {
         String::new()
     };
     let full = format!("{}{}", base, suffix);
-    full.split(['\\', '/']).filter(|s| !s.is_empty()).last().map(str::to_string)
+    full.split(['\\', '/'])
+        .rfind(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Extract the executable name from a Windows Prefetch (.pf) binary blob.
@@ -219,6 +221,33 @@ fn apply_timestamps(path: &str, byte_offset: u64, index: &MetadataIndex) {
     if let Err(e) = filetime::set_file_times(path, ft, ft) {
         tracing::debug!(path, error = %e, "could not set file timestamps");
     }
+}
+
+// ── SHA-256 sidecar ───────────────────────────────────────────────────────────
+
+/// Write a `<path>.sha256` sidecar file containing the SHA-256 hash of the
+/// extracted file in GNU `sha256sum`-compatible format:
+///
+/// ```text
+/// <hex>  <filename>\n
+/// ```
+///
+/// Errors are silently ignored — sidecar generation is best-effort and must
+/// never abort an otherwise-successful extraction.
+pub(super) fn write_sha256_sidecar(path: &str) {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let hash = Sha256::digest(&data);
+    let hex = format!("{:x}", hash);
+    let filename = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path);
+    let sidecar_path = format!("{}.sha256", path);
+    let content = format!("{}  {}\n", hex, filename);
+    let _ = std::fs::write(&sidecar_path, content);
 }
 
 // ── Integrity helpers ─────────────────────────────────────────────────────────
@@ -477,6 +506,7 @@ impl CarvingState {
                                 }
                                 _ => filename,
                             };
+                            write_sha256_sidecar(&filename);
                             tracing::info!(path = %filename, bytes, "extracted file");
                             let _ = tx.send(CarveMsg::Extracted {
                                 idx,
@@ -885,6 +915,9 @@ impl CarvingState {
                         } else {
                             path
                         };
+                        if result.is_ok() {
+                            write_sha256_sidecar(&path);
+                        }
                         let _ = done_tx.send(WorkerMsg::Completed {
                             idx,
                             hit: Box::new(hit),
@@ -1031,7 +1064,10 @@ mod tests {
     ///     +28 LocalBasePath (null-terminated ANSI)
     ///     +28+path_len  CommonPathSuffix = 0x00
     fn build_lnk(local_base_path: &str) -> Vec<u8> {
-        let path_bytes: Vec<u8> = local_base_path.bytes().chain(std::iter::once(0u8)).collect();
+        let path_bytes: Vec<u8> = local_base_path
+            .bytes()
+            .chain(std::iter::once(0u8))
+            .collect();
         let li_size = 28u32 + path_bytes.len() as u32 + 1; // +1 for empty suffix null
         let suffix_off = 28u32 + path_bytes.len() as u32;
 
@@ -1048,7 +1084,7 @@ mod tests {
         data[li + 12..li + 16].copy_from_slice(&28u32.to_le_bytes()); // VolumeIDOffset
         data[li + 16..li + 20].copy_from_slice(&28u32.to_le_bytes()); // LocalBasePathOffset
         data[li + 24..li + 28].copy_from_slice(&suffix_off.to_le_bytes()); // suffix offset
-        // LocalBasePath string
+                                                                           // LocalBasePath string
         data[li + 28..li + 28 + path_bytes.len()].copy_from_slice(&path_bytes);
         // CommonPathSuffix: empty (null byte already zero-initialised)
         data

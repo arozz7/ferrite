@@ -144,7 +144,11 @@ impl Carver {
         on_hits: &mut impl FnMut(Vec<CarveHit>),
     ) -> Result<()> {
         let device_size = self.device.size();
-        if device_size == 0 || self.config.signatures.is_empty() {
+        if device_size == 0 {
+            tracing::warn!("carving scan aborted: device reports size 0 — check device selection or image file");
+            return Ok(());
+        }
+        if self.config.signatures.is_empty() {
             return Ok(());
         }
 

@@ -434,6 +434,16 @@ impl CarvingState {
         let device_size = device.size();
         self.resume_from_byte = 0;
 
+        // Guard: refuse to start if the device reports zero size — this almost
+        // always means no device is open or the image file is empty.
+        if device_size == 0 {
+            self.status = CarveStatus::Error(
+                "Device reports size 0 — select a valid drive or image file before scanning."
+                    .into(),
+            );
+            return;
+        }
+
         if was_resumed && start_byte >= device_size {
             self.cancel.store(false, Ordering::Relaxed);
             self.pause.store(false, Ordering::Relaxed);
