@@ -327,6 +327,101 @@ pub(crate) fn read_run_list(
     Ok(written)
 }
 
+/// Collect all named Alternate Data Streams from a FILE record.
+///
+/// Returns a `Vec` of `(stream_name, data_size, first_lcn)` for every named
+/// `$DATA` attribute (type `0x80` with `name_len > 0`) found in `raw`.  The
+/// unnamed primary `$DATA` stream (which `parse_file_info` already handles) is
+/// skipped.  `first_lcn` is `None` for resident streams.
+pub(crate) fn parse_ads_streams(raw: &[u8]) -> Vec<(String, u64, Option<u64>)> {
+    if raw.len() < 22 {
+        return vec![];
+    }
+    let first_attr = match raw[20..22].try_into().ok() {
+        Some(b) => u16::from_le_bytes(b) as usize,
+        None => return vec![],
+    };
+    let mut pos = first_attr;
+    let mut streams = Vec::new();
+
+    while pos + 8 <= raw.len() {
+        let type_id = match raw[pos..pos + 4].try_into().ok() {
+            Some(b) => u32::from_le_bytes(b),
+            None => break,
+        };
+        if type_id == ATTR_END {
+            break;
+        }
+        let attr_len = match raw[pos + 4..pos + 8].try_into().ok() {
+            Some(b) => u32::from_le_bytes(b) as usize,
+            None => break,
+        };
+        if attr_len == 0 || pos + attr_len > raw.len() {
+            break;
+        }
+
+        if type_id == ATTR_DATA {
+            let name_len = raw[pos + 9] as usize; // name length in UTF-16 code units
+            if name_len > 0 {
+                // Named stream — extract the stream name.
+                let name_off = match raw[pos + 10..pos + 12].try_into().ok() {
+                    Some(b) => u16::from_le_bytes(b) as usize,
+                    None => {
+                        pos += attr_len;
+                        continue;
+                    }
+                };
+                let name_start = pos + name_off;
+                let name_end = name_start + name_len * 2;
+                if name_end > raw.len() {
+                    pos += attr_len;
+                    continue;
+                }
+                let name_utf16: Vec<u16> = raw[name_start..name_end]
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                let stream_name = String::from_utf16_lossy(&name_utf16).to_string();
+
+                let non_resident = raw[pos + 8];
+                if non_resident == 0 {
+                    // Resident named stream.
+                    let data_size = match raw[pos + 16..pos + 20].try_into().ok() {
+                        Some(b) => u32::from_le_bytes(b) as u64,
+                        None => 0,
+                    };
+                    streams.push((stream_name, data_size, None));
+                } else if pos + 0x40 <= raw.len() {
+                    // Non-resident named stream.
+                    let real_size = match raw[pos + 0x30..pos + 0x38].try_into().ok() {
+                        Some(b) => u64::from_le_bytes(b),
+                        None => 0,
+                    };
+                    let rl_off = match raw[pos + 0x20..pos + 0x22].try_into().ok() {
+                        Some(b) => u16::from_le_bytes(b) as usize,
+                        None => {
+                            streams.push((stream_name, real_size, None));
+                            pos += attr_len;
+                            continue;
+                        }
+                    };
+                    let rl_start = pos + rl_off;
+                    let first_lcn = if rl_start < raw.len() {
+                        first_lcn_from_run_list(&raw[rl_start..])
+                    } else {
+                        None
+                    };
+                    streams.push((stream_name, real_size, first_lcn));
+                }
+            }
+        }
+
+        pos += attr_len;
+    }
+
+    streams
+}
+
 /// Determine how many MFT records exist by reading MFT record 0's DATA attribute.
 pub(crate) fn mft_record_count(
     device: &Arc<dyn BlockDevice>,

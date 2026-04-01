@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner};
+use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner, Confidence};
 
 /// Two uppercase letters + 2 digits + 4–30 uppercase alphanumerics.
 static RE: OnceLock<Regex> = OnceLock::new();
@@ -54,7 +54,7 @@ impl ArtifactScanner for IbanScanner {
     fn scan_block(&self, data: &[u8], block_offset: u64) -> Vec<ArtifactHit> {
         scan_text_lossy(data, block_offset, ArtifactKind::Iban, re(), |s| {
             if iban_valid(s) {
-                Some(s.to_string())
+                Some((s.to_string(), Confidence::High))
             } else {
                 None
             }

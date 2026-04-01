@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use ferrite_artifact::ArtifactKind;
+use ferrite_artifact::{ArtifactKind, Confidence};
 
 use super::{ArtifactsState, ScanStatus};
 
@@ -175,10 +175,18 @@ impl ArtifactsState {
                     });
                 let row_style = if sel { focused_style } else { normal_style };
 
+                let conf_span = match hit.confidence {
+                    Confidence::High => Span::raw(""),
+                    Confidence::Medium => {
+                        Span::styled(" [Med]", Style::default().fg(Color::Yellow))
+                    }
+                    Confidence::Low => Span::styled(" [Low]", Style::default().fg(Color::DarkGray)),
+                };
                 let line = Line::from(vec![
                     Span::styled(format!("{:>12x}  ", hit.byte_offset), row_style),
                     Span::styled(hit.kind.short_label(), kind_style),
                     Span::styled(format!("  {}", hit.value), row_style),
+                    conf_span,
                 ]);
                 ListItem::new(line)
             })

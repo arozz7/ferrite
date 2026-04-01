@@ -34,4 +34,4 @@ pub mod scanners;
 
 pub use engine::{run_scan, ArtifactScanConfig, ScanMsg, ScanProgress};
 pub use export::write_csv;
-pub use scanner::{ArtifactHit, ArtifactKind, ArtifactScanner};
+pub use scanner::{ArtifactHit, ArtifactKind, ArtifactScanner, Confidence};

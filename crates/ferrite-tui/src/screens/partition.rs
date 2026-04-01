@@ -12,6 +12,7 @@ use ferrite_partition::{
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
@@ -53,6 +54,8 @@ pub struct PartitionState {
     /// `true` when the last `start_read()` used the partial image fallback
     /// instead of reading the physical device.
     used_image_fallback: bool,
+    /// Total device size in bytes — used to scale the horizontal disk-map bar.
+    disk_size_bytes: u64,
 }
 
 impl Default for PartitionState {
@@ -73,6 +76,7 @@ impl PartitionState {
             imaging_active: false,
             fallback_image_path: None,
             used_image_fallback: false,
+            disk_size_bytes: 0,
         }
     }
 
@@ -86,6 +90,7 @@ impl PartitionState {
     }
 
     pub fn set_device(&mut self, device: Arc<dyn BlockDevice>) {
+        self.disk_size_bytes = device.size();
         self.device = Some(device);
         self.table = None;
         self.selected = 0;
@@ -314,17 +319,14 @@ impl PartitionState {
                 );
             }
             PartitionStatus::Done => {
-                let show_contention = self.imaging_active && !self.used_image_fallback;
+                let ctx = RenderContext {
+                    selected: self.selected,
+                    export_status: self.export_status.as_deref(),
+                    show_contention_warning: self.imaging_active && !self.used_image_fallback,
+                    disk_size_bytes: self.disk_size_bytes,
+                };
                 let table_ref = self.table.as_ref().unwrap();
-                render_partition_table(
-                    frame,
-                    area,
-                    outer,
-                    table_ref,
-                    self.selected,
-                    self.export_status.as_deref(),
-                    show_contention,
-                );
+                render_partition_table(frame, area, outer, table_ref, &ctx);
             }
         }
     }
@@ -332,15 +334,26 @@ impl PartitionState {
 
 // ── Rendering helpers ─────────────────────────────────────────────────────────
 
+struct RenderContext<'a> {
+    selected: usize,
+    export_status: Option<&'a str>,
+    show_contention_warning: bool,
+    disk_size_bytes: u64,
+}
+
 fn render_partition_table(
     frame: &mut Frame,
     area: Rect,
     outer: Block,
     tbl: &PartitionTable,
-    selected: usize,
-    export_status: Option<&str>,
-    show_contention_warning: bool,
+    ctx: &RenderContext<'_>,
 ) {
+    let RenderContext {
+        selected,
+        export_status,
+        show_contention_warning,
+        disk_size_bytes,
+    } = *ctx;
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
@@ -355,17 +368,23 @@ fn render_partition_table(
         tbl.entries.len()
     );
 
-    // Split: summary row + optional advisory rows + table + optional export status line.
+    // Split: summary + optional advisory rows + disk map + table + optional export status.
     use ratatui::layout::{Constraint, Direction, Layout};
     let contention_height: u16 = if show_contention_warning { 1 } else { 0 };
     let note_height: u16 = if tbl.note.is_some() { 1 } else { 0 };
     let status_height: u16 = if export_status.is_some() { 1 } else { 0 };
+    let diskmap_height: u16 = if !tbl.entries.is_empty() && disk_size_bytes > 0 {
+        1
+    } else {
+        0
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),                 // summary
             Constraint::Length(contention_height), // contention advisory
             Constraint::Length(note_height),       // table.note
+            Constraint::Length(diskmap_height),    // disk-map bar
             Constraint::Min(0),                    // partition table
             Constraint::Length(status_height),     // export status
         ])
@@ -393,16 +412,21 @@ fn render_partition_table(
     if let Some(msg) = export_status {
         frame.render_widget(
             Paragraph::new(format!(" {msg}")).style(Style::default().fg(Color::Green)),
-            chunks[4],
+            chunks[5],
         );
     }
 
     if tbl.entries.is_empty() {
         frame.render_widget(
             Paragraph::new(" No partitions found. Try s to scan for lost partitions."),
-            chunks[3],
+            chunks[4],
         );
         return;
+    }
+
+    // Disk-map bar — proportional horizontal view of partition layout.
+    if diskmap_height > 0 {
+        render_disk_map(frame, chunks[3], tbl, disk_size_bytes);
     }
 
     let header = Row::new([
@@ -453,7 +477,66 @@ fn render_partition_table(
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut ts = TableState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(table, chunks[3], &mut ts);
+    frame.render_stateful_widget(table, chunks[4], &mut ts);
+}
+
+/// Render a horizontal disk-map bar showing partition layout proportionally.
+///
+/// Each partition is drawn as a coloured block (█) scaled to its LBA span.
+/// Unpartitioned space is shown as light shade (░).  Overlapping LBA ranges
+/// are highlighted in red.  The bar fits exactly in `area.width` columns.
+fn render_disk_map(frame: &mut Frame, area: Rect, tbl: &PartitionTable, disk_size_bytes: u64) {
+    if area.width < 4 {
+        return;
+    }
+    let width = area.width as usize;
+    let total_lbas = disk_size_bytes / tbl.sector_size as u64;
+    if total_lbas == 0 {
+        return;
+    }
+
+    // Colour palette for partitions (cycles if there are more than the palette size).
+    const PALETTE: &[Color] = &[
+        Color::Cyan,
+        Color::Green,
+        Color::Blue,
+        Color::Magenta,
+        Color::Yellow,
+        Color::LightCyan,
+        Color::LightGreen,
+    ];
+
+    // Track how many partitions cover each cell (for overlap detection).
+    let mut cell_count = vec![0u8; width];
+    // Track partition index per cell (last writer wins for colour).
+    let mut cell_part: Vec<Option<usize>> = vec![None; width];
+
+    for (idx, entry) in tbl.entries.iter().enumerate() {
+        let start_cell = ((entry.start_lba as u128 * width as u128) / total_lbas as u128) as usize;
+        let end_cell = ((entry.end_lba as u128 * width as u128) / total_lbas as u128)
+            .min(width as u128 - 1) as usize;
+        for c in start_cell..=end_cell.min(width - 1) {
+            cell_count[c] = cell_count[c].saturating_add(1);
+            cell_part[c] = Some(idx);
+        }
+    }
+
+    let spans: Vec<Span> = (0..width)
+        .map(|c| {
+            if cell_count[c] > 1 {
+                // Overlap — highlight in red.
+                Span::styled("\u{2588}", Style::default().fg(Color::Red))
+            } else if let Some(idx) = cell_part[c] {
+                let color = PALETTE[idx % PALETTE.len()];
+                Span::styled("\u{2588}", Style::default().fg(color))
+            } else {
+                // Unpartitioned gap.
+                Span::styled("\u{2591}", Style::default().fg(Color::DarkGray))
+            }
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn part_type_label(e: &ferrite_partition::PartitionEntry) -> String {

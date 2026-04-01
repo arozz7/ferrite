@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner};
+use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner, Confidence};
 
 static RE: OnceLock<Regex> = OnceLock::new();
 
@@ -29,7 +29,7 @@ impl ArtifactScanner for UrlScanner {
             let trimmed = s.trim_end_matches(['.', ',', ')', ';']);
             if trimmed.len() >= 11 {
                 // Minimum valid URL: "http://a.bc"
-                Some(trimmed.to_string())
+                Some((trimmed.to_string(), Confidence::High))
             } else {
                 None
             }

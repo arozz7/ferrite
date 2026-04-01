@@ -14,8 +14,8 @@ use ferrite_blockdev::BlockDevice;
 use crate::error::{FilesystemError, Result};
 use crate::io::{read_bytes, read_u16_le, read_u64_le};
 use crate::ntfs_helpers::{
-    apply_fixup, mft_record_count, parse_file_info, parse_standard_info, read_run_list, ATTR_DATA,
-    ATTR_END, FILE_SIG,
+    apply_fixup, mft_record_count, parse_ads_streams, parse_file_info, parse_standard_info,
+    read_run_list, ATTR_DATA, ATTR_END, FILE_SIG,
 };
 use crate::{FileEntry, FilesystemParser, FilesystemType, RecoveryChance};
 
@@ -26,8 +26,10 @@ const NTFS_OEM_ID: &[u8] = b"NTFS    ";
 // MFT record number for the root directory
 const ROOT_MFT_RECORD: u64 = 5;
 
-// Maximum MFT records to scan (safety cap for very large volumes)
-const MAX_SCAN_RECORDS: u64 = 65_536;
+// Maximum MFT records to scan (safety cap for very large volumes).
+// Raised to 1 M so that large NTFS volumes (≥ 16 TiB with 4 KiB clusters)
+// are fully enumerated during deleted-file recovery.
+const MAX_SCAN_RECORDS: u64 = 1_048_576;
 
 // â"€â"€ Public struct â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
@@ -85,10 +87,17 @@ impl NtfsParser {
 
         // Determine how many MFT records exist by reading record 0 ($MFT itself)
         // and extracting its DATA attribute size.
-        let mft_record_count =
+        let raw_record_count =
             mft_record_count(&device, mft_start_byte, mft_record_size, cluster_size)
-                .unwrap_or(MAX_SCAN_RECORDS)
-                .min(MAX_SCAN_RECORDS);
+                .unwrap_or(MAX_SCAN_RECORDS);
+        let mft_record_count = raw_record_count.min(MAX_SCAN_RECORDS);
+        if raw_record_count > MAX_SCAN_RECORDS {
+            tracing::warn!(
+                cap = MAX_SCAN_RECORDS,
+                volume_records = raw_record_count,
+                "MFT record count exceeds scan cap; large volume file listing may be incomplete"
+            );
+        }
 
         trace!(
             cluster_size,
@@ -351,7 +360,7 @@ impl FilesystemParser for NtfsParser {
                 pending.push((
                     parent_ref,
                     FileEntry {
-                        name,
+                        name: name.clone(),
                         path: String::new(),
                         size: data_size,
                         is_dir: false,
@@ -365,6 +374,27 @@ impl FilesystemParser for NtfsParser {
                         recovery_chance: RecoveryChance::Unknown,
                     },
                 ));
+                // Collect Alternate Data Streams from this MFT record.
+                for (stream_name, stream_size, stream_lcn) in parse_ads_streams(&raw) {
+                    let ads_data_offset = stream_lcn.map(|lcn| lcn * self.cluster_size);
+                    pending.push((
+                        parent_ref,
+                        FileEntry {
+                            name: format!("{}:{}", name, stream_name),
+                            path: String::new(),
+                            size: stream_size,
+                            is_dir: false,
+                            is_deleted: !in_use,
+                            created,
+                            modified,
+                            first_cluster: None,
+                            mft_record: Some(i),
+                            inode_number: None,
+                            data_byte_offset: ads_data_offset,
+                            recovery_chance: RecoveryChance::Unknown,
+                        },
+                    ));
+                }
             }
         }
 

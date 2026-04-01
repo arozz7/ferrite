@@ -59,6 +59,40 @@ impl fmt::Display for ArtifactKind {
     }
 }
 
+// ── Confidence ────────────────────────────────────────────────────────────────
+
+/// Confidence level for a forensic artifact match.
+///
+/// Assigned per-hit by each scanner based on secondary validation.  A `Low`
+/// result indicates likely false-positive and is hidden by the default TUI
+/// filter.  `High` means the match passed all available structural checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Confidence {
+    /// Likely a false positive (e.g. Luhn-valid digits in binary context, or
+    /// a placeholder email domain such as `@example.com`).
+    Low,
+    /// Reasonable match — passes format validation but context is ambiguous.
+    Medium,
+    /// Strong match — passes all format and context validation checks.
+    High,
+}
+
+impl Confidence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Confidence::Low => "Low",
+            Confidence::Medium => "Med",
+            Confidence::High => "High",
+        }
+    }
+}
+
+impl std::fmt::Display for Confidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 // ── ArtifactHit ───────────────────────────────────────────────────────────────
 
 /// A single forensic artifact found at a specific byte offset.
@@ -72,6 +106,8 @@ pub struct ArtifactHit {
     /// Credit card numbers are **masked** — only the last 4 digits are stored
     /// (e.g. `****-****-****-1234`).  No raw CC numbers are retained.
     pub value: String,
+    /// Confidence level assigned by the scanner.
+    pub confidence: Confidence,
 }
 
 // ── ArtifactScanner trait ─────────────────────────────────────────────────────
@@ -95,8 +131,8 @@ pub trait ArtifactScanner: Send + Sync {
 /// Matches containing the UTF-8 replacement character (`\u{FFFD}`) are dropped
 /// to avoid reporting garbage matches at binary boundaries.
 ///
-/// `transform` maps the raw match string to the value to store. Return `None`
-/// to discard a match (e.g. when a secondary validation like Luhn fails).
+/// `transform` maps the raw match string to `(value, confidence)`.  Return
+/// `None` to discard a match (e.g. when secondary validation like Luhn fails).
 pub fn scan_text_lossy<F>(
     data: &[u8],
     block_offset: u64,
@@ -105,16 +141,17 @@ pub fn scan_text_lossy<F>(
     transform: F,
 ) -> Vec<ArtifactHit>
 where
-    F: Fn(&str) -> Option<String>,
+    F: Fn(&str) -> Option<(String, Confidence)>,
 {
     let text = String::from_utf8_lossy(data);
     re.find_iter(text.as_ref())
         .filter(|m| !m.as_str().contains('\u{FFFD}'))
         .filter_map(|m| {
-            transform(m.as_str()).map(|value| ArtifactHit {
+            transform(m.as_str()).map(|(value, confidence)| ArtifactHit {
                 kind,
                 byte_offset: block_offset + m.start() as u64,
                 value,
+                confidence,
             })
         })
         .collect()
