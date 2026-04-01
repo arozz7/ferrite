@@ -195,9 +195,10 @@ each named stream, produce an additional `FileEntry` with name format
 ### ENH-09 · S.M.A.R.T. pending-sector correlation with imaging bad-block map
 | Field | Value |
 |-------|-------|
+
 | **Category** | Feature Gap |
 | **Effort** | M |
-| **Status** | open |
+| **Status** | done (Phase 121) |
 | **Files** | `ferrite-smart/src/lib.rs`, `ferrite-imaging/src/engine.rs` |
 
 **Problem:** `ferrite-smart` reads S.M.A.R.T. attributes including `Reallocated_Sector_Ct`
@@ -396,7 +397,7 @@ recovering files that were in-flight during a power-cut.
 | ENH-06 | Incremental carving checkpoint/resume | 2 | M | done (pre-existing — Phase 42/65 infrastructure) |
 | ENH-07 | Encrypted volume detection | 2 | M | done (Phase 118) |
 | ENH-08 | NTFS Alternate Data Stream enumeration | 2 | M | done (Phase 119) |
-| ENH-09 | S.M.A.R.T. pending-sector correlation | 2 | M | open |
+| ENH-09 | S.M.A.R.T. pending-sector correlation | 2 | M | done (Phase 121) |
 | ENH-10 | Post-extraction SHA-256 + NSRL lookup | 2 | M | done (Phase 118) |
 | ENH-11 | Artifact confidence scoring | 2 | M | done (Phase 119) |
 | ENH-12 | Partition disk-map visualisation | 3 | S | done (Phase 119) |

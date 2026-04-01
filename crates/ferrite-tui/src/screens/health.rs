@@ -3,6 +3,7 @@
 use std::sync::mpsc::{self, Receiver};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use ferrite_imaging::mapfile_io;
 use ferrite_smart::{query_and_assess, CountThresholds, HealthVerdict, SmartData, SmartThresholds};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -37,6 +38,8 @@ pub struct HealthState {
     rx: Option<Receiver<HealthMsg>>,
     /// Most recently received S.M.A.R.T. data — exposed for report generation.
     pub last_smart_data: Option<SmartData>,
+    /// Path to the current imaging mapfile; drives the pending-sector correlation row.
+    pub mapfile_path: Option<String>,
 }
 
 impl Default for HealthState {
@@ -55,6 +58,7 @@ impl HealthState {
             status: HealthStatus::Idle,
             rx: None,
             last_smart_data: None,
+            mapfile_path: None,
         }
     }
 
@@ -192,6 +196,7 @@ impl HealthState {
                     self.data.as_ref().unwrap(),
                     self.verdict.as_ref().unwrap(),
                     self.attr_selected,
+                    self.mapfile_path.as_deref(),
                 );
             }
         }
@@ -207,6 +212,7 @@ fn render_health_loaded(
     data: &SmartData,
     verdict: &HealthVerdict,
     attr_sel: usize,
+    mapfile_path: Option<&str>,
 ) {
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -310,6 +316,49 @@ fn render_health_loaded(
         };
         for r in reasons {
             summary_lines.push(Line::from(Span::styled(format!("  • {r}"), reason_style)));
+        }
+    }
+
+    // Pending-sector correlation row (ENH-09): show when attr 197 is present
+    // and a mapfile path is configured.
+    if let Some(mpath) = mapfile_path {
+        let smart_pending = data
+            .attributes
+            .iter()
+            .find(|a| a.id == 197)
+            .map(|a| a.raw_value);
+
+        if let Some(smart_count) = smart_pending {
+            let mapfile_count = mapfile_io::count_unreadable_sectors(std::path::Path::new(mpath));
+
+            let (corr_text, corr_style) = match mapfile_count {
+                None => (
+                    format!(" Correlation: SMART pending = {smart_count} sectors  |  mapfile = (unavailable)"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Some(map_count) => {
+                    // Amber when within 10% of each other (both non-zero).
+                    let close = smart_count > 0 && map_count > 0 && {
+                        let (lo, hi) = if smart_count < map_count {
+                            (smart_count, map_count)
+                        } else {
+                            (map_count, smart_count)
+                        };
+                        hi <= lo + lo / 10 + 1
+                    };
+                    let style = if close {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    (
+                        format!(" Correlation: SMART pending = {smart_count} sectors  |  mapfile unreadable = {map_count} sectors{}",
+                            if close { "  ← counts match" } else { "" }),
+                        style,
+                    )
+                }
+            };
+            summary_lines.push(Line::from(Span::styled(corr_text, corr_style)));
         }
     }
 
