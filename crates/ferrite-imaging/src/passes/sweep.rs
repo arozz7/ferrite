@@ -9,12 +9,14 @@ use crate::ProgressReporter;
 
 /// Pass 3 — sweep: handle any `NonTried` blocks that remain after the copy pass.
 ///
-/// Reads sector-by-sector (no large-block skipping). On the first failure,
-/// marks that sector `BadSector` and the remainder `NonScraped`, then stops
-/// processing that block — identical to the trim pass strategy.
+/// Reads in chunks of `config.pass_block_sizes[2]` (clamped to `sector_size`
+/// minimum). On the first failure, marks that chunk `BadSector` and the
+/// remainder `NonScraped`, then stops processing that block — identical to the
+/// trim pass strategy.
 pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporter) -> Result<()> {
     let sector_size = engine.device.sector_size() as u64;
-    let mut buf = AlignedBuffer::new(sector_size as usize, sector_size as usize);
+    let block_size = engine.config.pass_block_sizes[2].max(sector_size);
+    let mut buf = AlignedBuffer::new(block_size as usize, sector_size as usize);
 
     let work: Vec<_> = engine
         .mapfile
@@ -25,7 +27,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
         let mut pos = region.pos;
 
         while pos < region.end() {
-            let chunk = (region.end() - pos).min(sector_size);
+            let chunk = (region.end() - pos).min(block_size);
 
             match engine.device.read_at(pos, &mut buf) {
                 Ok(0) => break,

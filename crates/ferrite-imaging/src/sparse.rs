@@ -13,12 +13,16 @@ use std::io::{self, Seek, SeekFrom, Write};
 
 /// Enable sparse-file mode on `file`.
 ///
+/// Returns `true` when sparse holes will be created, `false` when the
+/// destination filesystem does not support them and the image will grow to
+/// full size despite `sparse_output: true` being set.
+///
 /// * **Windows (NTFS)** — sends `FSCTL_SET_SPARSE` via `DeviceIoControl`.
-///   Silently proceeds when the call fails (the destination filesystem may not
-///   support sparse files, e.g. FAT32 USB stick) — holes simply will not be
-///   created, and the image grows to full size.
-/// * **Linux / macOS / other** — no-op; holes are created automatically.
-pub fn enable_sparse(file: &File) -> io::Result<()> {
+///   Returns `true` when the call succeeds, `false` when the destination
+///   filesystem does not support sparse files (e.g. FAT32 USB stick).
+/// * **Linux / macOS / other** — holes are created automatically by seeking
+///   past zero regions; always returns `true`.
+pub fn enable_sparse(file: &File) -> io::Result<bool> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::io::AsRawHandle;
@@ -45,11 +49,17 @@ pub fn enable_sparse(file: &File) -> io::Result<()> {
                 "FSCTL_SET_SPARSE failed (non-NTFS destination?); \
                  sparse savings disabled for this session"
             );
+            Ok(false)
+        } else {
+            Ok(true)
         }
     }
     #[cfg(not(target_os = "windows"))]
-    let _ = file;
-    Ok(())
+    {
+        let _ = file;
+        // On Linux/macOS holes are implicit on seek-past — always active.
+        Ok(true)
+    }
 }
 
 /// Write `buf` at byte `pos` in `file`, or skip it if the buffer is all zeros.
@@ -146,8 +156,11 @@ mod tests {
     #[test]
     fn enable_sparse_does_not_error_on_regular_file() {
         let tmp = NamedTempFile::new().unwrap();
-        // On Windows sends FSCTL_SET_SPARSE; on Linux/macOS is a no-op.
-        // Must not return an error in either case.
-        enable_sparse(tmp.as_file()).unwrap();
+        // On Windows sends FSCTL_SET_SPARSE; on Linux/macOS holes are automatic.
+        // Must not return an error in either case, and must return a bool.
+        let active = enable_sparse(tmp.as_file()).unwrap();
+        // On Linux/macOS sparse is always reported active; on Windows it depends
+        // on the destination filesystem.  We can only assert it is a valid bool.
+        let _ = active;
     }
 }

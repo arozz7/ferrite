@@ -18,7 +18,8 @@ pub(crate) fn run(
     attempt: u32,
 ) -> Result<()> {
     let sector_size = engine.device.sector_size() as u64;
-    let mut buf = AlignedBuffer::new(sector_size as usize, sector_size as usize);
+    let block_size = engine.config.pass_block_sizes[4].max(sector_size);
+    let mut buf = AlignedBuffer::new(block_size as usize, sector_size as usize);
     let max = engine.config.max_retries;
     let phase = ImagingPhase::Retry {
         attempt: attempt + 1,
@@ -38,21 +39,20 @@ pub(crate) fn run(
         // Direction per attempt:
         //   Even (0, 2, …): forward  — pos starts at region.pos, advances by chunk,
         //                              exits when pos >= region.end()
-        //   Odd  (1, 3, …): reverse  — pos starts at region.end() - sector_size,
+        //   Odd  (1, 3, …): reverse  — pos starts at region.end() - block_size,
         //                              retreats by chunk, exits when stepping back
         //                              would go below region.pos (pos < region.pos + chunk)
         //
-        // `chunk` is always sector_size for aligned single-sector regions.  The
-        // `min(sector_size)` guard handles the edge case where a region is smaller
-        // than one sector (shouldn't occur on a well-formed mapfile, but is safe).
+        // `chunk` is clamped to the region size so partial-block regions at the
+        // end of the device are handled correctly.
         let mut pos = if attempt.is_multiple_of(2) {
             region.pos
         } else {
-            region.end().saturating_sub(sector_size)
+            region.end().saturating_sub(block_size)
         };
 
         loop {
-            let chunk = (region.end() - region.pos).min(sector_size);
+            let chunk = (region.end() - region.pos).min(block_size);
 
             match engine.device.read_at(pos, &mut buf) {
                 Ok(0) => break,

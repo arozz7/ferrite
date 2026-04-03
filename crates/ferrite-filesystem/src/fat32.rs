@@ -94,6 +94,7 @@ impl Fat32Parser {
     // ── Cluster helpers ───────────────────────────────────────────────────────
 
     fn cluster_offset(&self, cluster: u32) -> u64 {
+        debug_assert!(cluster >= 2, "cluster index must be ≥ 2 per FAT spec");
         self.data_offset + (cluster as u64 - 2) * self.cluster_size
     }
 
@@ -109,6 +110,12 @@ impl Fat32Parser {
     }
 
     fn read_cluster(&self, cluster: u32) -> Result<Vec<u8>> {
+        if cluster < 2 {
+            return Err(FilesystemError::InvalidStructure {
+                context: "FAT32 cluster chain",
+                reason: format!("reserved cluster index {cluster} — must be ≥ 2 per FAT spec"),
+            });
+        }
         read_bytes(
             self.device.as_ref(),
             self.cluster_offset(cluster),
@@ -791,5 +798,20 @@ mod tests {
             result.is_err(),
             "expected Err for invalid FAT32 boot signature"
         );
+    }
+
+    /// Reading cluster indices 0 and 1 (FAT-reserved) must return Err rather
+    /// than underflowing the offset arithmetic.
+    #[test]
+    fn read_cluster_rejects_reserved_indices() {
+        let dev = Arc::new(build_image());
+        let parser = Fat32Parser::new(dev).expect("valid test image");
+        for reserved in [0u32, 1u32] {
+            let result = parser.read_cluster(reserved);
+            assert!(
+                result.is_err(),
+                "cluster {reserved} is FAT-reserved — expected Err, got Ok"
+            );
+        }
     }
 }

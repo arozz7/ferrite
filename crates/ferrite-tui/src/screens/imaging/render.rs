@@ -24,7 +24,7 @@ impl ImagingState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(14), // config fields + hint + resume line + sparse + space
+                Constraint::Length(15), // config fields + hint + resume line + sparse + verify + space
                 Constraint::Length(3),  // progress bar
                 Constraint::Length(6),  // sector map
                 Constraint::Min(0),     // stats / messages
@@ -148,25 +148,41 @@ impl ImagingState {
                     },
                 ),
             ]),
-            Line::from(vec![
-                Span::raw(" BlockSz : "),
-                Span::styled(
-                    if self.edit_field == Some(EditField::BlockSize) {
-                        format!("{}█ KiB", self.block_size_str)
-                    } else if self.block_size_str.is_empty() {
-                        "(default 512 KiB)".into()
+            // ── Per-pass block sizes ─────────────────────────────────────────
+            {
+                const LABELS: [&str; 5] = ["Cpy", "Trm", "Swp", "Scr", "Rtr"];
+                const DEFAULTS_KIB: [&str; 5] = ["512", "~1S", "~1S", "~1S", "~1S"];
+                let mut spans: Vec<Span> = vec![Span::raw(" Passes  : ")];
+                for i in 0..5usize {
+                    let editing = self.edit_field == Some(EditField::BlockSize(i));
+                    let raw_str = &self.pass_block_size_strs[i];
+                    let val_str = if editing {
+                        format!("{}{}█KiB", LABELS[i], raw_str)
+                    } else if raw_str.is_empty() {
+                        format!("{}({})", LABELS[i], DEFAULTS_KIB[i])
                     } else {
-                        format!("{} KiB", self.block_size_str)
-                    },
-                    if self.edit_field == Some(EditField::BlockSize) {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    },
-                ),
-            ]),
+                        format!("{}{}K", LABELS[i], raw_str)
+                    };
+                    spans.push(Span::styled(
+                        val_str,
+                        if editing {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        },
+                    ));
+                    if i < 4 {
+                        spans.push(Span::raw(" "));
+                    }
+                }
+                spans.push(Span::styled(
+                    "  (b to edit/cycle)",
+                    Style::default().fg(Color::DarkGray),
+                ));
+                Line::from(spans)
+            },
             Line::from(vec![
                 Span::raw(" Reverse : "),
                 Span::styled(
@@ -193,7 +209,31 @@ impl ImagingState {
                         Style::default().fg(Color::DarkGray)
                     },
                 ),
-                Span::raw("  (S to toggle — skips zero blocks, saves space on NTFS/ext4)"),
+                match self.sparse_active {
+                    Some(true) => Span::styled(
+                        " (active)",
+                        Style::default().fg(Color::Green),
+                    ),
+                    Some(false) => Span::styled(
+                        " (unavailable — destination FS does not support sparse files; dense output)",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    None => Span::raw("  (S to toggle — skips zero blocks, saves space on NTFS/ext4)"),
+                },
+            ]),
+            Line::from(vec![
+                Span::raw(" Verify  : "),
+                Span::styled(
+                    if self.verify_reads { "ON" } else { "OFF" }.to_string(),
+                    if self.verify_reads {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
+                Span::raw("  (V to toggle — re-reads each block to detect unstable sectors)"),
             ]),
             // ── Destination space row ────────────────────────────────────────
             space_row(self.space_info),

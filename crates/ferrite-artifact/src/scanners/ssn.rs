@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner};
+use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner, Confidence};
 
 static RE: OnceLock<Regex> = OnceLock::new();
 
@@ -34,7 +34,7 @@ impl ArtifactScanner for SsnScanner {
                     return None;
                 }
             }
-            Some(s.to_string())
+            Some((s.to_string(), Confidence::High))
         })
     }
 }

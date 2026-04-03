@@ -7,18 +7,19 @@ use crate::scanner::ArtifactHit;
 
 /// Write `hits` to a CSV file at `path`.
 ///
-/// Format: `byte_offset,kind,value` with a header row.  Values are
+/// Format: `byte_offset,kind,confidence,value` with a header row.  Values are
 /// double-quote escaped (commas and quotes within values are handled).
 pub fn write_csv(path: &str, hits: &[ArtifactHit]) -> io::Result<()> {
-    let mut out = String::with_capacity(hits.len() * 64);
-    out.push_str("byte_offset,kind,value\n");
+    let mut out = String::with_capacity(hits.len() * 80);
+    out.push_str("byte_offset,kind,confidence,value\n");
     for hit in hits {
         let escaped_value = hit.value.replace('"', "\"\"");
         writeln!(
             out,
-            "{},{},\"{}\"",
+            "{},{},{},\"{}\"",
             hit.byte_offset,
             hit.kind.label(),
+            hit.confidence.label(),
             escaped_value
         )
         .expect("write to String never fails");
@@ -29,13 +30,14 @@ pub fn write_csv(path: &str, hits: &[ArtifactHit]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scanner::ArtifactKind;
+    use crate::scanner::{ArtifactKind, Confidence};
 
     fn make_hit(kind: ArtifactKind, offset: u64, value: &str) -> ArtifactHit {
         ArtifactHit {
             kind,
             byte_offset: offset,
             value: value.to_string(),
+            confidence: Confidence::High,
         }
     }
 
@@ -53,7 +55,7 @@ mod tests {
 
         write_csv(path_str, &hits).unwrap();
         let content = std::fs::read_to_string(path_str).unwrap();
-        assert!(content.starts_with("byte_offset,kind,value\n"));
+        assert!(content.starts_with("byte_offset,kind,confidence,value\n"));
         assert!(content.contains("alice@example.com"));
         assert!(content.contains("https://example.com"));
         assert!(content.contains("****-****-****-1234"));

@@ -46,6 +46,13 @@ pub enum ImagingError {
          Stop the other session before starting a new one."
     )]
     OutputLocked { path: PathBuf },
+
+    #[error(
+        "Mapfile checksum mismatch: expected {declared:08x}, computed {actual:08x}. \
+         The file may be corrupted. Delete it to start a fresh session, \
+         or rename it and re-run with a new mapfile path."
+    )]
+    MapfileChecksum { declared: u32, actual: u32 },
 }
 
 pub type Result<T> = std::result::Result<T, ImagingError>;

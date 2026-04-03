@@ -395,6 +395,12 @@ impl App {
         self.drive_select.tick();
         self.health.tick();
         self.imaging.tick();
+        // Keep Health tab's mapfile reference in sync with imaging config.
+        self.health.mapfile_path = if self.imaging.mapfile_path.is_empty() {
+            None
+        } else {
+            Some(self.imaging.mapfile_path.clone())
+        };
         let imaging_active = self.imaging.is_actively_imaging();
         let imaging_path = self.imaging.partial_image_path();
         self.partition

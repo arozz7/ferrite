@@ -39,6 +39,13 @@ pub struct ImagingEngine {
     /// Counter incremented on every `make_progress` call; used to throttle
     /// snapshots and rate-update syscalls.
     pub(crate) snapshot_counter: u32,
+    /// Whether sparse-file mode is actually active for the output image.
+    ///
+    /// `true`  — zero blocks are skipped as sparse holes (saves disk space).
+    /// `false` — either `config.sparse_output` is `false`, or the destination
+    ///           filesystem does not support sparse files (e.g. FAT32); every
+    ///           block is written regardless.
+    sparse_active: bool,
     /// Path of the `.lock` sidecar file created on startup and removed on drop.
     /// `None` when the config has no output path (tests) or when lock creation
     /// is skipped for a zero-length output path.
@@ -138,11 +145,13 @@ impl ImagingEngine {
         // Sparse mode: enable OS-level hole support and pre-set file size so
         // tools see the correct length immediately.  Only done on a fresh file
         // (len == 0) to avoid truncating a resumed session.
+        let mut sparse_active = false;
         if config.sparse_output && output.metadata().map(|m| m.len()).unwrap_or(1) == 0 {
-            sparse::enable_sparse(&output).map_err(|e| ImagingError::ImageWrite {
-                offset: 0,
-                source: e,
-            })?;
+            sparse_active =
+                sparse::enable_sparse(&output).map_err(|e| ImagingError::ImageWrite {
+                    offset: 0,
+                    source: e,
+                })?;
             output
                 .seek(SeekFrom::Start(device_size - 1))
                 .and_then(|_| output.write_all(&[0]))
@@ -170,6 +179,7 @@ impl ImagingEngine {
             last_rate_bytes: 0,
             current_rate_bps: 0,
             snapshot_counter: 0,
+            sparse_active,
             lock_path: Some(lock_path),
         })
     }
@@ -215,6 +225,15 @@ impl ImagingEngine {
     /// The sector size of the underlying block device in bytes.
     pub fn sector_size(&self) -> u32 {
         self.device.sector_size()
+    }
+
+    /// Whether sparse-file mode is active for the output image.
+    ///
+    /// `true` when zero blocks will be stored as sparse holes; `false` when
+    /// every block is written (either because `sparse_output` is disabled, or
+    /// because the destination filesystem does not support sparse files).
+    pub fn sparse_active(&self) -> bool {
+        self.sparse_active
     }
 
     /// Pre-mark LBA addresses from the S.M.A.R.T. error log as `BadSector` in the
@@ -348,7 +367,7 @@ mod tests {
     fn make_engine(mock: MockBlockDevice) -> (ImagingEngine, NamedTempFile) {
         let tmp = NamedTempFile::new().unwrap();
         let config = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 3,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -357,6 +376,7 @@ mod tests {
             end_lba: None,
             reverse: false,
             sparse_output: false,
+            ..ImagingConfig::default()
         };
         let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         (engine, tmp)
@@ -482,7 +502,7 @@ mod tests {
         let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
         let tmp = NamedTempFile::new().unwrap();
         let config = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 0,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -491,6 +511,7 @@ mod tests {
             end_lba: None,
             reverse: false,
             sparse_output: false,
+            ..ImagingConfig::default()
         };
         let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         assert_eq!(
@@ -508,7 +529,7 @@ mod tests {
         let mock = MockBlockDevice::zeroed(SIZE, SECTOR);
         let tmp = NamedTempFile::new().unwrap();
         let config = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 0,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -517,6 +538,7 @@ mod tests {
             end_lba: Some(14), // image only sectors 0..13
             reverse: false,
             sparse_output: false,
+            ..ImagingConfig::default()
         };
         let engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         assert_eq!(
@@ -573,7 +595,7 @@ mod tests {
         // NonTried blocks — nothing to do.
         let mock2 = MockBlockDevice::zeroed(SIZE, SECTOR);
         let config2 = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 3,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -582,6 +604,7 @@ mod tests {
             end_lba: None,
             reverse: false,
             sparse_output: false,
+            ..ImagingConfig::default()
         };
         // Inject a fresh fully-finished mapfile.
         let mut engine2 = ImagingEngine::new(StdArc::new(mock2), config2).unwrap();
@@ -626,7 +649,7 @@ mod tests {
         }
         let tmp = NamedTempFile::new().unwrap();
         let config = ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 3,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -635,6 +658,7 @@ mod tests {
             end_lba: None,
             reverse: true,
             sparse_output: false,
+            ..ImagingConfig::default()
         };
         let mut engine = ImagingEngine::new(Arc::new(mock), config).unwrap();
         engine.run(&mut NullReporter).unwrap();
@@ -664,7 +688,7 @@ mod tests {
         let mock2 = MockBlockDevice::zeroed(SIZE, SECTOR);
         let tmp = NamedTempFile::new().unwrap();
         let make_config = || ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 0,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -673,6 +697,7 @@ mod tests {
             end_lba: None,
             reverse: false,
             sparse_output: false,
+            ..ImagingConfig::default()
         };
 
         // First engine takes the lock.
@@ -692,7 +717,7 @@ mod tests {
         let mock2 = MockBlockDevice::zeroed(SIZE, SECTOR);
         let tmp = NamedTempFile::new().unwrap();
         let make_config = || ImagingConfig {
-            copy_block_size: SECTOR as u64,
+            pass_block_sizes: [SECTOR as u64; 5],
             max_retries: 0,
             mapfile_save_interval: std::time::Duration::MAX,
             output_path: tmp.path().to_path_buf(),
@@ -701,6 +726,7 @@ mod tests {
             end_lba: None,
             reverse: false,
             sparse_output: false,
+            ..ImagingConfig::default()
         };
 
         // First engine takes the lock, then is dropped.

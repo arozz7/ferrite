@@ -4,6 +4,10 @@ use std::path::Path;
 use crate::error::{ImagingError, Result};
 use crate::mapfile::{Block, BlockStatus, Mapfile};
 
+/// Comment tag Ferrite writes to mark the CRC32 of the block-data lines.
+/// GNU ddrescue ignores unknown comment lines, so the format stays compatible.
+const CRC_TAG: &str = "# ferrite_crc32: ";
+
 // ── Parse ─────────────────────────────────────────────────────────────────────
 
 /// Parse a GNU ddrescue-compatible mapfile from a reader.
@@ -15,11 +19,18 @@ use crate::mapfile::{Block, BlockStatus, Mapfile};
 /// 0x00000000  ?  1
 /// # pos         size       status
 /// 0x00000000   0x40000000  ?
+/// # ferrite_crc32: XXXXXXXX   ← optional integrity tag written by Ferrite
 /// ```
+///
+/// If a `# ferrite_crc32:` tag is present, the CRC32 of the block-data lines
+/// is validated.  An absent tag is silently accepted for compatibility with
+/// GNU ddrescue and older Ferrite mapfiles.
 pub fn parse(reader: impl std::io::Read, device_size: u64) -> Result<Mapfile> {
     let reader = std::io::BufReader::new(reader);
     let mut blocks: Vec<Block> = Vec::new();
     let mut header_seen = false;
+    let mut declared_crc: Option<u32> = None;
+    let mut hasher = crc32fast::Hasher::new();
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line.map_err(|e| ImagingError::MapfileIo {
@@ -28,8 +39,17 @@ pub fn parse(reader: impl std::io::Read, device_size: u64) -> Result<Mapfile> {
         })?;
         let line = line.trim();
 
-        // Skip blanks and comments (but not data lines that happen to be skipped).
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
+            continue;
+        }
+
+        // Check for our CRC tag before the generic comment skip.
+        if let Some(hex) = line.strip_prefix(CRC_TAG) {
+            declared_crc = u32::from_str_radix(hex.trim(), 16).ok();
+            continue;
+        }
+
+        if line.starts_with('#') {
             continue;
         }
 
@@ -37,7 +57,6 @@ pub fn parse(reader: impl std::io::Read, device_size: u64) -> Result<Mapfile> {
 
         if !header_seen {
             // First non-comment line: current_pos  current_status  [current_pass]
-            // We parse it but only need to confirm it exists.
             if fields.len() < 2 {
                 return Err(ImagingError::MapfileParse {
                     line: line_no + 1,
@@ -57,6 +76,10 @@ pub fn parse(reader: impl std::io::Read, device_size: u64) -> Result<Mapfile> {
                 message: format!("block line needs 3 fields, got {}", fields.len()),
             });
         }
+
+        // Hash the trimmed block line before parsing.
+        hasher.update(line.as_bytes());
+
         let pos = parse_hex(fields[0], line_no + 1)?;
         let size = parse_hex(fields[1], line_no + 1)?;
         let ch = fields[2]
@@ -72,6 +95,14 @@ pub fn parse(reader: impl std::io::Read, device_size: u64) -> Result<Mapfile> {
         })?;
 
         blocks.push(Block { pos, size, status });
+    }
+
+    // Validate CRC when the tag is present.
+    if let Some(declared) = declared_crc {
+        let actual = hasher.finalize();
+        if actual != declared {
+            return Err(ImagingError::MapfileChecksum { declared, actual });
+        }
     }
 
     Ok(Mapfile::from_blocks(blocks, device_size))
@@ -91,22 +122,32 @@ fn parse_hex(s: &str, line: usize) -> Result<u64> {
 // ── Serialize ─────────────────────────────────────────────────────────────────
 
 /// Write a mapfile in GNU ddrescue-compatible format.
+///
+/// A `# ferrite_crc32: XXXXXXXX` tag is appended after the block-data lines
+/// so that [`parse`] can detect corruption on the next load.
 pub fn serialize(mapfile: &Mapfile, mut writer: impl Write) -> Result<()> {
     writeln!(writer, "# Mapfile. Created by Ferrite").map_err(io_err)?;
     writeln!(writer, "# current_pos  current_status  current_pass").map_err(io_err)?;
     // Use pos=0, status=?, pass=1 as the "current position" header.
     writeln!(writer, "0x{:016x}  ?  1", 0u64).map_err(io_err)?;
     writeln!(writer, "# pos              size             status").map_err(io_err)?;
+
+    let mut hasher = crc32fast::Hasher::new();
     for block in mapfile.blocks() {
-        writeln!(
-            writer,
+        let line = format!(
             "0x{:016x}  0x{:016x}  {}",
             block.pos,
             block.size,
             block.status.to_char(),
-        )
-        .map_err(io_err)?;
+        );
+        hasher.update(line.as_bytes());
+        writeln!(writer, "{line}").map_err(io_err)?;
     }
+
+    // Write the integrity tag as a trailing comment so GNU ddrescue ignores it.
+    let checksum = hasher.finalize();
+    writeln!(writer, "{CRC_TAG}{checksum:08x}").map_err(io_err)?;
+
     Ok(())
 }
 
@@ -150,6 +191,26 @@ pub fn save_atomic(mapfile: &Mapfile, path: &Path) -> Result<()> {
     })
 }
 
+/// Count the number of 512-byte sectors recorded as unreadable in a mapfile.
+///
+/// "Unreadable" means `NonTrimmed`, `NonScraped`, or `BadSector` — statuses
+/// that indicate the imaging engine could not recover good data for those
+/// regions.
+///
+/// Returns `None` when the file does not exist or cannot be parsed (e.g. it
+/// is still being written by the imaging engine).  Caller should treat `None`
+/// as "data unavailable" rather than "no bad sectors".
+pub fn count_unreadable_sectors(path: &Path) -> Option<u64> {
+    let f = std::fs::File::open(path).ok()?;
+    // device_size=0 is fine for counting purposes — from_blocks doesn't
+    // need the real size to compute per-status byte counts.
+    let mapfile = parse(f, 0).ok()?;
+    let bad_bytes = mapfile.bytes_with_status(BlockStatus::NonTrimmed)
+        + mapfile.bytes_with_status(BlockStatus::NonScraped)
+        + mapfile.bytes_with_status(BlockStatus::BadSector);
+    Some(bad_bytes / 512)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -184,6 +245,7 @@ mod tests {
 
     #[test]
     fn parse_ddrescue_reference_format() {
+        // No ferrite_crc32 tag — must load without error (backwards compat).
         let input = "\
 # Mapfile. Created by GNU ddrescue version 1.27\n\
 # current_pos  current_status  current_pass\n\
@@ -224,5 +286,47 @@ mod tests {
         save_atomic(&m, &path).unwrap();
         assert!(path.exists());
         assert!(!path.with_extension("tmp").exists());
+    }
+
+    #[test]
+    fn crc_tag_is_written_and_validated() {
+        let mut m = Mapfile::from_device_size(2 * 512);
+        m.update_range(0, 512, BlockStatus::Finished);
+        let mut buf = Vec::new();
+        serialize(&m, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        // Tag must be present.
+        assert!(
+            text.contains("# ferrite_crc32: "),
+            "CRC tag missing from serialized mapfile"
+        );
+        // Round-trip through parse must succeed.
+        let parsed = parse(text.as_bytes(), m.device_size()).unwrap();
+        assert_eq!(parsed.blocks(), m.blocks());
+    }
+
+    #[test]
+    fn corrupted_block_line_is_detected() {
+        let m = Mapfile::from_device_size(512);
+        let mut buf = Vec::new();
+        serialize(&m, &mut buf).unwrap();
+        let mut text = String::from_utf8(buf).unwrap();
+
+        // Flip the status char of the first block line to corrupt the content.
+        text = text.replace("  ?", "  +");
+
+        let result = parse(text.as_bytes(), m.device_size());
+        assert!(
+            matches!(result, Err(ImagingError::MapfileChecksum { .. })),
+            "expected MapfileChecksum error on corrupted block line"
+        );
+    }
+
+    #[test]
+    fn absent_crc_tag_loads_without_error() {
+        // Simulate a GNU ddrescue or pre-CRC Ferrite mapfile with no tag.
+        let input = "0x0  ?  1\n0x00000000  0x00000200  ?\n";
+        let result = parse(input.as_bytes(), 512);
+        assert!(result.is_ok(), "mapfile without CRC tag must load cleanly");
     }
 }

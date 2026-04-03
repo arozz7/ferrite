@@ -4,9 +4,24 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner};
+use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner, Confidence};
 
 static RE: OnceLock<Regex> = OnceLock::new();
+
+/// Known placeholder/test domains — matches are flagged as `Confidence::Low`.
+static PLACEHOLDER_DOMAINS: &[&str] = &[
+    "example.com",
+    "example.org",
+    "example.net",
+    "test.com",
+    "test.org",
+    "test.net",
+    "localhost",
+    "invalid",
+    "foo.com",
+    "bar.com",
+    "baz.com",
+];
 
 fn re() -> &'static Regex {
     RE.get_or_init(|| {
@@ -25,11 +40,17 @@ impl ArtifactScanner for EmailScanner {
     fn scan_block(&self, data: &[u8], block_offset: u64) -> Vec<ArtifactHit> {
         scan_text_lossy(data, block_offset, ArtifactKind::Email, re(), |s| {
             // Basic sanity: must contain exactly one '@'.
-            if s.chars().filter(|&c| c == '@').count() == 1 {
-                Some(s.to_string())
-            } else {
-                None
+            if s.chars().filter(|&c| c == '@').count() != 1 {
+                return None;
             }
+            // Downgrade well-known placeholder/test domains to Low confidence.
+            let domain = s.split('@').nth(1).unwrap_or("");
+            let confidence = if PLACEHOLDER_DOMAINS.contains(&domain) {
+                Confidence::Low
+            } else {
+                Confidence::High
+            };
+            Some((s.to_string(), confidence))
         })
     }
 }

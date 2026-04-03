@@ -280,11 +280,13 @@ mod tests {
             kind: ArtifactKind::Email,
             byte_offset: 0,
             value: "a@b.com".to_string(),
+            confidence: ferrite_artifact::Confidence::High,
         });
         s.hits.push(ArtifactHit {
             kind: ArtifactKind::Url,
             byte_offset: 10,
             value: "https://x.com".to_string(),
+            confidence: ferrite_artifact::Confidence::High,
         });
         s.filter_kind = None;
         s.rebuild_filtered();
@@ -298,11 +300,13 @@ mod tests {
             kind: ArtifactKind::Email,
             byte_offset: 0,
             value: "a@b.com".to_string(),
+            confidence: ferrite_artifact::Confidence::High,
         });
         s.hits.push(ArtifactHit {
             kind: ArtifactKind::Url,
             byte_offset: 10,
             value: "https://x.com".to_string(),
+            confidence: ferrite_artifact::Confidence::High,
         });
         s.filter_kind = Some(ArtifactKind::Email);
         s.rebuild_filtered();

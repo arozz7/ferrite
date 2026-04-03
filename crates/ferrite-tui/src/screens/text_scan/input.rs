@@ -1,7 +1,10 @@
 //! Key-input handling for [`TextScanState`].
 
+use std::collections::HashMap;
+
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_textcarver::TextKind;
+use whatlang::Lang;
 
 use super::{ScanStatus, TextScanState};
 
@@ -104,6 +107,30 @@ impl TextScanState {
                     self.filter_kind = Some(kind);
                     self.rebuild_filtered();
                 }
+            }
+
+            // Language filter: cycle through distinct languages found in results.
+            KeyCode::Char('l') if modifiers.is_empty() => {
+                // Build an ordered list of langs present in blocks (sorted by count desc).
+                let mut counts: HashMap<Lang, usize> = HashMap::new();
+                for b in &self.blocks {
+                    if let Some(l) = b.lang {
+                        *counts.entry(l).or_insert(0) += 1;
+                    }
+                }
+                let mut langs: Vec<Lang> = counts.keys().copied().collect();
+                langs.sort_by(|a, b| counts[b].cmp(&counts[a]));
+
+                self.filter_lang = if self.filter_lang.is_none() {
+                    langs.first().copied()
+                } else {
+                    let pos = langs.iter().position(|&l| Some(l) == self.filter_lang);
+                    match pos {
+                        Some(i) if i + 1 < langs.len() => Some(langs[i + 1]),
+                        _ => None,
+                    }
+                };
+                self.rebuild_filtered();
             }
 
             _ => {}

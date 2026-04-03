@@ -275,6 +275,9 @@ impl<'a> BlockScanner<'a> {
 
         let (kind, confidence, extension) = classify(&content);
         let preview = make_preview(&content, 80);
+        let lang = whatlang::detect(&preview)
+            .filter(|info| info.confidence() >= 0.5)
+            .map(|info| info.lang());
 
         let block = TextBlock {
             byte_offset: self.block_start_abs,
@@ -284,6 +287,7 @@ impl<'a> BlockScanner<'a> {
             confidence,
             quality: quality_pct,
             preview,
+            lang,
         };
 
         self.batch.push(block);

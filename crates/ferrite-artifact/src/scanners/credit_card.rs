@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::scanner::{ArtifactHit, ArtifactKind, ArtifactScanner};
+use crate::scanner::{ArtifactHit, ArtifactKind, ArtifactScanner, Confidence};
 
 /// Matches 13–19 consecutive ASCII digits (no separators — raw disk format).
 static RE: OnceLock<Regex> = OnceLock::new();
@@ -40,6 +40,22 @@ fn mask(s: &str) -> String {
     format!("****-****-****-{last4}")
 }
 
+/// Check whether the surrounding context of a match looks like printable text.
+///
+/// Examines up to 32 bytes before and after the match within `data`.  If
+/// fewer than 50 % of those bytes are printable ASCII (0x20–0x7E), the match
+/// is embedded in binary data and gets `Confidence::Low`.
+fn context_is_printable(data: &[u8], match_start: usize, match_end: usize) -> bool {
+    let ctx_start = match_start.saturating_sub(32);
+    let ctx_end = (match_end + 32).min(data.len());
+    let ctx = &data[ctx_start..ctx_end];
+    if ctx.is_empty() {
+        return true;
+    }
+    let printable = ctx.iter().filter(|&&b| (0x20..=0x7E).contains(&b)).count();
+    printable * 2 >= ctx.len()
+}
+
 pub struct CreditCardScanner;
 
 impl ArtifactScanner for CreditCardScanner {
@@ -55,10 +71,18 @@ impl ArtifactScanner for CreditCardScanner {
                 let s = m.as_str();
                 let bytes = s.as_bytes();
                 if luhn_valid(bytes) {
+                    // Downgrade to Low when the digits appear in binary context —
+                    // many binary formats contain Luhn-valid integer runs by chance.
+                    let confidence = if context_is_printable(data, m.start(), m.end()) {
+                        Confidence::High
+                    } else {
+                        Confidence::Low
+                    };
                     Some(ArtifactHit {
                         kind: ArtifactKind::CreditCard,
                         byte_offset: block_offset + m.start() as u64,
                         value: mask(s),
+                        confidence,
                     })
                 } else {
                     None

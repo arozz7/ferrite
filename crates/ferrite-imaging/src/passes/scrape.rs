@@ -10,11 +10,13 @@ use crate::ProgressReporter;
 /// Pass 4 — scrape: attempt every `NonScraped` sector individually.
 ///
 /// Unlike the trim and sweep passes, scrape does **not** stop on the first
-/// failure — every sector is tried independently. Successes become `Finished`;
-/// failures become `BadSector` (to be retried in pass 5).
+/// failure — every chunk is tried independently. Successes become `Finished`;
+/// failures become `BadSector` (to be retried in pass 5). Chunk size is
+/// `config.pass_block_sizes[3]` clamped to `sector_size` minimum.
 pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporter) -> Result<()> {
     let sector_size = engine.device.sector_size() as u64;
-    let mut buf = AlignedBuffer::new(sector_size as usize, sector_size as usize);
+    let block_size = engine.config.pass_block_sizes[3].max(sector_size);
+    let mut buf = AlignedBuffer::new(block_size as usize, sector_size as usize);
 
     let work: Vec<_> = engine
         .mapfile
@@ -25,7 +27,7 @@ pub(crate) fn run(engine: &mut ImagingEngine, reporter: &mut dyn ProgressReporte
         let mut pos = region.pos;
 
         while pos < region.end() {
-            let chunk = (region.end() - pos).min(sector_size);
+            let chunk = (region.end() - pos).min(block_size);
 
             match engine.device.read_at(pos, &mut buf) {
                 Ok(0) => break,

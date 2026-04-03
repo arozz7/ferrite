@@ -55,6 +55,7 @@ rayon     = "1"
 regex     = "1"
 sha2      = "0.10"
 fs2       = "0.4"
+whatlang  = "0.16"
 filetime  = "0.2"
 which     = "7"
 

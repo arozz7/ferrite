@@ -10,6 +10,7 @@ repository.workspace = true
 ferrite-blockdev = { workspace = true }
 tracing          = { workspace = true }
 thiserror        = { workspace = true }
+whatlang         = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

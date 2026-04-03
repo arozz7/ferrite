@@ -76,6 +76,9 @@ enum ImagingMsg {
     ThermalPause,
     /// Drive cooled to ≤ 50 °C — imaging resumed.
     ThermalResume,
+    /// Whether sparse-file mode is actually active on the destination filesystem.
+    /// Sent once immediately after the engine is created.
+    SparseStatus(bool),
 }
 
 #[derive(PartialEq, Clone)]
@@ -132,13 +135,16 @@ impl DriveIdentity {
 }
 
 /// Which text field is being edited.
+///
+/// `BlockSize(n)` carries the pass index (0 = Copy, 1 = Trim, 2 = Sweep,
+/// 3 = Scrape, 4 = Retry).  Press `b` to cycle forward; Enter/Esc to commit.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) enum EditField {
     Dest,
     Mapfile,
     StartLba,
     EndLba,
-    BlockSize,
+    BlockSize(usize),
 }
 
 /// `ProgressReporter` impl that forwards updates through a sync channel.
@@ -184,8 +190,11 @@ pub struct ImagingState {
     pub start_lba_str: String,
     /// End LBA (editable, empty = end of device).
     pub end_lba_str: String,
-    /// Copy block size in KiB (editable, empty = default 512 KiB).
-    pub block_size_str: String,
+    /// Per-pass block sizes in KiB (editable, empty = use default for that pass).
+    ///
+    /// Index matches `ImagingConfig::pass_block_sizes`: 0=Copy, 1=Trim,
+    /// 2=Sweep, 3=Scrape, 4=Retry.
+    pub pass_block_size_strs: [String; 5],
     pub(crate) edit_field: Option<EditField>,
     pub(crate) status: ImagingStatus,
     pub(crate) latest: Option<ProgressUpdate>,
@@ -208,6 +217,10 @@ pub struct ImagingState {
     /// When `true`, all-zero blocks are skipped rather than written (sparse
     /// holes).  Default `true`; the user can toggle with `S`.
     pub sparse: bool,
+    /// Whether sparse mode is confirmed active on the current destination
+    /// filesystem.  `None` = imaging not started yet; `Some(true)` = active;
+    /// `Some(false)` = requested but unavailable (destination FS unsupported).
+    pub sparse_active: Option<bool>,
     /// Most recently computed destination free-space info.  `None` while no
     /// device is selected or the path query failed.
     pub space_info: Option<SpaceInfo>,
@@ -217,6 +230,9 @@ pub struct ImagingState {
     user_pause: Arc<AtomicBool>,
     /// `true` while the user has manually paused imaging.
     pub user_paused: bool,
+    /// When `true`, each copy-pass block is re-read and compared before being
+    /// written.  Blocks with mismatched reads are flagged for re-processing.
+    pub verify_reads: bool,
     /// `true` when the imaging session is resuming from an existing mapfile.
     pub imaging_resumed: bool,
     /// Instant when any block was last processed (success OR failure).  Resets
@@ -250,7 +266,7 @@ impl ImagingState {
             mapfile_path: String::new(),
             start_lba_str: String::new(),
             end_lba_str: String::new(),
-            block_size_str: String::new(),
+            pass_block_size_strs: Default::default(),
             edit_field: None,
             status: ImagingStatus::Idle,
             latest: None,
@@ -263,11 +279,13 @@ impl ImagingState {
             wb_rx: None,
             reverse: false,
             sparse: true,
+            sparse_active: None,
             space_info: None,
             sector_map: Vec::new(),
             user_pause: Arc::new(AtomicBool::new(false)),
             user_paused: false,
             imaging_resumed: false,
+            verify_reads: false,
             last_attempt_instant: None,
             last_attempted_bytes: 0,
             last_bytes_finished: 0,
@@ -436,6 +454,9 @@ impl ImagingState {
                 Ok(ImagingMsg::ThermalResume) => {
                     self.thermal_paused = false;
                 }
+                Ok(ImagingMsg::SparseStatus(active)) => {
+                    self.sparse_active = Some(active);
+                }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.rx = None;
@@ -485,6 +506,16 @@ impl ImagingState {
                         self.refresh_space_info();
                     }
                 }
+                // `b` while editing a pass block size cycles to the next pass.
+                KeyCode::Char('b') if matches!(field, EditField::BlockSize(_)) => {
+                    if let EditField::BlockSize(n) = field {
+                        self.edit_field = if n < 4 {
+                            Some(EditField::BlockSize(n + 1))
+                        } else {
+                            None
+                        };
+                    }
+                }
                 KeyCode::Backspace => {
                     let s = self.field_mut(field);
                     s.pop();
@@ -503,9 +534,10 @@ impl ImagingState {
             KeyCode::Char('m') => self.edit_field = Some(EditField::Mapfile),
             KeyCode::Char('l') => self.edit_field = Some(EditField::StartLba),
             KeyCode::Char('e') => self.edit_field = Some(EditField::EndLba),
-            KeyCode::Char('b') => self.edit_field = Some(EditField::BlockSize),
+            KeyCode::Char('b') => self.edit_field = Some(EditField::BlockSize(0)),
             KeyCode::Char('r') => self.reverse = !self.reverse,
             KeyCode::Char('S') => self.sparse = !self.sparse,
+            KeyCode::Char('V') => self.verify_reads = !self.verify_reads,
             KeyCode::Char('p') => {
                 if self.status == ImagingStatus::Running || self.user_paused {
                     if self.user_paused {
@@ -529,7 +561,7 @@ impl ImagingState {
             EditField::Mapfile => &mut self.mapfile_path,
             EditField::StartLba => &mut self.start_lba_str,
             EditField::EndLba => &mut self.end_lba_str,
-            EditField::BlockSize => &mut self.block_size_str,
+            EditField::BlockSize(n) => &mut self.pass_block_size_strs[n],
         }
     }
 
@@ -678,21 +710,25 @@ impl ImagingState {
         self.latest = None;
         self.current_temp = None;
         self.thermal_paused = false;
+        self.sparse_active = None;
         // write_blocked is intentionally NOT reset here — the pre-flight result
         // from set_device() carries forward into the imaging session.
 
         let output_path = PathBuf::from(&self.dest_path);
-        let copy_block_size = self
-            .block_size_str
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|&n| n > 0)
-            .map(|kb| kb * 1024) // field is in KiB
-            .unwrap_or(512 * 1024); // default 512 KiB
+        // Per-pass defaults when the field is empty: [512 KiB, 512 B, 512 B, 512 B, 512 B]
+        let pass_defaults: [u64; 5] = [512 * 1024, 512, 512, 512, 512];
+        let pass_block_sizes: [u64; 5] = std::array::from_fn(|i| {
+            self.pass_block_size_strs[i]
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|&n| n > 0)
+                .map(|kb| kb * 1024) // field is in KiB
+                .unwrap_or(pass_defaults[i])
+        });
         let config = ImagingConfig {
             output_path: output_path.clone(),
-            copy_block_size,
+            pass_block_sizes,
             mapfile_path: if self.mapfile_path.is_empty() {
                 None
             } else {
@@ -702,6 +738,7 @@ impl ImagingState {
             end_lba: self.end_lba_str.trim().parse::<u64>().ok(),
             reverse: self.reverse,
             sparse_output: self.sparse,
+            verify_reads: self.verify_reads,
             ..ImagingConfig::default()
         };
 
@@ -715,6 +752,9 @@ impl ImagingState {
                     return;
                 }
             };
+
+            // Report whether sparse mode is actually active on the destination FS.
+            let _ = tx.send(ImagingMsg::SparseStatus(engine.sparse_active()));
 
             // Pre-populate known-bad sectors from S.M.A.R.T. error log (best-effort).
             //

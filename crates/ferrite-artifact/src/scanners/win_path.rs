@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner};
+use crate::scanner::{scan_text_lossy, ArtifactHit, ArtifactKind, ArtifactScanner, Confidence};
 
 static RE: OnceLock<Regex> = OnceLock::new();
 
@@ -29,7 +29,7 @@ impl ArtifactScanner for WinPathScanner {
             let trimmed = s.trim_end_matches(|c: char| c.is_whitespace() || c == '\0');
             if trimmed.len() >= 6 {
                 // Minimum: "C:\abc"
-                Some(trimmed.to_string())
+                Some((trimmed.to_string(), Confidence::High))
             } else {
                 None
             }
