@@ -288,6 +288,10 @@ impl CarvingState {
                     self.preview_loading = false;
                 }
             }
+            KeyCode::Char('f') if self.focus == CarveFocus::Hits => {
+                // Toggle auto-follow for extraction queue.
+                self.auto_follow_extraction = !self.auto_follow_extraction;
+            }
             _ => {}
         }
     }
@@ -490,17 +494,18 @@ impl CarvingState {
         self.thermal_guard = None;
         self.thermal_event = None;
 
-        if was_resumed {
-            // Mid-scan resume: keep the checkpoint-loaded hits and continue
-            // appending to the existing checkpoint file.  Only runtime state
-            // (progress display, pause timer, status) is reset.
-            // next_auto_extract_idx stays 0 so pump_auto_extract will process
-            // any Unextracted hits from the prior session before new ones.
+        if was_resumed || self.checkpoint_path.is_some() {
+            // Resume (mid-scan or re-run on a loaded session): keep the
+            // checkpoint-loaded hits and continue appending to the existing
+            // checkpoint file.  Only runtime state (progress display, pause
+            // timer, status) is reset.  next_auto_extract_idx stays 0 so
+            // pump_auto_extract will process any Unextracted hits from the
+            // prior session before new ones.
             self.hit_sel = self.hits.len().saturating_sub(1);
         } else {
-            // Fresh scan: clear all prior state and open a new checkpoint.
-            // The filename embeds a timestamp so sessions in the same output
-            // directory do not overwrite each other.
+            // Fresh scan: no prior checkpoint loaded — clear all state and
+            // open a new checkpoint file.  The filename embeds a timestamp so
+            // sessions in the same output directory do not overwrite each other.
             let dir = if self.output_dir.is_empty() {
                 "carved".to_string()
             } else {
@@ -616,9 +621,10 @@ impl CarvingState {
         }
         match self.status {
             CarveStatus::Running => {
-                // User takes over from back-pressure: clear the auto flag so
-                // this pause is now owned manually and won't be auto-lifted.
-                self.backpressure_paused = false;
+                // If back-pressure is currently holding the scan, do NOT clear
+                // backpressure_paused.  pump_auto_extract will auto-lift the
+                // pause when the extraction queue drains, even from Paused
+                // state, so the scan resumes automatically without user action.
                 self.pause.store(true, Ordering::Relaxed);
                 // Transition to Pausing; events.rs will move to Paused once
                 // the scan thread confirms via paused_ack.
