@@ -8,7 +8,6 @@ use ferrite_filesystem::build_metadata_index;
 
 use super::{
     checkpoint, CarveMsg, CarveStatus, CarvingState, ExtractionSummary, HitEntry, HitStatus,
-    DISPLAY_CAP,
 };
 
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -43,22 +42,22 @@ impl CarvingState {
             };
             match msg {
                 Ok(CarveMsg::Progress(p)) => {
-                    self.scan_progress = Some(p);
+                    self.scan_progress = Some(p.clone());
+                    // Track cumulative hits found during scan
+                    self.total_hits_scanned = p.hits_found;
                 }
                 Ok(CarveMsg::HitBatch(batch)) => {
                     let batch_len = batch.len();
                     self.total_hits_found += batch_len;
 
-                    // Add to display list up to the cap.
+                    // Add all hits to the display list (no cap).
                     for hit in batch {
-                        if self.hits.len() < DISPLAY_CAP {
-                            self.hits.push(HitEntry {
-                                hit,
-                                status: HitStatus::Unextracted,
-                                selected: false,
-                                quality: None,
-                            });
-                        }
+                        self.hits.push(HitEntry {
+                            hit,
+                            status: HitStatus::Unextracted,
+                            selected: false,
+                            quality: None,
+                        });
                     }
 
                     // Auto-follow: keep the selection pinned to the newest hit
@@ -70,10 +69,12 @@ impl CarvingState {
                     // Checkpoint flush: every 1000 new displayable hits.
                     if self.hits.len().saturating_sub(self.checkpoint_flushed) >= 1000 {
                         if let Some(cp) = self.checkpoint_path.clone() {
-                            let new_hits = &self.hits[self.checkpoint_flushed..];
-                            for entry in new_hits {
-                                let _ = checkpoint::append(&cp, &entry.hit, &entry.status);
-                            }
+                            let updates: Vec<(&ferrite_carver::CarveHit, &HitStatus)> = self.hits
+                                [self.checkpoint_flushed..]
+                                .iter()
+                                .map(|e| (&e.hit, &e.status))
+                                .collect();
+                            let _ = checkpoint::append_batch(&cp, &updates);
                             self.checkpoint_flushed = self.hits.len();
                         }
                     }
@@ -92,10 +93,12 @@ impl CarvingState {
                     self.hit_sel = self.hits.len().saturating_sub(1);
                     // Flush all remaining displayable hits to checkpoint.
                     if let Some(cp) = self.checkpoint_path.clone() {
-                        let new_hits = &self.hits[self.checkpoint_flushed..];
-                        for entry in new_hits {
-                            let _ = checkpoint::append(&cp, &entry.hit, &entry.status);
-                        }
+                        let updates: Vec<(&ferrite_carver::CarveHit, &HitStatus)> = self.hits
+                            [self.checkpoint_flushed..]
+                            .iter()
+                            .map(|e| (&e.hit, &e.status))
+                            .collect();
+                        let _ = checkpoint::append_batch(&cp, &updates);
                         self.checkpoint_flushed = self.hits.len();
                     }
                     // Spawn background thread to build filename index from filesystem metadata.
@@ -131,6 +134,7 @@ impl CarvingState {
                         entry.quality = Some(quality);
                         self.checkpoint_extract_pending.push(idx);
                     }
+                    self.hits_extracted_count += 1;
                 }
                 Ok(CarveMsg::Duplicate { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
@@ -138,6 +142,7 @@ impl CarvingState {
                         self.checkpoint_extract_pending.push(idx);
                     }
                     self.duplicates_suppressed += 1;
+                    self.hits_extracted_count += 1;
                 }
                 Ok(CarveMsg::Skipped { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
@@ -145,6 +150,7 @@ impl CarvingState {
                         self.checkpoint_extract_pending.push(idx);
                     }
                     self.skipped_trunc_count += 1;
+                    self.hits_extracted_count += 1;
                 }
                 Ok(CarveMsg::SkippedCorrupt { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
@@ -152,10 +158,15 @@ impl CarvingState {
                         self.checkpoint_extract_pending.push(idx);
                     }
                     self.skipped_corrupt_count += 1;
+                    self.hits_extracted_count += 1;
                 }
                 Ok(CarveMsg::ExtractionStarted { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {
                         entry.status = HitStatus::Extracting;
+                    }
+                    // Auto-scroll to show the hit currently being extracted.
+                    if self.auto_follow_extraction && !self.hits.is_empty() {
+                        self.hit_sel = idx.min(self.hits.len().saturating_sub(1));
                     }
                 }
                 Ok(CarveMsg::ExtractionProgress {

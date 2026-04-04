@@ -14,6 +14,7 @@ mod gif;
 pub(crate) mod helpers;
 mod iso9660;
 mod isobmff;
+mod jpeg;
 mod linear;
 mod midi;
 mod mpeg_ps;
@@ -120,6 +121,8 @@ pub(crate) fn read_size_hint(
         SizeHint::Midi => midi::midi_hint(device, file_offset),
 
         SizeHint::Adts => adts::adts_hint(device, file_offset),
+
+        SizeHint::Jpeg => jpeg::jpeg_hint(device, file_offset, max_size),
     }
 }
 

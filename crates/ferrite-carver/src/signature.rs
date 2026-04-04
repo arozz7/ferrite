@@ -293,9 +293,35 @@ pub enum SizeHint {
     /// frame length is implausible (< 7 or > 8192 bytes), or fewer than four
     /// valid frames are found (returns `None` then, falling back to `max_size`).
     Adts,
+
+    /// Walk JPEG segment structure to find the true End-of-Image (`FF D9`).
+    ///
+    /// A raw footer scan for `FF D9` fails because EXIF APP1 blocks embed a
+    /// thumbnail JPEG that ends with its own `FF D9`, causing premature
+    /// truncation.  This walker skips all segments (including APP1) and then
+    /// scans the entropy-coded data for the first unescaped `FF D9`.
+    Jpeg,
 }
 
 impl SizeHint {
+    /// Returns `true` for frame-walking hints where `None` means the data
+    /// does **not** match the expected file structure (i.e. false positive).
+    ///
+    /// When this returns `true` and `read_size_hint` returns `None`, the hit
+    /// should be **skipped entirely** rather than falling back to `max_size`.
+    ///
+    /// Contrast with field-reading hints (e.g. `Linear`) where `None` means
+    /// "couldn't read the field" and extracting up to `max_size` is still
+    /// reasonable.
+    pub fn skip_on_failure(&self) -> bool {
+        // ADTS: None means fewer than 4 consecutive valid ADTS frames were found,
+        // which is a definitive false-positive — no real AAC file should fail this.
+        // Other frame-walker hints (OggStream, Midi, Au) return None when the stream
+        // is merely truncated (no EOS page, etc.), so they must still fall back to
+        // max_size rather than skip.
+        matches!(self, SizeHint::Adts)
+    }
+
     /// Returns a short label used in display/debug contexts.
     pub fn kind_name(&self) -> &'static str {
         match self {
@@ -325,6 +351,7 @@ impl SizeHint {
             SizeHint::Au => "au",
             SizeHint::Midi => "midi",
             SizeHint::Adts => "adts",
+            SizeHint::Jpeg => "jpeg",
         }
     }
 }
@@ -530,6 +557,7 @@ impl CarvingConfig {
                     Some(k) if k.eq_ignore_ascii_case("au") => Some(SizeHint::Au),
                     Some(k) if k.eq_ignore_ascii_case("midi") => Some(SizeHint::Midi),
                     Some(k) if k.eq_ignore_ascii_case("adts") => Some(SizeHint::Adts),
+                    Some(k) if k.eq_ignore_ascii_case("jpeg") => Some(SizeHint::Jpeg),
                     Some(k) if k.eq_ignore_ascii_case("mpeg_ts") => {
                         match (r.size_hint_ts_offset, r.size_hint_stride) {
                             (Some(ts_offset), Some(stride)) => {

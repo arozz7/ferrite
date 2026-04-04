@@ -11,40 +11,45 @@
 #   max_size   = maximum file size in bytes (caps extraction window)
 
 [[signature]]
-name         = "JPEG Image (JFIF)"
-extension    = "jpg"
+name           = "JPEG Image (JFIF)"
+extension      = "jpg"
 # 4-byte header: FF D8 FF E0 — standard JFIF JPEGs written by cameras/software.
-header       = "FF D8 FF E0"
-footer       = "FF D9"
-min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
-max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
+header         = "FF D8 FF E0"
+footer         = ""           # segment walker finds the true EOI; raw scan would hit thumbnail
+min_size       = 4096         # Skip embedded thumbnails (< 4 KiB)
+max_size       = 104_857_600  # 100 MiB — covers 150 MP medium-format cameras
+# Walks JPEG segments past EXIF APP1 (which embeds a thumbnail ending with FF D9)
+# to find the true End-of-Image marker in the outer JPEG.
+size_hint_kind = "jpeg"
 # Validates "JFIF\0" identifier at offset 6 to reject FF D8 FF E0 hits
 # that appear inside other binary formats.
-pre_validate = "jpeg_jfif"
+pre_validate   = "jpeg_jfif"
 
 [[signature]]
-name         = "JPEG Image (Exif)"
-extension    = "jpg"
+name           = "JPEG Image (Exif)"
+extension      = "jpg"
 # 4-byte header: FF D8 FF E1 — camera photos with EXIF/APP1 metadata block.
-header       = "FF D8 FF E1"
-footer       = "FF D9"
-min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
-max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
+header         = "FF D8 FF E1"
+footer         = ""           # segment walker finds the true EOI; raw scan would hit thumbnail
+min_size       = 4096         # Skip embedded thumbnails (< 4 KiB)
+max_size       = 104_857_600  # 100 MiB — covers 150 MP medium-format cameras
+size_hint_kind = "jpeg"
 # Validates "Exif" identifier at offset 6.
-pre_validate = "jpeg_exif"
+pre_validate   = "jpeg_exif"
 
 [[signature]]
-name         = "JPEG Image (Raw/DQT)"
-extension    = "jpg"
+name           = "JPEG Image (Raw/DQT)"
+extension      = "jpg"
 # 4-byte header: FF D8 FF DB — JPEG starting directly with a Define Quantization
 # Table segment, no APP0/APP1 header.  Common in hardware encoders, stripped
 # JPEGs, and certain camera firmware output.
-header       = "FF D8 FF DB"
-footer       = "FF D9"
-min_size     = 4096          # Skip embedded thumbnails (< 4 KiB)
-max_size     = 104_857_600   # 100 MiB — covers 150 MP medium-format cameras
+header         = "FF D8 FF DB"
+footer         = ""           # segment walker finds the true EOI
+min_size       = 4096         # Skip embedded thumbnails (< 4 KiB)
+max_size       = 104_857_600  # 100 MiB — covers 150 MP medium-format cameras
+size_hint_kind = "jpeg"
 # Validates DQT segment length in [67, 518] (1–4 quantization tables).
-pre_validate = "jpeg_dqt"
+pre_validate   = "jpeg_dqt"
 
 [[signature]]
 name           = "PNG Image"
@@ -539,7 +544,7 @@ extension    = "flv"
 header       = "46 4C 56 01"
 footer       = ""
 min_size     = 4096
-max_size     = 4_294_967_296  # 4 GiB
+max_size     = 524_288_000   # 500 MiB — typical FLV cap; no total-size field in header
 # Validates reserved type-flag bits are zero and DataOffset (u32 BE @5) == 9.
 pre_validate = "flv"
 
@@ -912,23 +917,29 @@ pre_validate     = "cdr"
 name         = "Shockwave Flash (FWS — uncompressed)"
 extension    = "swf"
 # FWS header: "FWS" + version byte.  Body is raw ActionScript bytecode.
-# Version @3 in [1, 50]; file length (u32 LE @4) >= 8.
-header       = "46 57 53"
-footer       = ""
-min_size     = 8
-max_size     = 104_857_600  # 100 MiB
+# Version @3 in [1, 50]; file length (u32 LE @4) = total on-disk size.
+header           = "46 57 53"
+footer           = ""
+min_size         = 8
+max_size         = 104_857_600  # 100 MiB — upper bound; size_hint resolves exact length
+# Bytes 4-7 (u32 LE) = total file length including the 8-byte header.
+size_hint_kind   = "linear"
+size_hint_offset = 4
+size_hint_len    = 4
+size_hint_endian = "le"
+size_hint_add    = 0
 # Validates version byte @3 in [1, 50] and file length @4 >= 8.
-pre_validate = "swf"
+pre_validate     = "swf"
 
 [[signature]]
 name         = "Shockwave Flash (CWS — zlib)"
 extension    = "swf"
 # CWS header: "CWS" — zlib-compressed SWF (Flash Player 6+).
-# Same structure as FWS; the body after the 8-byte header is DEFLATE-compressed.
+# Bytes 4-7 = decompressed size (NOT on-disk size); no safe size field to use.
 header       = "43 57 53"
 footer       = ""
 min_size     = 8
-max_size     = 104_857_600  # 100 MiB
+max_size     = 31_457_280   # 30 MiB — compressed SWF; real files rarely exceed 10 MiB
 # Validates version byte @3 in [1, 50] and file length @4 >= 8.
 pre_validate = "swf"
 
@@ -936,11 +947,11 @@ pre_validate = "swf"
 name         = "Shockwave Flash (ZWS — LZMA)"
 extension    = "swf"
 # ZWS header: "ZWS" — LZMA-compressed SWF (Flash Player 13+).
-# Same header structure as FWS/CWS; body is LZMA-compressed.
+# Bytes 4-7 = decompressed size (NOT on-disk size); no safe size field to use.
 header       = "5A 57 53"
 footer       = ""
 min_size     = 8
-max_size     = 104_857_600  # 100 MiB
+max_size     = 31_457_280   # 30 MiB — compressed SWF; real files rarely exceed 10 MiB
 # Validates version byte @3 in [1, 50] and file length @4 >= 8.
 pre_validate = "swf"
 
@@ -1190,7 +1201,7 @@ extension    = "chm"
 header       = "49 54 53 46 03 00 00 00 60 00 00 00"
 footer       = ""
 min_size     = 96           # ITSF header size
-max_size     = 524_288_000  # 500 MiB — large documentation sets
+max_size     = 52_428_800   # 50 MiB — no total-size field in ITSF header; real CHM rarely > 20 MiB
 # Magic is fully deterministic; validator confirms minimum data presence.
 pre_validate = "chm"
 

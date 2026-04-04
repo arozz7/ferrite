@@ -9,8 +9,6 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use sha2::{Digest, Sha256};
-
 use ferrite_blockdev::{AlignedBuffer, BlockDevice};
 use ferrite_carver::{post_validate, CarveHit, CarveQuality, Carver, CarvingConfig};
 use ferrite_filesystem::MetadataIndex;
@@ -221,33 +219,6 @@ fn apply_timestamps(path: &str, byte_offset: u64, index: &MetadataIndex) {
     if let Err(e) = filetime::set_file_times(path, ft, ft) {
         tracing::debug!(path, error = %e, "could not set file timestamps");
     }
-}
-
-// ── SHA-256 sidecar ───────────────────────────────────────────────────────────
-
-/// Write a `<path>.sha256` sidecar file containing the SHA-256 hash of the
-/// extracted file in GNU `sha256sum`-compatible format:
-///
-/// ```text
-/// <hex>  <filename>\n
-/// ```
-///
-/// Errors are silently ignored — sidecar generation is best-effort and must
-/// never abort an otherwise-successful extraction.
-pub(super) fn write_sha256_sidecar(path: &str) {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    let hash = Sha256::digest(&data);
-    let hex = format!("{:x}", hash);
-    let filename = std::path::Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(path);
-    let sidecar_path = format!("{}.sha256", path);
-    let content = format!("{}  {}\n", hex, filename);
-    let _ = std::fs::write(&sidecar_path, content);
 }
 
 // ── Integrity helpers ─────────────────────────────────────────────────────────
@@ -506,7 +477,6 @@ impl CarvingState {
                                 }
                                 _ => filename,
                             };
-                            write_sha256_sidecar(&filename);
                             tracing::info!(path = %filename, bytes, "extracted file");
                             let _ = tx.send(CarveMsg::Extracted {
                                 idx,
@@ -601,8 +571,17 @@ impl CarvingState {
             // the early-return block above re-applies back-pressure.
             if self.backpressure_paused {
                 self.backpressure_paused = false;
-                if self.status == CarveStatus::Running {
-                    self.pause.store(false, Ordering::Relaxed);
+                // Always lift the scan pause when back-pressure is the sole
+                // reason for it.  If the status transitioned to Paused/Pausing
+                // (e.g. the user pressed p during an extraction batch, or a
+                // thermal event fired while extraction was running), we still
+                // resume — back-pressure, not the user, owned this pause.
+                self.pause.store(false, Ordering::Relaxed);
+                if matches!(self.status, CarveStatus::Paused | CarveStatus::Pausing) {
+                    self.status = CarveStatus::Running;
+                    if let Some(since) = self.paused_since.take() {
+                        self.paused_elapsed += since.elapsed();
+                    }
                 }
             }
             return;
@@ -915,9 +894,6 @@ impl CarvingState {
                         } else {
                             path
                         };
-                        if result.is_ok() {
-                            write_sha256_sidecar(&path);
-                        }
                         let _ = done_tx.send(WorkerMsg::Completed {
                             idx,
                             hit: Box::new(hit),

@@ -299,7 +299,19 @@ impl Carver {
     ///
     /// Returns the total number of bytes written.
     pub fn extract(&self, hit: &CarveHit, writer: &mut dyn Write) -> Result<u64> {
-        let sig = &hit.signature;
+        // Prefer the live config's signature over the frozen checkpoint copy.
+        // This allows size_hint improvements added after a session was started
+        // to be applied retroactively when a checkpoint is resumed.
+        let live_sig_opt = if hit.signature.size_hint.is_none() {
+            self.config
+                .signatures
+                .iter()
+                .find(|s| s.name == hit.signature.name)
+        } else {
+            None
+        };
+        let sig = live_sig_opt.unwrap_or(&hit.signature);
+
         let device_size = self.device.size();
 
         if hit.byte_offset >= device_size {
@@ -315,11 +327,25 @@ impl Carver {
         // value (false-positive hit whose header fields contain garbage) from
         // producing a file larger than the source device — which is impossible
         // for any real file.
+        //
+        // For frame-walking hints (Adts, OggStream, etc.) `None` means the data
+        // does not match the expected structure — skip the file entirely rather
+        // than falling back to max_size, which would produce a large false-positive.
         let remaining_on_device = device_size.saturating_sub(hit.byte_offset);
         let (extraction_size, hint_resolved) = if let Some(hint) = &sig.size_hint {
             match read_size_hint(self.device.as_ref(), hit.byte_offset, hint, sig.max_size) {
                 Some(size) => (size.min(sig.max_size).min(remaining_on_device), true),
-                None => (sig.max_size.min(remaining_on_device), false),
+                None => {
+                    if hint.skip_on_failure() {
+                        trace!(
+                            sig = %sig.name,
+                            offset = hit.byte_offset,
+                            "skipping extraction: frame-walker hint returned None (false positive)"
+                        );
+                        return Ok(0);
+                    }
+                    (sig.max_size.min(remaining_on_device), false)
+                }
             }
         } else {
             (sig.max_size.min(remaining_on_device), false)

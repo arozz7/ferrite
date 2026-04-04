@@ -30,11 +30,7 @@ pub(crate) use preview::ColorCap;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/// Maximum number of hits stored in the TUI list.  Hits beyond this cap are
-/// counted in `total_hits_found` but not stored in memory.
-pub(crate) const DISPLAY_CAP: usize = 100_000;
-
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────────────
 
 /// Which scan-range LBA field is currently being edited.
 #[derive(Debug, Clone, PartialEq)]
@@ -335,6 +331,10 @@ pub struct CarvingState {
     /// the queue fully drains (is empty) and no batch is in flight, or when
     /// the user manually presses `p` (which takes over pause ownership).
     backpressure_paused: bool,
+    /// Cumulative hits reported by scanner during scan (from ScanProgress).
+    pub(crate) total_hits_scanned: usize,
+    /// Number of hits that have completed extraction (Ok + Truncated + Duplicate + Skipped).
+    pub(crate) hits_extracted_count: usize,
     /// Absolute byte offset to resume a scan from when loading a saved session.
     /// Set by `restore_from_session`; consumed (and cleared to 0) when the next
     /// scan starts.  0 means "start from the configured LBA range beginning".
@@ -361,9 +361,13 @@ pub struct CarvingState {
     /// Running count of hits skipped due to corruption (skip-corrupt mode).
     pub(crate) skipped_corrupt_count: usize,
     /// When `true`, the hits list automatically follows the newest hit
-    /// (visual top) as hits arrive.  Disabled the moment the user navigates
-    /// away; re-enabled by pressing `Home`.
+    /// (visual top) as hits arrive during scanning.  Disabled the moment the
+    /// user navigates away; re-enabled by pressing `Home`.
     pub(crate) auto_follow: bool,
+    /// When `true` and extraction is running, the list auto-scrolls to show
+    /// the hit currently being extracted (the first Queued/Extracting item).
+    /// Disabled when user manually scrolls; re-enabled via status bar hint.
+    pub(crate) auto_follow_extraction: bool,
     /// Monotonic counter of bytes read by the scan thread; shared with the
     /// thermal guard for speed-based inference.
     pub(crate) bytes_read: Arc<AtomicU64>,
@@ -429,6 +433,8 @@ impl CarvingState {
             backpressure_paused: false,
             resume_from_byte: 0,
             scan_window_start: 0,
+            total_hits_scanned: 0,
+            hits_extracted_count: 0,
             seen_fingerprints: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )),
@@ -438,6 +444,7 @@ impl CarvingState {
             skip_corrupt: false,
             skipped_corrupt_count: 0,
             auto_follow: false,
+            auto_follow_extraction: true, // default to on for better UX
             user_sig_path: "./ferrite-user-signatures.toml".to_string(),
             user_sigs: Vec::new(),
             show_user_panel: false,
@@ -691,6 +698,8 @@ impl CarvingState {
         self.disk_avail_bytes = None;
         self.disk_space_tick = 0;
         self.backpressure_paused = false;
+        self.total_hits_scanned = 0;
+        self.hits_extracted_count = 0;
         self.seen_fingerprints.lock().unwrap().clear();
         self.duplicates_suppressed = 0;
         // skip_truncated / skip_corrupt are intentionally NOT reset on device change — user preferences.

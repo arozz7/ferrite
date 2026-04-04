@@ -220,19 +220,26 @@ impl CarvingState {
         } else {
             Style::default()
         };
-        let hit_count = self.hits.len();
-        let total_count = self.total_hits_found;
-        let hits_label = if total_count > hit_count {
-            format!("{hit_count} of {total_count} total")
+        // Display actual total hits scanned (not the display list count which may be capped).
+        let hits_label = if self.hits.is_empty() && self.total_hits_scanned > 0 {
+            format!("Scanning: {}", self.total_hits_scanned)
         } else {
-            format!("{hit_count}")
+            self.total_hits_scanned.to_string()
         };
         let sel_count = self.hits.iter().filter(|e| e.selected).count();
-        let done_count = self
-            .hits
-            .iter()
-            .filter(|e| matches!(e.status, HitStatus::Ok { .. } | HitStatus::Truncated { .. }))
-            .count();
+        // Calculate extraction progress against total hits scanned
+        let extracted_str = if self.extract_progress.is_some() {
+            format!("Extracted: {}", self.hits_extracted_count)
+        } else if self.status == CarveStatus::Running || self.status == CarveStatus::Pausing {
+            format!("Found: {}", self.total_hits_scanned)
+        } else if self.hits.is_empty() {
+            "No hits yet".to_string()
+        } else {
+            format!("Found: {}", self.total_hits_scanned)
+        };
+        let pending = self
+            .total_hits_scanned
+            .saturating_sub(self.hits_extracted_count);
         let auto_str = if self.auto_extract {
             " [AUTO-EXTRACT]"
         } else {
@@ -243,12 +250,27 @@ impl CarvingState {
         } else {
             ""
         };
-        let title_str = if self.extract_progress.is_some() {
-            format!(" Hits ({hits_label}){auto_str}{live_str}  {done_count} extracted — p: pause  c: cancel ")
-        } else if sel_count > 0 {
-            format!(" Hits ({hits_label}){auto_str}{live_str}  {sel_count} selected — Spc: toggle  a: all  e: extract  E: extract sel  PgUp/Dn  Home/End ")
+        let follow_extraction_hint = if self.auto_follow_extraction {
+            "  F: follow "
         } else {
-            format!(" Hits ({hits_label}){auto_str}{live_str} — Spc: select  a: all  E: extract  x: auto  D: dedup  PgUp/Dn  Home/End ")
+            ""
+        };
+        let title_str = if self.extract_progress.is_some() {
+            format!(
+                " Hits ({hits_label}){auto_str}{live_str}  {} — p: pause  c: cancel{follow_hint}",
+                extracted_str,
+                follow_hint = follow_extraction_hint,
+            )
+        } else if sel_count > 0 {
+            format!(
+                " Hits ({hits_label}){auto_str}{live_str}  {} selected | Extracted: {} | Pending:{}{follow_hint}",
+                sel_count, self.hits_extracted_count, pending, follow_hint = follow_extraction_hint,
+            )
+        } else {
+            format!(
+                " Hits ({hits_label}){auto_str}{live_str} — Spc: select  a: all  E: extract  x: auto  D: dedup  PgUp/Dn  Home/End | {} | Extracted: {} | Pending:{}{follow_hint}",
+                extracted_str, self.hits_extracted_count, pending, follow_hint = follow_extraction_hint,
+            )
         };
         let block = Block::default()
             .borders(Borders::ALL)
