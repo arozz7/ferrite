@@ -196,6 +196,36 @@ impl CarvingState {
         frame.render_widget(Paragraph::new(line).style(style), area);
     }
 
+    /// High hit-density warning banner.
+    ///
+    /// Shown when the total scan hits exceed [`HIGH_DENSITY_THRESHOLD`].  At
+    /// this density the user is almost certainly seeing ADTS / short-magic
+    /// false positives that will produce thousands of write+delete cycles and
+    /// inflate the Pending counter well beyond the real recoverable file count.
+    pub(super) fn render_high_density_warning(&self, frame: &mut Frame, area: Rect) {
+        let has_aac = self
+            .groups
+            .iter()
+            .flat_map(|g| &g.entries)
+            .any(|e| e.enabled && (e.sig.extension == "aac" || e.sig.name.contains("ADTS")));
+        let label = if has_aac {
+            " ⚠  High hit density — ADTS/AAC signatures likely generating false positives. \
+             Consider disabling AAC in the signature panel (l key) to reduce I/O strain."
+        } else {
+            " ⚠  High hit density — many hits detected. \
+             Review enabled signatures; short-magic formats may produce false positives."
+        };
+        frame.render_widget(
+            Paragraph::new(label).style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            area,
+        );
+    }
+
     /// Overall extraction progress gauge — shown when the scan is complete and
     /// there are hits to (or being) extracted.  Mirrors the scan progress bar
     /// in shape: a 3-row gauge + 1-row stats line.

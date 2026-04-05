@@ -376,6 +376,13 @@ impl CarvingState {
                 return;
             }
             let carver = Carver::new(device, config);
+            // Pre-flight: for skip_on_failure signatures (e.g. ADTS), check the
+            // frame-walker hint before creating any output file.  A false positive
+            // is rejected here at zero I/O cost rather than via create+remove.
+            if !carver.is_viable_hit(&hit) {
+                let _ = tx.send(CarveMsg::Skipped { idx });
+                return;
+            }
             if let Ok(mut f) = std::fs::File::create(&filename) {
                 match carver.extract(&hit, &mut f) {
                     Ok(0) => {
@@ -759,11 +766,11 @@ impl CarvingState {
                         }
                     }
 
-                    let _ = done_tx.send(WorkerMsg::Started { idx });
-                    // Create metadata-derived subdirectories if needed.
-                    if let Some(parent) = std::path::Path::new(&path).parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
+                    // Pre-flight: for skip_on_failure signatures (e.g. ADTS),
+                    // run the frame-walker hint BEFORE creating any output file.
+                    // A false positive is rejected here at zero I/O cost rather
+                    // than via File::create + carver.extract returning Ok(0) +
+                    // remove_file.
                     let config = CarvingConfig {
                         signatures: vec![hit.signature.clone()],
                         scan_chunk_size: 4 * 1024 * 1024,
@@ -771,6 +778,16 @@ impl CarvingState {
                         end_byte: None,
                     };
                     let carver = Carver::new(Arc::clone(&device), config);
+                    if !carver.is_viable_hit(&hit) {
+                        let _ = done_tx.send(WorkerMsg::Skipped { idx });
+                        continue;
+                    }
+
+                    let _ = done_tx.send(WorkerMsg::Started { idx });
+                    // Create metadata-derived subdirectories if needed.
+                    if let Some(parent) = std::path::Path::new(&path).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
                     let result = std::fs::File::create(&path)
                         .map_err(|e| e.to_string())
                         .and_then(|f| {

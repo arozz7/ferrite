@@ -12,7 +12,7 @@ use ferrite_carver::CarveQuality;
 
 use super::{
     fmt_bytes, preview, CarveFocus, CarveStatus, CarvingState, CursorRow, ExtractProgress,
-    ExtractionSummary, HitStatus, ScanRangeField,
+    ExtractionSummary, HitStatus, ScanRangeField, HIGH_DENSITY_THRESHOLD,
 };
 
 impl CarvingState {
@@ -317,6 +317,19 @@ impl CarvingState {
             inner
         };
 
+        // High-density warning banner — shown whenever total hits exceed the
+        // threshold, regardless of scan status.  Takes one row.
+        let after_warning = if self.total_hits_scanned >= HIGH_DENSITY_THRESHOLD {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(after_scan);
+            self.render_high_density_warning(frame, rows[0]);
+            rows[1]
+        } else {
+            after_scan
+        };
+
         // Extraction overview gauge — shown when scan is done and hits exist.
         // Provides overall ratio, rate, and ETA regardless of whether a batch
         // is currently active.  Occupies the same vertical slot the scan
@@ -325,11 +338,11 @@ impl CarvingState {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(4), Constraint::Min(0)])
-                .split(after_scan);
+                .split(after_warning);
             self.render_extraction_overview(frame, rows[0]);
             rows[1]
         } else {
-            after_scan
+            after_warning
         };
 
         // Per-batch extraction progress / summary bar (below the overview).

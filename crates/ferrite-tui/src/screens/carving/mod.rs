@@ -30,6 +30,12 @@ pub(crate) use preview::ColorCap;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+/// Hit count above which we show the high-density warning banner in the TUI.
+///
+/// At 500 K hits the extraction queue is likely dominated by ADTS false
+/// positives; the banner advises the user to disable AAC signatures.
+pub(crate) const HIGH_DENSITY_THRESHOLD: usize = 500_000;
+
 // ── Types ─────────────────────────────────────────────────────────────────────────────
 
 /// Which scan-range LBA field is currently being edited.

@@ -288,6 +288,57 @@ impl Carver {
 
     // â”€â”€ Extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+    /// Returns `true` when the hit can be extracted without creating a file.
+    ///
+    /// For signatures where `SizeHint::skip_on_failure()` is `true` (e.g. ADTS),
+    /// this runs the frame-walker size hint against the device to determine
+    /// whether the hit is a genuine frame sequence.  When the walker returns
+    /// `None` (false positive), the caller should skip `File::create` entirely --
+    /// there is nothing to write and no file to clean up.
+    ///
+    /// For all other signatures this returns `true` unconditionally (the
+    /// extraction should proceed, falling back to `max_size` if needed).
+    pub fn is_viable_hit(&self, hit: &CarveHit) -> bool {
+        let live_sig = self
+            .config
+            .signatures
+            .iter()
+            .find(|s| s.name == hit.signature.name)
+            .unwrap_or(&hit.signature);
+
+        if let Some(hint) = &live_sig.size_hint {
+            if hint.skip_on_failure() {
+                return read_size_hint(
+                    self.device.as_ref(),
+                    hit.byte_offset,
+                    hint,
+                    live_sig.max_size,
+                )
+                .is_some();
+            }
+        }
+        true
+    }
+
+    /// Extract the file for `hit` into a heap `Vec<u8>` and return it.
+    ///
+    /// This is the in-memory variant of [`extract`].  Use it for small files
+    /// (where `signature.max_size` is ≤ a few hundred KiB) when the caller
+    /// needs to inspect the data before deciding whether to write it to disk.
+    /// Cancellation is not supported — the caller should only use this for
+    /// files small enough that the device read completes in milliseconds.
+    ///
+    /// Returns `Ok(vec)` where `vec` may be empty (size-hint resolved below
+    /// `min_size`, or `skip_on_failure` returned `None`).
+    pub fn extract_to_vec(&self, hit: &CarveHit) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        let written = self.extract(hit, &mut buf)?;
+        if written == 0 {
+            buf.clear();
+        }
+        Ok(buf)
+    }
+
     /// Extract the file for `hit` and write it to `writer`.
     ///
     /// **No footer:** streams exactly `signature.max_size` bytes (or until the
