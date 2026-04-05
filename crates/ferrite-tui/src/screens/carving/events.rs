@@ -135,6 +135,7 @@ impl CarvingState {
                         self.checkpoint_extract_pending.push(idx);
                     }
                     self.hits_extracted_count += 1;
+                    self.files_written_count += 1;
                 }
                 Ok(CarveMsg::Duplicate { idx }) => {
                     if let Some(entry) = self.hits.get_mut(idx) {

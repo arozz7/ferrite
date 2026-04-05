@@ -160,9 +160,11 @@ impl CarvingState {
 
         // Initialize progress counter fields for display.
         // total_hits_scanned = all hits found during original scan (from session).
-        // hits_extracted_count = sum of already-extracted statuses from checkpoint.
+        // hits_extracted_count = all processed hits (for Pending denominator).
+        // files_written_count  = Ok + Truncated only (actual files on disk).
         self.total_hits_scanned = session.total_hits_found;
         self.hits_extracted_count = succeeded + truncated + skipped + duplicates;
+        self.files_written_count = succeeded + truncated;
 
         if succeeded + truncated + skipped + duplicates > 0 {
             self.extract_summary = Some(ExtractionSummary {

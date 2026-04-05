@@ -333,8 +333,14 @@ pub struct CarvingState {
     backpressure_paused: bool,
     /// Cumulative hits reported by scanner during scan (from ScanProgress).
     pub(crate) total_hits_scanned: usize,
-    /// Number of hits that have completed extraction (Ok + Truncated + Duplicate + Skipped).
+    /// Number of hits fully processed by the extraction pipeline
+    /// (Ok + Truncated + Duplicate + Skipped + SkippedCorrupt).
+    /// Used as the denominator for the Pending counter.
+    /// Does NOT equal the number of files on disk.
     pub(crate) hits_extracted_count: usize,
+    /// Number of files actually written to disk (Ok + Truncated only).
+    /// This is what "Extracted: N" in the status bar should display.
+    pub(crate) files_written_count: usize,
     /// Absolute byte offset to resume a scan from when loading a saved session.
     /// Set by `restore_from_session`; consumed (and cleared to 0) when the next
     /// scan starts.  0 means "start from the configured LBA range beginning".
@@ -435,6 +441,7 @@ impl CarvingState {
             scan_window_start: 0,
             total_hits_scanned: 0,
             hits_extracted_count: 0,
+            files_written_count: 0,
             seen_fingerprints: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )),
@@ -700,6 +707,7 @@ impl CarvingState {
         self.backpressure_paused = false;
         self.total_hits_scanned = 0;
         self.hits_extracted_count = 0;
+        self.files_written_count = 0;
         self.seen_fingerprints.lock().unwrap().clear();
         self.duplicates_suppressed = 0;
         // skip_truncated / skip_corrupt are intentionally NOT reset on device change — user preferences.

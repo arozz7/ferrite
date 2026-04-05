@@ -229,7 +229,7 @@ impl CarvingState {
         let sel_count = self.hits.iter().filter(|e| e.selected).count();
         // Calculate extraction progress against total hits scanned
         let extracted_str = if self.extract_progress.is_some() {
-            format!("Extracted: {}", self.hits_extracted_count)
+            format!("Files: {}", self.files_written_count)
         } else if self.status == CarveStatus::Running || self.status == CarveStatus::Pausing {
             format!("Found: {}", self.total_hits_scanned)
         } else if self.hits.is_empty() {
@@ -263,13 +263,13 @@ impl CarvingState {
             )
         } else if sel_count > 0 {
             format!(
-                " Hits ({hits_label}){auto_str}{live_str}  {} selected | Extracted: {} | Pending:{}{follow_hint}",
-                sel_count, self.hits_extracted_count, pending, follow_hint = follow_extraction_hint,
+                " Hits ({hits_label}){auto_str}{live_str}  {} selected | Files: {} | Pending:{}{follow_hint}",
+                sel_count, self.files_written_count, pending, follow_hint = follow_extraction_hint,
             )
         } else {
             format!(
-                " Hits ({hits_label}){auto_str}{live_str} — Spc: select  a: all  E: extract  x: auto  D: dedup  PgUp/Dn  Home/End | {} | Extracted: {} | Pending:{}{follow_hint}",
-                extracted_str, self.hits_extracted_count, pending, follow_hint = follow_extraction_hint,
+                " Hits ({hits_label}){auto_str}{live_str} — Spc: select  a: all  E: extract  x: auto  D: dedup  PgUp/Dn  Home/End | {} | Files: {} | Pending:{}{follow_hint}",
+                extracted_str, self.files_written_count, pending, follow_hint = follow_extraction_hint,
             )
         };
         let block = Block::default()
