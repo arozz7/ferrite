@@ -317,23 +317,38 @@ impl CarvingState {
             inner
         };
 
-        // Extraction progress / summary bar.
-        let after_extract = if let Some(ep) = &self.extract_progress {
+        // Extraction overview gauge — shown when scan is done and hits exist.
+        // Provides overall ratio, rate, and ETA regardless of whether a batch
+        // is currently active.  Occupies the same vertical slot the scan
+        // progress bar used to fill during the scan.
+        let after_overview = if self.status == CarveStatus::Done && self.total_hits_scanned > 0 {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(4), Constraint::Min(0)])
                 .split(after_scan);
+            self.render_extraction_overview(frame, rows[0]);
+            rows[1]
+        } else {
+            after_scan
+        };
+
+        // Per-batch extraction progress / summary bar (below the overview).
+        let after_extract = if let Some(ep) = &self.extract_progress {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(4), Constraint::Min(0)])
+                .split(after_overview);
             self.render_extract_progress(frame, rows[0], ep);
             rows[1]
         } else if let Some(summary) = &self.extract_summary {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(3), Constraint::Min(0)])
-                .split(after_scan);
+                .split(after_overview);
             self.render_extraction_summary(frame, rows[0], summary);
             rows[1]
         } else {
-            after_scan
+            after_overview
         };
 
         // Preview panel split (when enabled and hits present).

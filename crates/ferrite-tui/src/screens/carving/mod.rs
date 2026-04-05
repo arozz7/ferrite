@@ -341,6 +341,9 @@ pub struct CarvingState {
     /// Number of files actually written to disk (Ok + Truncated only).
     /// This is what "Extracted: N" in the status bar should display.
     pub(crate) files_written_count: usize,
+    /// Wall-clock time when the first extraction result arrived.
+    /// Used to compute extraction rate and ETA in the overview gauge.
+    pub(crate) extraction_start: Option<Instant>,
     /// Absolute byte offset to resume a scan from when loading a saved session.
     /// Set by `restore_from_session`; consumed (and cleared to 0) when the next
     /// scan starts.  0 means "start from the configured LBA range beginning".
@@ -442,6 +445,7 @@ impl CarvingState {
             total_hits_scanned: 0,
             hits_extracted_count: 0,
             files_written_count: 0,
+            extraction_start: None,
             seen_fingerprints: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )),
@@ -708,6 +712,7 @@ impl CarvingState {
         self.total_hits_scanned = 0;
         self.hits_extracted_count = 0;
         self.files_written_count = 0;
+        self.extraction_start = None;
         self.seen_fingerprints.lock().unwrap().clear();
         self.duplicates_suppressed = 0;
         // skip_truncated / skip_corrupt are intentionally NOT reset on device change — user preferences.

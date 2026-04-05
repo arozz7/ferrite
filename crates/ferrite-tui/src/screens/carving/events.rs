@@ -134,6 +134,9 @@ impl CarvingState {
                         entry.quality = Some(quality);
                         self.checkpoint_extract_pending.push(idx);
                     }
+                    if self.extraction_start.is_none() {
+                        self.extraction_start = Some(std::time::Instant::now());
+                    }
                     self.hits_extracted_count += 1;
                     self.files_written_count += 1;
                 }
@@ -143,6 +146,9 @@ impl CarvingState {
                         self.checkpoint_extract_pending.push(idx);
                     }
                     self.duplicates_suppressed += 1;
+                    if self.extraction_start.is_none() {
+                        self.extraction_start = Some(std::time::Instant::now());
+                    }
                     self.hits_extracted_count += 1;
                 }
                 Ok(CarveMsg::Skipped { idx }) => {
@@ -151,6 +157,9 @@ impl CarvingState {
                         self.checkpoint_extract_pending.push(idx);
                     }
                     self.skipped_trunc_count += 1;
+                    if self.extraction_start.is_none() {
+                        self.extraction_start = Some(std::time::Instant::now());
+                    }
                     self.hits_extracted_count += 1;
                 }
                 Ok(CarveMsg::SkippedCorrupt { idx }) => {
@@ -159,6 +168,9 @@ impl CarvingState {
                         self.checkpoint_extract_pending.push(idx);
                     }
                     self.skipped_corrupt_count += 1;
+                    if self.extraction_start.is_none() {
+                        self.extraction_start = Some(std::time::Instant::now());
+                    }
                     self.hits_extracted_count += 1;
                 }
                 Ok(CarveMsg::ExtractionStarted { idx }) => {
