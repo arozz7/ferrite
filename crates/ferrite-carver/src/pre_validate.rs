@@ -1994,13 +1994,24 @@ fn validate_webm(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_wmv(data: &[u8], pos: usize) -> bool {
-    // ASF Header Object: 16-byte GUID at pos, then u64 LE object size @16.
-    // Object size must be ≥ 30 (minimum valid ASF header body).
-    if need(data, pos, 24) {
+    // ASF Header Object: 16-byte GUID at pos, then:
+    //   @16: u64 LE object_size — must be in [30, 10 MiB]
+    //   @24: reserved byte — must be 0x01
+    //   @25: reserved byte — must be 0x02
+    //   @26: u32 LE num_headers — must be in [1, 1023]
+    if need(data, pos, 30) {
         return true;
     }
     let size_bytes: [u8; 8] = data[pos + 16..pos + 24].try_into().unwrap();
-    u64::from_le_bytes(size_bytes) >= 30
+    let object_size = u64::from_le_bytes(size_bytes);
+    if !(30..=10_485_760).contains(&object_size) {
+        return false;
+    }
+    if data[pos + 24] != 0x01 || data[pos + 25] != 0x02 {
+        return false;
+    }
+    let num_headers = u32::from_le_bytes(data[pos + 26..pos + 30].try_into().unwrap());
+    (1..1024).contains(&num_headers)
 }
 
 fn validate_flv(data: &[u8], pos: usize) -> bool {
@@ -2261,6 +2272,9 @@ fn validate_midi(data: &[u8], pos: usize) -> bool {
 /// AIFF / AIFC — IFF FORM chunk with AIFF or AIFC sub-type.
 /// Byte @11 must be 'F' (AIFF) or 'C' (AIFC); FORM data size must be > 4.
 fn validate_aiff(data: &[u8], pos: usize) -> bool {
+    // AIFF: "FORM" + u32 BE form_size + "AIFF" or "AIFC" subtype.
+    // form_size is the size of the file body after the 8-byte FORM header,
+    // so the total file is form_size + 8.  Clamp to [4, 200 MiB].
     let end = pos + 12;
     if data.len() < end {
         return true;
@@ -2271,7 +2285,7 @@ fn validate_aiff(data: &[u8], pos: usize) -> bool {
     }
     let form_size =
         u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
-    form_size > 4
+    (5..=209_715_192).contains(&form_size)
 }
 
 /// XZ compressed stream.
@@ -4186,6 +4200,10 @@ mod tests {
     // ── WMV ───────────────────────────────────────────────────────────────────
 
     fn make_asf_header(object_size: u64) -> Vec<u8> {
+        make_asf_header_full(object_size, 0x01, 0x02, 5)
+    }
+
+    fn make_asf_header_full(object_size: u64, res1: u8, res2: u8, num_headers: u32) -> Vec<u8> {
         let mut data = vec![0u8; 32];
         // ASF Header Object GUID
         data[0..16].copy_from_slice(&[
@@ -4193,6 +4211,9 @@ mod tests {
             0xCE, 0x6C,
         ]);
         data[16..24].copy_from_slice(&object_size.to_le_bytes());
+        data[24] = res1;
+        data[25] = res2;
+        data[26..30].copy_from_slice(&num_headers.to_le_bytes());
         data
     }
 
@@ -4205,6 +4226,33 @@ mod tests {
     #[test]
     fn wmv_tiny_size_rejected() {
         let data = make_asf_header(10); // size < 30
+        assert!(!validate_wmv(&data, 0));
+    }
+
+    #[test]
+    fn wmv_oversized_object_rejected() {
+        // object_size > 10 MiB should be rejected
+        let data = make_asf_header(20_000_000);
+        assert!(!validate_wmv(&data, 0));
+    }
+
+    #[test]
+    fn wmv_wrong_reserved_bytes_rejected() {
+        let data = make_asf_header_full(1024, 0x00, 0x02, 5);
+        assert!(!validate_wmv(&data, 0));
+        let data2 = make_asf_header_full(1024, 0x01, 0x00, 5);
+        assert!(!validate_wmv(&data2, 0));
+    }
+
+    #[test]
+    fn wmv_zero_num_headers_rejected() {
+        let data = make_asf_header_full(1024, 0x01, 0x02, 0);
+        assert!(!validate_wmv(&data, 0));
+    }
+
+    #[test]
+    fn wmv_excessive_num_headers_rejected() {
+        let data = make_asf_header_full(1024, 0x01, 0x02, 2000);
         assert!(!validate_wmv(&data, 0));
     }
 
@@ -4708,6 +4756,22 @@ mod tests {
     #[test]
     fn aiff_wrong_subtype_rejected() {
         assert!(!validate_aiff(&make_aiff(b'X'), 0));
+    }
+
+    #[test]
+    fn aiff_oversized_form_rejected() {
+        // form_size > 200 MiB should be rejected
+        let mut d = make_aiff(b'F');
+        d[4..8].copy_from_slice(&300_000_000u32.to_be_bytes());
+        assert!(!validate_aiff(&d, 0));
+    }
+
+    #[test]
+    fn aiff_tiny_form_size_rejected() {
+        // form_size <= 4 should be rejected (not enough for any AIFF chunk)
+        let mut d = make_aiff(b'F');
+        d[4..8].copy_from_slice(&4u32.to_be_bytes());
+        assert!(!validate_aiff(&d, 0));
     }
 
     // ── XZ ────────────────────────────────────────────────────────────────────
