@@ -12,7 +12,7 @@ use ferrite_carver::CarveQuality;
 
 use super::{
     fmt_bytes, preview, CarveFocus, CarveStatus, CarvingState, CursorRow, ExtractProgress,
-    ExtractionSummary, HitStatus, ScanRangeField,
+    ExtractionSummary, HitStatus, ScanRangeField, HIGH_DENSITY_THRESHOLD,
 };
 
 impl CarvingState {
@@ -220,19 +220,26 @@ impl CarvingState {
         } else {
             Style::default()
         };
-        let hit_count = self.hits.len();
-        let total_count = self.total_hits_found;
-        let hits_label = if total_count > hit_count {
-            format!("{hit_count} of {total_count} total")
+        // Display actual total hits scanned (not the display list count which may be capped).
+        let hits_label = if self.hits.is_empty() && self.total_hits_scanned > 0 {
+            format!("Scanning: {}", self.total_hits_scanned)
         } else {
-            format!("{hit_count}")
+            self.total_hits_scanned.to_string()
         };
         let sel_count = self.hits.iter().filter(|e| e.selected).count();
-        let done_count = self
-            .hits
-            .iter()
-            .filter(|e| matches!(e.status, HitStatus::Ok { .. } | HitStatus::Truncated { .. }))
-            .count();
+        // Calculate extraction progress against total hits scanned
+        let extracted_str = if self.extract_progress.is_some() {
+            format!("Files: {}", self.files_written_count)
+        } else if self.status == CarveStatus::Running || self.status == CarveStatus::Pausing {
+            format!("Found: {}", self.total_hits_scanned)
+        } else if self.hits.is_empty() {
+            "No hits yet".to_string()
+        } else {
+            format!("Found: {}", self.total_hits_scanned)
+        };
+        let pending = self
+            .total_hits_scanned
+            .saturating_sub(self.hits_extracted_count);
         let auto_str = if self.auto_extract {
             " [AUTO-EXTRACT]"
         } else {
@@ -243,12 +250,27 @@ impl CarvingState {
         } else {
             ""
         };
-        let title_str = if self.extract_progress.is_some() {
-            format!(" Hits ({hits_label}){auto_str}{live_str}  {done_count} extracted — p: pause  c: cancel ")
-        } else if sel_count > 0 {
-            format!(" Hits ({hits_label}){auto_str}{live_str}  {sel_count} selected — Spc: toggle  a: all  e: extract  E: extract sel  PgUp/Dn  Home/End ")
+        let follow_extraction_hint = if self.auto_follow_extraction {
+            "  F: follow "
         } else {
-            format!(" Hits ({hits_label}){auto_str}{live_str} — Spc: select  a: all  E: extract  x: auto  D: dedup  PgUp/Dn  Home/End ")
+            ""
+        };
+        let title_str = if self.extract_progress.is_some() {
+            format!(
+                " Hits ({hits_label}){auto_str}{live_str}  {} — p: pause  c: cancel{follow_hint}",
+                extracted_str,
+                follow_hint = follow_extraction_hint,
+            )
+        } else if sel_count > 0 {
+            format!(
+                " Hits ({hits_label}){auto_str}{live_str}  {} selected | Files: {} | Pending:{}{follow_hint}",
+                sel_count, self.files_written_count, pending, follow_hint = follow_extraction_hint,
+            )
+        } else {
+            format!(
+                " Hits ({hits_label}){auto_str}{live_str} — Spc: select  a: all  E: extract  x: auto  D: dedup  PgUp/Dn  Home/End | {} | Files: {} | Pending:{}{follow_hint}",
+                extracted_str, self.files_written_count, pending, follow_hint = follow_extraction_hint,
+            )
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -295,23 +317,51 @@ impl CarvingState {
             inner
         };
 
-        // Extraction progress / summary bar.
+        // High-density warning banner — shown whenever total hits exceed the
+        // threshold, regardless of scan status.  Takes one row.
+        let after_warning = if self.total_hits_scanned >= HIGH_DENSITY_THRESHOLD {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(after_scan);
+            self.render_high_density_warning(frame, rows[0]);
+            rows[1]
+        } else {
+            after_scan
+        };
+
+        // Extraction overview gauge — shown when scan is done and hits exist.
+        // Provides overall ratio, rate, and ETA regardless of whether a batch
+        // is currently active.  Occupies the same vertical slot the scan
+        // progress bar used to fill during the scan.
+        let after_overview = if self.status == CarveStatus::Done && self.total_hits_scanned > 0 {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(4), Constraint::Min(0)])
+                .split(after_warning);
+            self.render_extraction_overview(frame, rows[0]);
+            rows[1]
+        } else {
+            after_warning
+        };
+
+        // Per-batch extraction progress / summary bar (below the overview).
         let after_extract = if let Some(ep) = &self.extract_progress {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(4), Constraint::Min(0)])
-                .split(after_scan);
+                .split(after_overview);
             self.render_extract_progress(frame, rows[0], ep);
             rows[1]
         } else if let Some(summary) = &self.extract_summary {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(3), Constraint::Min(0)])
-                .split(after_scan);
+                .split(after_overview);
             self.render_extraction_summary(frame, rows[0], summary);
             rows[1]
         } else {
-            after_scan
+            after_overview
         };
 
         // Preview panel split (when enabled and hits present).

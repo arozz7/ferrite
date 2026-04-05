@@ -13,7 +13,15 @@ impl CarvingState {
     /// These represent hits that were in-flight when the app closed; they were
     /// never written to disk, so they must be re-extracted on resume.
     pub(crate) fn load_checkpoint(&mut self, path: &str) {
-        if let Ok(entries) = checkpoint::load(path) {
+        // Build a name → Signature lookup from the currently-loaded groups so
+        // the compact checkpoint format can reconstruct full CarveHit values.
+        let sig_lookup: std::collections::HashMap<String, ferrite_carver::Signature> = self
+            .groups
+            .iter()
+            .flat_map(|g| g.entries.iter())
+            .map(|e| (e.sig.name.clone(), e.sig.clone()))
+            .collect();
+        if let Ok(entries) = checkpoint::load(path, &sig_lookup) {
             self.hits = entries
                 .into_iter()
                 .map(|e| {
@@ -150,6 +158,14 @@ impl CarvingState {
         }
         self.skipped_trunc_count = skipped;
 
+        // Initialize progress counter fields for display.
+        // total_hits_scanned = all hits found during original scan (from session).
+        // hits_extracted_count = all processed hits (for Pending denominator).
+        // files_written_count  = Ok + Truncated only (actual files on disk).
+        self.total_hits_scanned = session.total_hits_found;
+        self.hits_extracted_count = succeeded + truncated + skipped + duplicates;
+        self.files_written_count = succeeded + truncated;
+
         if succeeded + truncated + skipped + duplicates > 0 {
             self.extract_summary = Some(ExtractionSummary {
                 succeeded,
@@ -169,11 +185,13 @@ impl CarvingState {
     /// is paused mid-session (the periodic flush only fires every 1000 hits).
     pub fn flush_checkpoint(&mut self) {
         if let Some(cp) = self.checkpoint_path.clone() {
-            let new_hits = &self.hits[self.checkpoint_flushed..];
-            if !new_hits.is_empty() {
-                for entry in new_hits {
-                    let _ = checkpoint::append(&cp, &entry.hit, &entry.status);
-                }
+            let updates: Vec<(&ferrite_carver::CarveHit, &HitStatus)> = self.hits
+                [self.checkpoint_flushed..]
+                .iter()
+                .map(|e| (&e.hit, &e.status))
+                .collect();
+            if !updates.is_empty() {
+                let _ = checkpoint::append_batch(&cp, &updates);
                 self.checkpoint_flushed = self.hits.len();
             }
         }

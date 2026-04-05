@@ -288,6 +288,57 @@ impl Carver {
 
     // â”€â”€ Extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+    /// Returns `true` when the hit can be extracted without creating a file.
+    ///
+    /// For signatures where `SizeHint::skip_on_failure()` is `true` (e.g. ADTS),
+    /// this runs the frame-walker size hint against the device to determine
+    /// whether the hit is a genuine frame sequence.  When the walker returns
+    /// `None` (false positive), the caller should skip `File::create` entirely --
+    /// there is nothing to write and no file to clean up.
+    ///
+    /// For all other signatures this returns `true` unconditionally (the
+    /// extraction should proceed, falling back to `max_size` if needed).
+    pub fn is_viable_hit(&self, hit: &CarveHit) -> bool {
+        let live_sig = self
+            .config
+            .signatures
+            .iter()
+            .find(|s| s.name == hit.signature.name)
+            .unwrap_or(&hit.signature);
+
+        if let Some(hint) = &live_sig.size_hint {
+            if hint.skip_on_failure() {
+                return read_size_hint(
+                    self.device.as_ref(),
+                    hit.byte_offset,
+                    hint,
+                    live_sig.max_size,
+                )
+                .is_some();
+            }
+        }
+        true
+    }
+
+    /// Extract the file for `hit` into a heap `Vec<u8>` and return it.
+    ///
+    /// This is the in-memory variant of [`extract`].  Use it for small files
+    /// (where `signature.max_size` is ≤ a few hundred KiB) when the caller
+    /// needs to inspect the data before deciding whether to write it to disk.
+    /// Cancellation is not supported — the caller should only use this for
+    /// files small enough that the device read completes in milliseconds.
+    ///
+    /// Returns `Ok(vec)` where `vec` may be empty (size-hint resolved below
+    /// `min_size`, or `skip_on_failure` returned `None`).
+    pub fn extract_to_vec(&self, hit: &CarveHit) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        let written = self.extract(hit, &mut buf)?;
+        if written == 0 {
+            buf.clear();
+        }
+        Ok(buf)
+    }
+
     /// Extract the file for `hit` and write it to `writer`.
     ///
     /// **No footer:** streams exactly `signature.max_size` bytes (or until the
@@ -299,7 +350,19 @@ impl Carver {
     ///
     /// Returns the total number of bytes written.
     pub fn extract(&self, hit: &CarveHit, writer: &mut dyn Write) -> Result<u64> {
-        let sig = &hit.signature;
+        // Prefer the live config's signature over the frozen checkpoint copy.
+        // This allows size_hint improvements added after a session was started
+        // to be applied retroactively when a checkpoint is resumed.
+        let live_sig_opt = if hit.signature.size_hint.is_none() {
+            self.config
+                .signatures
+                .iter()
+                .find(|s| s.name == hit.signature.name)
+        } else {
+            None
+        };
+        let sig = live_sig_opt.unwrap_or(&hit.signature);
+
         let device_size = self.device.size();
 
         if hit.byte_offset >= device_size {
@@ -315,11 +378,25 @@ impl Carver {
         // value (false-positive hit whose header fields contain garbage) from
         // producing a file larger than the source device — which is impossible
         // for any real file.
+        //
+        // For frame-walking hints (Adts, OggStream, etc.) `None` means the data
+        // does not match the expected structure — skip the file entirely rather
+        // than falling back to max_size, which would produce a large false-positive.
         let remaining_on_device = device_size.saturating_sub(hit.byte_offset);
         let (extraction_size, hint_resolved) = if let Some(hint) = &sig.size_hint {
             match read_size_hint(self.device.as_ref(), hit.byte_offset, hint, sig.max_size) {
                 Some(size) => (size.min(sig.max_size).min(remaining_on_device), true),
-                None => (sig.max_size.min(remaining_on_device), false),
+                None => {
+                    if hint.skip_on_failure() {
+                        trace!(
+                            sig = %sig.name,
+                            offset = hit.byte_offset,
+                            "skipping extraction: frame-walker hint returned None (false positive)"
+                        );
+                        return Ok(0);
+                    }
+                    (sig.max_size.min(remaining_on_device), false)
+                }
             }
         } else {
             (sig.max_size.min(remaining_on_device), false)

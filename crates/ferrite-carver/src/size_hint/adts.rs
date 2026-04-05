@@ -16,8 +16,8 @@ use ferrite_blockdev::BlockDevice;
 use crate::carver_io::read_bytes_clamped;
 
 /// Minimum number of consecutive valid ADTS frames required before we trust
-/// the result.  Raises the confidence bar against spurious 0xFFF0 patterns.
-const MIN_FRAMES: u32 = 4;
+/// the result.  Higher values dramatically reduce false positives on random data.
+const MIN_FRAMES: u32 = 8;
 
 /// Minimum ADTS frame length: 7-byte header when `protection_absent = 1`.
 const MIN_FRAME_LEN: usize = 7;
@@ -25,16 +25,29 @@ const MIN_FRAME_LEN: usize = 7;
 /// Maximum ADTS frame length.  The 13-bit field allows up to 8191 bytes.
 const MAX_FRAME_LEN: usize = 8191;
 
-/// Safety cap on frame iterations (~1 GiB of minimum-size frames).
-const MAX_FRAMES: u32 = 500_000;
+/// Safety cap on frame iterations.  A 50 MiB file at typical AAC frame sizes
+/// (~500 bytes) is ~100 000 frames; 200 000 gives plenty of headroom while
+/// capping walk time on random data.
+const MAX_FRAMES: u32 = 200_000;
 
 /// Walk ADTS frames from `file_offset` and return the total byte length of the
 /// continuous stream, or `None` if the data does not look like a real AAC
 /// ADTS stream.
+///
+/// Beyond sync and layer bits, we enforce two stream-level invariants that
+/// must hold throughout any legitimate ADTS file:
+///
+/// * **Consistent `sampling_freq_index`** — the 4-bit sample-rate index
+///   (b2[5:2]) encodes the fixed sample rate of the stream.  It never changes
+///   between frames.  Random data will almost always vary this field.
+///
+/// * **Valid `sampling_freq_index`** — values 13–15 are reserved/invalid per
+///   the AAC spec; a frame reporting those values is not a real ADTS frame.
 pub(super) fn adts_hint(device: &dyn BlockDevice, file_offset: u64) -> Option<u64> {
     let device_size = device.size();
     let mut pos = file_offset;
     let mut frame_count: u32 = 0;
+    let mut expected_sfi: Option<u8> = None; // sampling_freq_index of first frame
 
     for _ in 0..MAX_FRAMES {
         if pos >= device_size {
@@ -56,6 +69,19 @@ pub(super) fn adts_hint(device: &dyn BlockDevice, file_offset: u64) -> Option<u6
         // Layer bits (b1[2:1]) must be 00 — non-zero means MP3, not AAC.
         if b1 & 0x06 != 0x00 {
             break;
+        }
+
+        // sampling_freq_index occupies bits [21:18] of the header = b2[5:2].
+        // Valid values: 0–12.  Values 13–15 are reserved.
+        let sfi = (hdr[2] >> 2) & 0x0F;
+        if sfi > 12 {
+            break;
+        }
+        // All frames in a stream must share the same sample rate.
+        match expected_sfi {
+            None => expected_sfi = Some(sfi),
+            Some(e) if e != sfi => break, // sample rate changed — random data
+            _ => {}
         }
 
         // 13-bit frame-length field at header bits [30:18]:
@@ -114,11 +140,11 @@ mod tests {
     }
 
     #[test]
-    fn four_frames_produces_size() {
+    fn eight_frames_produces_size() {
         let frame_len = 512;
-        let dev = make_device_with_frames(4, frame_len);
+        let dev = make_device_with_frames(8, frame_len);
         let result = adts_hint(&dev, 0);
-        assert_eq!(result, Some((4 * frame_len) as u64));
+        assert_eq!(result, Some((8 * frame_len) as u64));
     }
 
     #[test]
@@ -132,26 +158,58 @@ mod tests {
     #[test]
     fn fewer_than_min_frames_returns_none() {
         let frame_len = 512;
-        let dev = make_device_with_frames(3, frame_len); // MIN_FRAMES = 4
+        let dev = make_device_with_frames(7, frame_len); // MIN_FRAMES = 8
         let result = adts_hint(&dev, 0);
         assert!(
             result.is_none(),
-            "3 frames should return None (below MIN_FRAMES)"
+            "7 frames should return None (below MIN_FRAMES)"
         );
     }
 
     #[test]
     fn invalid_sync_after_valid_frames_stops_walk() {
-        // 5 valid frames followed by garbage.
+        // 10 valid frames followed by garbage — ≥ MIN_FRAMES so returns a size.
         let frame_len = 256;
         let mut data: Vec<u8> = Vec::new();
-        for _ in 0..5 {
+        for _ in 0..10 {
             data.extend_from_slice(&make_adts_frame(frame_len));
         }
         data.extend_from_slice(&[0x00u8; 256]); // garbage — no sync
         let dev = MockBlockDevice::new(data, 512);
         let result = adts_hint(&dev, 0);
-        assert_eq!(result, Some((5 * frame_len) as u64));
+        assert_eq!(result, Some((10 * frame_len) as u64));
+    }
+
+    #[test]
+    fn inconsistent_sfi_terminates_walk() {
+        // First 8 frames have sfi=4 (44100 Hz); frame 9 has sfi=3 (48000 Hz).
+        // The sfi change should stop the walk at 8 frames and return a size.
+        let frame_len = 256;
+        let mut data: Vec<u8> = Vec::new();
+        for _ in 0..8 {
+            data.extend_from_slice(&make_adts_frame(frame_len));
+        }
+        // Frame 9: change sfi from 4 (0b0100) to 3 (0b0011) in b2[5:2].
+        let mut bad_frame = make_adts_frame(frame_len);
+        bad_frame[2] = (bad_frame[2] & 0xC3) | (3u8 << 2); // sfi=3
+        data.extend_from_slice(&bad_frame);
+        let dev = MockBlockDevice::new(data, 512);
+        // Walk stops at frame 9; 8 frames were valid → returns size for 8 frames.
+        assert_eq!(adts_hint(&dev, 0), Some((8 * frame_len) as u64));
+    }
+
+    #[test]
+    fn invalid_sfi_in_first_frame_returns_none() {
+        // sfi = 14 (reserved/invalid) in the very first frame → None.
+        let frame_len = 256;
+        let mut data: Vec<u8> = Vec::new();
+        for _ in 0..10 {
+            let mut f = make_adts_frame(frame_len);
+            f[2] = (f[2] & 0xC3) | (14u8 << 2); // sfi=14 (invalid)
+            data.extend_from_slice(&f);
+        }
+        let dev = MockBlockDevice::new(data, 512);
+        assert!(adts_hint(&dev, 0).is_none());
     }
 
     #[test]
@@ -167,16 +225,16 @@ mod tests {
 
     #[test]
     fn offset_walk_starts_at_file_offset() {
-        // Put 4 valid frames at byte 100, preceded by zeros.
+        // Put 8 valid frames at byte 100, preceded by zeros.
         let frame_len = 512;
         let prefix = vec![0u8; 100];
         let mut data = prefix.clone();
-        for _ in 0..4 {
+        for _ in 0..8 {
             data.extend_from_slice(&make_adts_frame(frame_len));
         }
         let dev = MockBlockDevice::new(data, 512);
         // Walk starting at offset 100; result is relative to file_offset.
         let result = adts_hint(&dev, 100);
-        assert_eq!(result, Some((4 * frame_len) as u64));
+        assert_eq!(result, Some((8 * frame_len) as u64));
     }
 }

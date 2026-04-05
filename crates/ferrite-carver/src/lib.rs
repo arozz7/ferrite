@@ -56,7 +56,7 @@ mod tests {
             "expected 140 built-in signatures"
         );
 
-        // All three JPEG variants must be present with 4-byte headers.
+        // All three JPEG variants must be present with 4-byte headers and Jpeg size hint.
         let jpeg_jfif = cfg
             .signatures
             .iter()
@@ -66,7 +66,15 @@ mod tests {
             jpeg_jfif.header,
             &[Some(0xFF), Some(0xD8), Some(0xFF), Some(0xE0)]
         );
-        assert_eq!(jpeg_jfif.footer, &[0xFF, 0xD9]);
+        assert!(
+            jpeg_jfif.footer.is_empty(),
+            "JPEG JFIF footer must be empty (walker-based)"
+        );
+        assert_eq!(
+            jpeg_jfif.size_hint,
+            Some(super::SizeHint::Jpeg),
+            "JPEG JFIF must use Jpeg size hint"
+        );
 
         let jpeg_exif = cfg
             .signatures
@@ -77,7 +85,15 @@ mod tests {
             jpeg_exif.header,
             &[Some(0xFF), Some(0xD8), Some(0xFF), Some(0xE1)]
         );
-        assert_eq!(jpeg_exif.footer, &[0xFF, 0xD9]);
+        assert!(
+            jpeg_exif.footer.is_empty(),
+            "JPEG Exif footer must be empty (walker-based)"
+        );
+        assert_eq!(
+            jpeg_exif.size_hint,
+            Some(super::SizeHint::Jpeg),
+            "JPEG Exif must use Jpeg size hint"
+        );
 
         let jpeg_dqt = cfg
             .signatures
@@ -88,7 +104,15 @@ mod tests {
             jpeg_dqt.header,
             &[Some(0xFF), Some(0xD8), Some(0xFF), Some(0xDB)]
         );
-        assert_eq!(jpeg_dqt.footer, &[0xFF, 0xD9]);
+        assert!(
+            jpeg_dqt.footer.is_empty(),
+            "JPEG DQT footer must be empty (walker-based)"
+        );
+        assert_eq!(
+            jpeg_dqt.size_hint,
+            Some(super::SizeHint::Jpeg),
+            "JPEG DQT must use Jpeg size hint"
+        );
 
         // PDF must use footer_last mode.
         let pdf = cfg
@@ -223,15 +247,34 @@ mod tests {
         let mut cfg = CarvingConfig::from_toml_str(toml).unwrap();
         cfg.scan_chunk_size = 512; // small chunks to stress-test boundaries
 
-        let mut data = vec![0u8; 4096];
-        // JPEG (Exif) at offset 0 — use FF D8 FF E1 to match the 4-byte Exif signature.
-        data[0..4].copy_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
-        data[6..10].copy_from_slice(b"Exif"); // pre_validate requires "Exif" @ offset 6
-        data[20..22].copy_from_slice(&[0xFF, 0xD9]); // JPEG footer
-                                                     // PNG at offset 1024
-        data[1024..1032].copy_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-        data[1032..1036].copy_from_slice(&13u32.to_be_bytes()); // IHDR length = 13
-        data[1036..1040].copy_from_slice(b"IHDR"); // pre_validate requires IHDR first chunk
+        let mut data = vec![0u8; 8192];
+
+        // Structurally-valid JPEG (Exif) at offset 0.
+        //
+        // Layout (total = 4096 bytes, matching min_size exactly):
+        //   [0..2]     FF D8     SOI
+        //   [2..4]     FF E1     APP1 marker
+        //   [4..6]     0F F4     APP1 length = 4084 (= 4082 bytes data + 2 for field itself)
+        //   [6..10]    "Exif"    pre_validate = "jpeg_exif" requires this at offset 6
+        //   [10..4088] 0x00...   rest of APP1 payload — no embedded thumbnail FF D9
+        //   [4088..4090] FF DA   SOS marker  (pos after APP1 = 2+2+4084 = 4088 ✓)
+        //   [4090..4092] 00 04   SOS length = 4
+        //   [4092..4094] 00 00   SOS header data
+        //   [4094..4096] FF D9   EOI  (scan_for_eoi finds this at offset 4094)
+        data[0..2].copy_from_slice(&[0xFF, 0xD8]); // SOI
+        data[2..4].copy_from_slice(&[0xFF, 0xE1]); // APP1 marker
+        data[4..6].copy_from_slice(&4084u16.to_be_bytes()); // APP1 length = 4084
+        data[6..10].copy_from_slice(b"Exif"); // pre_validate requirement
+                                              // data[10..4088] remains 0x00 (APP1 payload — no embedded thumbnail FF D9)
+        data[4088..4090].copy_from_slice(&[0xFF, 0xDA]); // SOS marker
+        data[4090..4092].copy_from_slice(&4u16.to_be_bytes()); // SOS length = 4
+        data[4092..4094].copy_from_slice(&[0x00, 0x00]); // SOS header data
+        data[4094..4096].copy_from_slice(&[0xFF, 0xD9]); // EOI
+
+        // PNG at offset 5120 (past the JPEG which ends at 4114)
+        data[5120..5128].copy_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        data[5128..5132].copy_from_slice(&13u32.to_be_bytes()); // IHDR length = 13
+        data[5132..5136].copy_from_slice(b"IHDR"); // pre_validate requires IHDR first chunk
 
         let dev: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new(data, 512));
         let carver = Carver::new(Arc::clone(&dev), cfg);
@@ -247,7 +290,7 @@ mod tests {
         );
         assert!(extensions.contains(&"png"), "PNG not found: {extensions:?}");
 
-        // Extract the JPEG hit — should stop at footer (bytes 0..=21).
+        // Extract the JPEG hit — walker should find the EOI at byte 4114.
         let jpeg_hit = hits
             .iter()
             .find(|h| h.signature.extension == "jpg")
@@ -255,9 +298,9 @@ mod tests {
         let mut extracted = Vec::new();
         let written = carver.extract(jpeg_hit, &mut extracted).unwrap();
         assert_eq!(
-            written, 22,
-            "JPEG extract should include footer: {written} bytes"
+            written, 4096,
+            "JPEG segment walker should extract exactly 4096 bytes; got {written}"
         );
-        assert_eq!(&extracted[20..22], &[0xFF, 0xD9]);
+        assert_eq!(&extracted[4094..4096], &[0xFF, 0xD9]);
     }
 }

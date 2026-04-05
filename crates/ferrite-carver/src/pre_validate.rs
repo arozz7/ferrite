@@ -1125,41 +1125,92 @@ fn validate_fits(data: &[u8], pos: usize) -> bool {
 }
 
 fn validate_aac(data: &[u8], pos: usize) -> bool {
-    // ADTS frame header layout (bytes relative to pos):
-    //   0:   0xFF (sync high — already matched by magic)
-    //   1:   sync[3:0] + ID + layer[1:0] + protection_absent
-    //        layer bits (1–2) MUST be 00 for AAC ADTS (not MPEG audio layers)
-    //   2:   profile[1:0] + sampling_freq_idx[3:0] + private + channel_cfg[2]
-    //        sampling_freq_idx in [0, 12]; 13–15 are reserved/invalid
-    //   3–5: channel_cfg + copyright fields + aac_frame_length[12:0] (13 bits)
-    //        Minimum valid frame length = 7 (header only, protection_absent=1).
-    //        Maximum plausible = 8191 (max 13-bit value per spec).
+    // ADTS frame header layout (7 bytes minimum):
+    //   0:     0xFF              sync high (matched by magic)
+    //   1:     sync[3:0]=0xF  ID  layer[1:0]=00  protection_absent
+    //   2:     profile[1:0]  sampling_freq_idx[3:0]  private  channel[2]
+    //          sampling_freq_idx in [0,12]; 13–15 reserved/invalid
+    //   3–5:   channel[1:0]  copyright  aac_frame_length[12:0] (13 bits)
+    //          frame_length in [7, 8191] — includes the 7-byte header itself
+    //   6:     adts_buffer_fullness[10:3]
+    //
+    // Chain validation: require 3 consecutive valid frames within the scan
+    // buffer.  Random data satisfying a single ADTS header has ~1/16 chance
+    // per byte; three chained frames reduce this to ~1/10^9.  When the buffer
+    // is too short to reach a later frame, accept conservatively to avoid
+    // false negatives at 4 MiB scan-chunk boundaries.
+
+    // ── Frame 1 ───────────────────────────────────────────────────────────────
     if need(data, pos, 3) {
-        return true;
+        return true; // too short to validate
     }
     let b1 = data[pos + 1];
     let b2 = data[pos + 2];
-    // Layer must be 00 (bits 1–2 of byte 1)
+    // Layer bits (1–2 of byte 1) must be 00 (not an MPEG-1/2/3 layer).
     if b1 & 0x06 != 0x00 {
         return false;
     }
-    // sampling_freq_index (bits 5–2 of byte 2) must be in [0, 12]
+    // sampling_freq_index (bits 5–2 of byte 2) must be in [0, 12].
     let sfi = (b2 >> 2) & 0x0F;
     if sfi > 12 {
         return false;
     }
-    // If we have enough bytes, also validate the 13-bit frame-length field.
-    // This eliminates hits where bytes 0–2 happen to look like an ADTS header
-    // but are part of unrelated binary data.
-    if !need(data, pos, 6) {
-        let frame_len = ((data[pos + 3] & 0x03) as u32) << 11
-            | (data[pos + 4] as u32) << 3
-            | (data[pos + 5] as u32) >> 5;
-        if !(7..=8191).contains(&frame_len) {
-            return false;
-        }
+    // Need 6 bytes to decode the 13-bit frame-length field.
+    if need(data, pos, 6) {
+        return true;
     }
-    true
+    let len1 = adts_frame_len(data, pos);
+    if !(7..=8191).contains(&len1) {
+        return false;
+    }
+
+    // ── Frame 2: sync + SFI consistency + frame length ────────────────────────
+    let p2 = pos + len1;
+    if need(data, p2, 6) {
+        return true; // conservative: near end of scan chunk
+    }
+    // Sync word check: 0xFF + upper nibble 0xF + layer=00.
+    if !adts_sync_valid(data, p2) {
+        return false;
+    }
+    // SFI must match frame 1 — sample rate is fixed for the whole stream.
+    if (data[p2 + 2] >> 2) & 0x0F != sfi {
+        return false;
+    }
+    let len2 = adts_frame_len(data, p2);
+    if !(7..=8191).contains(&len2) {
+        return false;
+    }
+
+    // ── Frame 3: sync word only ───────────────────────────────────────────────
+    let p3 = p2 + len2;
+    if need(data, p3, 2) {
+        return true; // conservative: near end of scan chunk
+    }
+    adts_sync_valid(data, p3)
+}
+
+/// Decode the 13-bit ADTS `aac_frame_length` field from bytes 3–5.
+///
+/// Bit layout across bytes 3–5:
+///   byte3[1:0] << 11  |  byte4[7:0] << 3  |  byte5[7:5]
+#[inline]
+fn adts_frame_len(data: &[u8], pos: usize) -> usize {
+    ((data[pos + 3] & 0x03) as usize) << 11
+        | (data[pos + 4] as usize) << 3
+        | (data[pos + 5] as usize) >> 5
+}
+
+/// Returns `true` when `data[pos]` opens a valid ADTS sync word.
+///
+/// Checks: `0xFF` sync high byte, upper nibble of byte 1 == `0xF` (sync low),
+/// and layer bits (bits 2–1 of byte 1) == `00`.
+/// ID (bit 3) and protection_absent (bit 0) may be anything.
+#[inline]
+fn adts_sync_valid(data: &[u8], pos: usize) -> bool {
+    // Mask 0xF6 = 1111_0110: checks sync nibble (7-4) and layer (2-1).
+    // Expected 0xF0 = 1111_0000: sync=0xF, layer=00.
+    data[pos] == 0xFF && (data[pos + 1] & 0xF6) == 0xF0
 }
 
 fn validate_djvu(data: &[u8], pos: usize) -> bool {
@@ -6154,6 +6205,72 @@ mod tests {
     fn aac_frame_length_max_boundary_accepted() {
         // frame_len = 8191 — maximum 13-bit value per ADTS spec.
         let buf = make_aac_with_len(0, 4, 8191);
+        assert!(validate_aac(&buf, 0));
+    }
+
+    /// Build a buffer containing `n` consecutive valid ADTS frames, each with
+    /// the given `sfi` and `frame_len`.  The caller can then corrupt specific
+    /// bytes to test chain-walk rejection.
+    fn make_aac_chain(n: usize, sfi: u8, frame_len: usize) -> Vec<u8> {
+        let frame = make_aac_with_len(0, sfi, frame_len);
+        assert_eq!(
+            frame.len(),
+            7,
+            "make_aac_with_len always returns 7-byte header"
+        );
+        // Each logical "frame" occupies frame_len bytes; we fill the payload
+        // with zeros so the buffer is exactly n * frame_len bytes long.
+        let mut buf = vec![0u8; n * frame_len];
+        for i in 0..n {
+            let start = i * frame_len;
+            buf[start..start + 7].copy_from_slice(&frame);
+        }
+        buf
+    }
+
+    #[test]
+    fn aac_three_frame_chain_accepted() {
+        // 3 valid chained frames → should pass the 3-frame validator.
+        let buf = make_aac_chain(3, 4, 256);
+        assert!(validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_broken_chain_frame2_bad_sync_rejected() {
+        // Frame 2 sync byte corrupted → validator must reject.
+        let mut buf = make_aac_chain(3, 4, 256);
+        buf[256] = 0x00; // corrupt frame 2 sync high byte
+        assert!(!validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_broken_chain_frame2_sfi_mismatch_rejected() {
+        // Frame 2 has a different SFI (sfi=7 vs sfi=4) → stream-level check fails.
+        let mut buf = make_aac_chain(3, 4, 256);
+        // byte 2 of frame 2 = buf[256 + 2]; SFI is bits 5–2.
+        buf[258] = (buf[258] & 0xC3) | ((7 << 2) & 0x3C);
+        assert!(!validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_broken_chain_frame3_bad_sync_rejected() {
+        // Frames 1+2 valid but frame 3 sync word corrupted → reject.
+        let mut buf = make_aac_chain(3, 4, 256);
+        buf[512] = 0x00; // corrupt frame 3 sync high byte
+        assert!(!validate_aac(&buf, 0));
+    }
+
+    #[test]
+    fn aac_conservative_accept_at_chunk_boundary_frame2() {
+        // Buffer ends before frame 2 can be fully read → conservative accept.
+        let frame1 = make_aac_with_len(0, 4, 256);
+        assert!(validate_aac(&frame1, 0));
+    }
+
+    #[test]
+    fn aac_conservative_accept_at_chunk_boundary_frame3() {
+        // Buffer contains frames 1+2 but not frame 3 → conservative accept.
+        let buf = make_aac_chain(2, 4, 256);
         assert!(validate_aac(&buf, 0));
     }
 

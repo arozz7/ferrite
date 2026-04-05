@@ -196,6 +196,126 @@ impl CarvingState {
         frame.render_widget(Paragraph::new(line).style(style), area);
     }
 
+    /// High hit-density warning banner.
+    ///
+    /// Shown when the total scan hits exceed [`HIGH_DENSITY_THRESHOLD`].  At
+    /// this density the user is almost certainly seeing ADTS / short-magic
+    /// false positives that will produce thousands of write+delete cycles and
+    /// inflate the Pending counter well beyond the real recoverable file count.
+    pub(super) fn render_high_density_warning(&self, frame: &mut Frame, area: Rect) {
+        let has_aac = self
+            .groups
+            .iter()
+            .flat_map(|g| &g.entries)
+            .any(|e| e.enabled && (e.sig.extension == "aac" || e.sig.name.contains("ADTS")));
+        let label = if has_aac {
+            " ⚠  High hit density — ADTS/AAC signatures likely generating false positives. \
+             Consider disabling AAC in the signature panel (l key) to reduce I/O strain."
+        } else {
+            " ⚠  High hit density — many hits detected. \
+             Review enabled signatures; short-magic formats may produce false positives."
+        };
+        frame.render_widget(
+            Paragraph::new(label).style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            area,
+        );
+    }
+
+    /// Overall extraction progress gauge — shown when the scan is complete and
+    /// there are hits to (or being) extracted.  Mirrors the scan progress bar
+    /// in shape: a 3-row gauge + 1-row stats line.
+    ///
+    /// Provides: ratio, files written, rate (hits/sec), elapsed time, and ETA.
+    pub(super) fn render_extraction_overview(&self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // gauge
+                Constraint::Length(1), // stats line
+                Constraint::Min(0),    // padding
+            ])
+            .split(area);
+
+        let total = self.total_hits_scanned.max(1);
+        let processed = self.hits_extracted_count.min(total);
+        let ratio = (processed as f64 / total as f64).clamp(0.0, 1.0);
+        let remaining = total.saturating_sub(processed);
+        let done = processed == total;
+
+        let gauge_label = format!(
+            "{processed} / {total} processed  ({:.1}%)   {} files written",
+            ratio * 100.0,
+            self.files_written_count,
+        );
+
+        let gauge_color = if done { Color::Green } else { Color::Cyan };
+        let bar_title = if done {
+            " Extraction  [COMPLETE] "
+        } else {
+            " Extraction Progress "
+        };
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(bar_title))
+            .ratio(ratio)
+            .label(gauge_label)
+            .gauge_style(Style::default().fg(gauge_color));
+        frame.render_widget(gauge, chunks[0]);
+
+        // Rate, elapsed and ETA — only meaningful once extraction has started.
+        if let Some(start) = self.extraction_start {
+            let elapsed_secs = start.elapsed().as_secs_f64().max(0.001);
+            let rate = processed as f64 / elapsed_secs; // hits/sec
+
+            let rate_str = if rate >= 1.0 {
+                format!("{:.1} hits/s", rate)
+            } else if rate > 0.0 {
+                format!("{:.2} hits/s", rate)
+            } else {
+                "—".to_string()
+            };
+
+            let elapsed_u = elapsed_secs as u64;
+            let elapsed_str = format!(
+                "Elapsed {:02}:{:02}:{:02}",
+                elapsed_u / 3600,
+                (elapsed_u % 3600) / 60,
+                elapsed_u % 60,
+            );
+
+            let eta_str = if done {
+                String::new()
+            } else if rate > 0.0 {
+                let eta_secs = (remaining as f64 / rate) as u64;
+                if eta_secs >= 3600 {
+                    format!("ETA ~{:02}h{:02}m", eta_secs / 3600, (eta_secs % 3600) / 60)
+                } else if eta_secs >= 60 {
+                    format!("ETA ~{:02}m{:02}s", eta_secs / 60, eta_secs % 60)
+                } else {
+                    format!("ETA ~{eta_secs}s")
+                }
+            } else {
+                "ETA —".to_string()
+            };
+
+            let stats = format!(" {rate_str}   {elapsed_str}   {eta_str}");
+            frame.render_widget(
+                Paragraph::new(stats).style(Style::default().fg(Color::DarkGray)),
+                chunks[1],
+            );
+        } else if !done {
+            frame.render_widget(
+                Paragraph::new(" Not started — press E to extract or x for auto-extract")
+                    .style(Style::default().fg(Color::DarkGray)),
+                chunks[1],
+            );
+        }
+    }
+
     pub(super) fn render_progress(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
