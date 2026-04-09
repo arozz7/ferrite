@@ -656,7 +656,8 @@ devices because it reads every sector in sequence.
 ## 10. Screen 5 — File Browser
 
 **Purpose:** Open the filesystem on the selected device, navigate its directory tree,
-list file metadata, reveal deleted files, and extract individual files.
+list file metadata, reveal deleted files, extract individual files, and view a
+statistical breakdown of every file on the volume via the Drive Profile view.
 
 ### Layout
 
@@ -755,6 +756,82 @@ reports any read errors.
 - **Timestamps:** `created` and `modified` timestamps are always `None` in the
   current implementation (shown as `—`).
 
+### Drive Profile view
+
+Press `p` (after opening a filesystem) to switch to the **Drive Profile** sub-view.
+Ferrite scans every file record on the volume in the background and aggregates them
+into the following table:
+
+```
+ NTFS — 12,483 active  |  1,247 deleted  |  74.6 GB total
+ Drive type: Personal Workstation / Office PC
+
+ Category     Active   Deleted    Total     Size     %   Distribution
+ Documents     4,521       342    4,863   12.4 GB  38%  ██████████░░░░░░
+ Images        3,102       891    3,993    8.2 GB  32%  ████████░░░░░░░░
+ System        2,344        87    2,431    1.8 GB  19%  ███████░░░░░░░░░
+ Audio         1,829       102    1,931    3.1 GB  15%  █████░░░░░░░░░░░
+ Video           234        12      246   45.1 GB   2%  ░░░░░░░░░░░░░░░░
+ Archives        312        91      403    4.2 GB   3%  ░░░░░░░░░░░░░░░░
+ Other           141        22      163    0.8 GB   1%  ░░░░░░░░░░░░░░░░
+
+ [p] back to browser
+```
+
+**Columns:**
+
+| Column | Meaning |
+|---|---|
+| Category | File type group derived from extension |
+| Active | Files with a live (non-deleted) filesystem record |
+| Deleted | Files whose record is marked deleted |
+| Total | Active + Deleted |
+| Size | Combined byte total for the category |
+| % | Category share of all files by count |
+| Distribution | 16-char Unicode block bar proportional to % |
+
+**Supported categories:**
+
+| Category | Typical extensions |
+|---|---|
+| Images | jpg, png, gif, bmp, tiff, webp, psd, heic, … |
+| RAW Photos | arw, cr2, nef, rw2, raf, orf, cr3, … |
+| Video | mp4, mov, avi, mkv, wmv, flv, ts, … |
+| Audio | mp3, wav, flac, ogg, m4a, aac, flac, … |
+| Archives | zip, rar, 7z, iso, tar, gz, cab, … |
+| Documents | pdf, docx, xlsx, txt, html, epub, … |
+| System | exe, dll, sys, lnk, evtx, reg, ps1, … |
+| Database | sqlite, mdb, accdb, mdf, … |
+| Other | Everything else |
+
+**Drive type inference:**  Ferrite applies simple ratio rules to suggest a probable
+drive purpose:
+
+| Label | Rule |
+|---|---|
+| Camera / Photo Storage | >50% images + RAW |
+| Media Server / Video Library | >40% video |
+| Music Library | >40% audio |
+| Windows System Drive | >40% system files |
+| Personal Workstation / Office PC | >40% documents |
+| General Media Storage | >50% combined media |
+| General-Purpose Storage | No dominant category |
+| Empty / Unreadable | No files found |
+
+The profile is built **once per session** and cached — subsequent `p` presses toggle
+instantly.  While scanning, "Scanning filesystem…" is shown in yellow.
+
+#### Profile errors
+
+If the build fails, Ferrite shows:
+
+- A **red border** on the entire File Browser panel.
+- A **red status bar** message at the bottom of the browser view:
+  `Profile error: <reason>  [p] to retry`
+- The **profile sub-view** shows the error in red with a retry hint.
+
+Press `p` again from the browser view to clear the error and retry.
+
 ### Key bindings
 
 | Key | Action |
@@ -765,6 +842,7 @@ reports any read errors.
 | `Backspace` | Go up one directory level |
 | `d` | Toggle visibility of deleted files |
 | `e` | Extract the selected file to `./ferrite_output/fs_recovery/` |
+| `p` | Toggle Drive Profile view (requires filesystem to be open) |
 
 ---
 

@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ferrite_blockdev::BlockDevice;
-use ferrite_filesystem::{open_filesystem, FileEntry, FilesystemParser, FilesystemType};
+use ferrite_filesystem::{
+    build_profile, infer_drive_type, open_filesystem, DriveProfile, FileEntry, FilesystemParser,
+    FilesystemType,
+};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -58,6 +61,16 @@ pub struct FileBrowserState {
     recovery_progress: Option<RecoveryProgress>,
     /// Set to `true` to abort the background recovery thread between files.
     recovery_cancel: Arc<AtomicBool>,
+    /// Show the drive profile sub-view instead of the file browser.
+    show_profile: bool,
+    /// Completed drive profile; `None` until the background build finishes.
+    profile: Option<DriveProfile>,
+    /// Channel receiving the completed [`DriveProfile`] (or an error) from the build thread.
+    profile_rx: Option<Receiver<Result<DriveProfile, String>>>,
+    /// `true` while the background profile build is running.
+    profile_building: bool,
+    /// Error message from the last failed profile build, if any.
+    profile_error: Option<String>,
 }
 
 impl Default for FileBrowserState {
@@ -83,6 +96,11 @@ impl FileBrowserState {
             recovery_rx: None,
             recovery_progress: None,
             recovery_cancel: Arc::new(AtomicBool::new(false)),
+            show_profile: false,
+            profile: None,
+            profile_rx: None,
+            profile_building: false,
+            profile_error: None,
         }
     }
 
@@ -101,6 +119,11 @@ impl FileBrowserState {
         self.recovery_rx = None;
         self.recovery_progress = None;
         self.recovery_cancel = Arc::new(AtomicBool::new(false));
+        self.show_profile = false;
+        self.profile = None;
+        self.profile_rx = None;
+        self.profile_building = false;
+        self.profile_error = None;
     }
 
     /// Returns `true` while a text-input field is active (currently none on this screen).
@@ -126,6 +149,30 @@ impl FileBrowserState {
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.open_rx = None;
+                }
+            }
+        }
+
+        // ── Drive profile build ───────────────────────────────────────────────
+        if let Some(rx) = &self.profile_rx {
+            match rx.try_recv() {
+                Ok(Ok(profile)) => {
+                    self.profile = Some(profile);
+                    self.profile_building = false;
+                    self.profile_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.profile_error = Some(e);
+                    self.profile_building = false;
+                    self.profile_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if self.profile_error.is_none() {
+                        self.profile_error = Some("Profile build failed unexpectedly.".to_string());
+                    }
+                    self.profile_building = false;
+                    self.profile_rx = None;
                 }
             }
         }
@@ -169,6 +216,17 @@ impl FileBrowserState {
     }
 
     pub fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
+        // p toggles the drive profile sub-view regardless of other state.
+        if code == KeyCode::Char('p') {
+            self.toggle_profile();
+            return;
+        }
+
+        // While showing the profile, ignore all other keys except p (handled above).
+        if self.show_profile {
+            return;
+        }
+
         match code {
             KeyCode::Char('o') => self.start_open(),
             KeyCode::Char('e') => self.extract_selected(),
@@ -184,6 +242,37 @@ impl FileBrowserState {
             }
             _ => {}
         }
+    }
+
+    fn toggle_profile(&mut self) {
+        if self.parser.is_none() {
+            return;
+        }
+        self.show_profile = !self.show_profile;
+        // Retry on re-open if the previous build failed.
+        if self.show_profile && self.profile.is_none() && !self.profile_building {
+            self.profile_error = None;
+            self.start_profile_build();
+        }
+    }
+
+    fn start_profile_build(&mut self) {
+        let parser = match &self.parser {
+            Some(p) => Arc::clone(p),
+            None => return,
+        };
+        let fs_type = self.fs_type;
+        self.profile_building = true;
+        self.profile_error = None;
+        let (tx, rx) = mpsc::channel::<Result<DriveProfile, String>>();
+        self.profile_rx = Some(rx);
+        std::thread::spawn(move || {
+            let result = parser
+                .enumerate_files()
+                .map(|files| build_profile(&files, fs_type))
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
     }
 
     // ── Extraction actions ────────────────────────────────────────────────────
@@ -357,7 +446,9 @@ impl FileBrowserState {
             .map(|p| !p.finished)
             .unwrap_or(false);
 
-        let title = if recovering {
+        let title = if self.show_profile {
+            " File Browser — Drive Profile — [p] back to browser "
+        } else if recovering {
             " File Browser — Esc: cancel recovery "
         } else {
             match &self.status {
@@ -365,11 +456,19 @@ impl FileBrowserState {
                 _ if self.show_deleted => {
                     " File Browser — [deleted shown] — d:toggle  e:extract  R:recover-all  o:open "
                 }
-                _ => " File Browser — d:toggle-deleted  e:extract  R:recover-all  o:open-fs ",
+                _ => " File Browser — d:toggle-deleted  e:extract  R:recover-all  o:open-fs  p:profile ",
             }
         };
 
-        let outer = Block::default().borders(Borders::ALL).title(title);
+        let border_style = if self.profile_error.is_some() {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default()
+        };
+        let outer = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title);
 
         match &self.status {
             BrowserStatus::Idle => {
@@ -396,7 +495,11 @@ impl FileBrowserState {
             BrowserStatus::Browsing => {
                 let inner = outer.inner(area);
                 frame.render_widget(outer, area);
-                self.render_browser(frame, inner);
+                if self.show_profile {
+                    self.render_profile(frame, inner);
+                } else {
+                    self.render_browser(frame, inner);
+                }
             }
         }
     }
@@ -536,6 +639,120 @@ impl FileBrowserState {
         );
     }
 
+    fn render_profile(&self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // summary header
+                Constraint::Min(0),    // category table
+                Constraint::Length(1), // footer hint
+            ])
+            .split(area);
+
+        // ── Summary header ────────────────────────────────────────────────────
+        if self.profile_building {
+            frame.render_widget(
+                Paragraph::new(" Scanning filesystem — building drive profile…")
+                    .style(Style::default().fg(Color::Yellow)),
+                chunks[0],
+            );
+            frame.render_widget(
+                Paragraph::new(" [p] back to browser").style(Style::default().fg(Color::DarkGray)),
+                chunks[2],
+            );
+            return;
+        }
+
+        let Some(profile) = &self.profile else {
+            let (text, style) = if let Some(e) = &self.profile_error {
+                (
+                    format!(" Profile build failed: {e}\n Press [p] to retry."),
+                    Style::default().fg(Color::Red),
+                )
+            } else {
+                (" No profile data available.".to_string(), Style::default())
+            };
+            frame.render_widget(Paragraph::new(text).style(style), chunks[0]);
+            frame.render_widget(
+                Paragraph::new(" [p] back to browser").style(Style::default().fg(Color::DarkGray)),
+                chunks[2],
+            );
+            return;
+        };
+
+        let total = profile.total_active + profile.total_deleted;
+        let summary = format!(
+            " {} — {} active  |  {} deleted  |  {} total\n Drive type: {}",
+            profile.fs_type,
+            profile.total_active,
+            profile.total_deleted,
+            fmt_bytes(profile.total_bytes),
+            infer_drive_type(profile),
+        );
+        frame.render_widget(
+            Paragraph::new(summary).style(Style::default().fg(Color::Cyan)),
+            chunks[0],
+        );
+
+        // ── Category table ────────────────────────────────────────────────────
+        let header = Row::new([
+            Cell::from("Category"),
+            Cell::from("Active"),
+            Cell::from("Deleted"),
+            Cell::from("Total"),
+            Cell::from("Size"),
+            Cell::from("  %"),
+            Cell::from("Distribution"),
+        ])
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        let mut rows_data: Vec<_> = profile.stats.iter().collect();
+        rows_data.sort_by(|a, b| b.1.total_count().cmp(&a.1.total_count()));
+
+        let rows: Vec<Row> = rows_data
+            .iter()
+            .map(|(cat, stats)| {
+                let pct = if total > 0 {
+                    stats.total_count() as f64 / total as f64 * 100.0
+                } else {
+                    0.0
+                };
+                Row::new([
+                    Cell::from(cat.label()),
+                    Cell::from(stats.active_count.to_string()),
+                    Cell::from(stats.deleted_count.to_string()),
+                    Cell::from(stats.total_count().to_string()),
+                    Cell::from(fmt_bytes(stats.total_bytes())),
+                    Cell::from(format!("{pct:>3.0}%")),
+                    Cell::from(make_bar(pct, 16)),
+                ])
+            })
+            .collect();
+
+        let widths = [
+            Constraint::Length(12), // category
+            Constraint::Length(8),  // active
+            Constraint::Length(8),  // deleted
+            Constraint::Length(8),  // total
+            Constraint::Length(9),  // size
+            Constraint::Length(5),  // pct
+            Constraint::Min(16),    // bar
+        ];
+
+        let table = Table::new(rows, widths).header(header);
+        frame.render_widget(table, chunks[1]);
+
+        // ── Footer ────────────────────────────────────────────────────────────
+        frame.render_widget(
+            Paragraph::new(" [p] back to browser").style(Style::default().fg(Color::DarkGray)),
+            chunks[2],
+        );
+    }
+
     fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
         // Show finished recovery summary if available.
         if let Some(p) = &self.recovery_progress {
@@ -552,6 +769,15 @@ impl FileBrowserState {
                 frame.render_widget(Paragraph::new(msg).style(style), area);
                 return;
             }
+        }
+
+        if let Some(e) = &self.profile_error {
+            frame.render_widget(
+                Paragraph::new(format!(" Profile error: {e}  [p] to retry"))
+                    .style(Style::default().fg(Color::Red)),
+                area,
+            );
+            return;
         }
 
         if let Some(msg) = &self.extract_status {
@@ -575,6 +801,14 @@ impl EntryEq for Vec<FileEntry> {
         self.iter()
             .any(|e| e.path == other.path && e.name == other.name)
     }
+}
+
+/// Build a fixed-width Unicode block bar (`█` filled, `░` empty).
+fn make_bar(pct: f64, width: usize) -> String {
+    let filled = ((pct / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let empty = width - filled;
+    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
 }
 
 fn fmt_bytes(n: u64) -> String {

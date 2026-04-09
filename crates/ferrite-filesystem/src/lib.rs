@@ -25,6 +25,7 @@ mod io;
 mod ntfs;
 mod ntfs_helpers;
 mod offset_device;
+pub mod profile;
 
 pub use apfs::ApfsParser;
 pub use error::{FilesystemError, Result};
@@ -32,6 +33,9 @@ pub use exfat::ExFatParser;
 pub use ext4::Ext4Parser;
 pub use fat32::Fat32Parser;
 pub use ntfs::NtfsParser;
+pub use profile::{
+    build_profile, ext_to_category, infer_drive_type, CategoryStats, DriveProfile, FileCategory,
+};
 
 use std::io::Write;
 use std::sync::Arc;
